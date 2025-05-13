@@ -1,0 +1,1 @@
+Estrutura de diretórios do app Android criada.

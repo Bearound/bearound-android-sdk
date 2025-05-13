@@ -1,0 +1,19 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+  <path
+      android:pathData="M31,64C31,64 31,32 31,32C31,32 63,32 63,32C63,32 63,64 63,64C63,64 31,64 31,64Z"
+      android:fillColor="#FFFFFF" />
+  <path
+      android:pathData="M31,64C31,64 31,32 31,32C31,32 63,32 63,32C63,32 63,64 63,64C63,64 31,64 31,64Z"
+      android:strokeWidth="2"
+      android:strokeColor="#000000" />
+  <!-- Placeholder: A simple letter 'B' for Beacon -->
+  <path
+      android:pathData="M40,50 L40,40 L50,40 Q55,40 55,45 Q55,50 50,50 L40,50 M40,45 L50,45"
+      android:strokeWidth="3"
+      android:strokeColor="#0000FF" />
+</vector>
