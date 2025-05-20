@@ -25,6 +25,7 @@ import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL // Adicionar esta importação
+import org.altbeacon.beacon.Identifier
 
 class BeaconPocApplication : Application(), BootstrapNotifier {
     val beaconUUID = "e25b8d3c-947a-452f-a13f-589cb706d2e5" // Tornar público
@@ -47,7 +48,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         const val ENTER_NOTIFICATION_ID = 1
         const val EXIT_NOTIFICATION_ID = 2
         // Substituir pelo endpoint real da sua API
-        const val API_ENDPOINT_URL = "https://your.api.endpoint/beacon_data" // Exemplo de URL. Mude para seu endpoint!
+        const val API_ENDPOINT_URL = "https://api.bearound.io/ingest" // Exemplo de URL. Mude para seu endpoint!
     }
 
     override fun onCreate() {
@@ -55,7 +56,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         beaconManager = BeaconManager.getInstanceForApplication(this)
         beaconManager.beaconParsers.add(BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24"))
         createNotificationChannel()
-        region = Region("BeaconPocRegion", beaconUUID, null, null) // Passar o UUID como String diretamente
+        region = Region("BeaconPocRegion", Identifier.parse(beaconUUID), null, null) // Passar o UUID como String diretamente
         regionBootstrap = RegionBootstrap(this, region)
         backgroundPowerSaver = BackgroundPowerSaver(this)
         // BeaconManager.setDebug(true) // Para depuração

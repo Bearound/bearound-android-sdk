@@ -16,6 +16,7 @@ import org.altbeacon.beacon.BeaconManager
 import org.altbeacon.beacon.MonitorNotifier
 import org.altbeacon.beacon.RangeNotifier
 import org.altbeacon.beacon.Region // Adicionar esta importação que estava faltando
+import org.altbeacon.beacon.Identifier
 
 class MainActivity : AppCompatActivity() {
 
@@ -66,7 +67,7 @@ class MainActivity : AppCompatActivity() {
         // A região também pode ser obtida da Application class ou recriada aqui
         // Para consistência, usamos o UUID da Application class
         val appBeaconUUID = (application as BeaconPocApplication).beaconUUID // Acessar o UUID da Application
-        region = Region("BeaconPocRegionMainActivity", appBeaconUUID, null, null) // Passar o UUID como String diretamente
+        region = Region("BeaconPocRegionMainActivity", Identifier.parse(appBeaconUUID), null, null) // Passar o UUID como String diretamente
 
         // Configurar callbacks da Application class
         beaconPocApplication?.onAdvertisingIdFetched = {
