@@ -25,4 +25,6 @@
     <string name="looking_for_beacons_status">Procurando beacons...</string>
     <string name="exited_beacon_region_status">Saiu da região do beacon: %1$s</string>
     <string name="entered_beacon_region_status">Entrou na região do beacon: %1$s</string>
+    <string name="foreground_service_title">Monitoramento de Beacons</string>
+    <string name="foreground_service_message">Execução contínua em segundo plano</string>
 </resources>
