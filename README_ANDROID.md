@@ -9,7 +9,7 @@ Este projeto consiste em um beacon BLE configurado em um Adafruit nRF52840 Feath
 3.  **Notificações**: O usuário é notificado quando entra ou sai da região do beacon, mesmo com o aplicativo em segundo plano.
 4.  **Obtenção do Advertising ID**: O aplicativo obtém o AAID do dispositivo para ser enviado à API.
 5.  **Sincronização com API**: Ao detectar um beacon, o aplicativo envia o UUID, Major, Minor do beacon e o AAID do dispositivo para um endpoint de API configurável.
-6.  **Execução em Segundo Plano**: Um serviço de primeiro plano garante que o monitoramento de beacons e as notificações continuem funcionando mesmo quando o aplicativo está em segundo plano. Esse serviço só é iniciado após o usuário conceder a permissão de localização.
+6.  **Execução em Segundo Plano**: Um serviço de primeiro plano garante que o monitoramento de beacons e as notificações continuem funcionando mesmo quando o aplicativo está em segundo plano.
 7.  **Solicitação de Permissões**: O aplicativo lida com a solicitação das permissões necessárias em tempo de execução (Localização, Bluetooth Scan).
 
 ## Estrutura do Projeto Android (`android_app`)

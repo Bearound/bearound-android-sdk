@@ -70,7 +70,17 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         beaconManager = BeaconManager.getInstanceForApplication(this)
         beaconManager.beaconParsers.add(BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24"))
         createNotificationChannel()
+        // Habilitar escaneamento em serviço de primeiro plano para manter o app ativo em segundo plano
+        val foregroundNotification: Notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(getString(R.string.foreground_service_title))
+            .setContentText(getString(R.string.foreground_service_message))
+            .setOngoing(true)
+            .build()
+        beaconManager.enableForegroundServiceScanning(foregroundNotification, FOREGROUND_SERVICE_NOTIFICATION_ID)
+        beaconManager.setEnableScheduledScanJobs(false)
         region = Region("BeaconPocRegion", Identifier.parse(beaconUUID), null, null) // Passar o UUID como String diretamente
+
         // BeaconManager.setDebug(true) // Para depuração
 
         // Iniciar a obtenção do Advertising ID
