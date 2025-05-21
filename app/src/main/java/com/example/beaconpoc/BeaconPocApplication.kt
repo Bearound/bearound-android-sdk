@@ -1,6 +1,7 @@
 package com.example.beaconpoc
 
 import android.app.Application
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -49,6 +50,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         const val NOTIFICATION_CHANNEL_ID = "beacon_notifications"
         const val ENTER_NOTIFICATION_ID = 1
         const val EXIT_NOTIFICATION_ID = 2
+        const val FOREGROUND_SERVICE_NOTIFICATION_ID = 3
         // Substituir pelo endpoint real da sua API
         const val API_ENDPOINT_URL = "https://api.bearound.io/ingest" // Exemplo de URL. Mude para seu endpoint!
     }
@@ -70,6 +72,15 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         region = Region("BeaconPocRegion", Identifier.parse(beaconUUID), null, null) // Passar o UUID como String diretamente
         regionBootstrap = RegionBootstrap(this, region)
         backgroundPowerSaver = BackgroundPowerSaver(this)
+        // Habilitar escaneamento em serviço de primeiro plano para manter o app ativo em segundo plano
+        val foregroundNotification: Notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(getString(R.string.foreground_service_title))
+            .setContentText(getString(R.string.foreground_service_message))
+            .setOngoing(true)
+            .build()
+        beaconManager.enableForegroundServiceScanning(foregroundNotification, FOREGROUND_SERVICE_NOTIFICATION_ID)
+        beaconManager.setEnableScheduledScanJobs(false)
         // BeaconManager.setDebug(true) // Para depuração
 
         // Iniciar a obtenção do Advertising ID
