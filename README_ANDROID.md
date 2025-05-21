@@ -61,7 +61,6 @@ Este projeto consiste em um beacon BLE configurado em um Adafruit nRF52840 Feath
 ## Observações
 
 -   **UUID do Beacon**: O UUID `e25b8d3c-947a-452f-a13f-589cb706d2e5` está configurado no código. Se o seu beacon Arduino usar um UUID diferente, atualize-o na constante `beaconUUID` em `BeaconPocApplication.kt`.
--   **Consumo de Bateria**: A biblioteca AltBeacon e o monitoramento em segundo plano são otimizados, mas o uso contínuo de Bluetooth e localização pode impactar a bateria. O `BackgroundPowerSaver` está habilitado para ajudar a mitigar isso.
 -   **Consumo de Bateria**: A biblioteca AltBeacon e o monitoramento em segundo plano são otimizados, mas o uso contínuo de Bluetooth e localização pode impactar a bateria. O `BackgroundPowerSaver` está habilitado para ajudar a mitigar isso e o aplicativo utiliza um serviço de primeiro plano para manter o monitoramento ativo.
 -   **Background Fetch**: A sincronização com a API ocorre quando o beacon é detectado (ao entrar na região e durante o ranging). Não foi implementado um "background fetch" no sentido de uma tarefa periódica agendada pelo sistema operacional para buscar dados da API, mas sim uma sincronização acionada por eventos de beacon. Se uma sincronização periódica independente de eventos de beacon for necessária, o WorkManager do Android seria uma boa abordagem.
 

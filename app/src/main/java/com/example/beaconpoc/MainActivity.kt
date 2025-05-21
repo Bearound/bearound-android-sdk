@@ -234,6 +234,7 @@ class MainActivity : AppCompatActivity() {
             statusTextView.text = getString(R.string.permissions_needed_message)
             return
         }
+        beaconPocApplication?.enableBackgroundScanning()
         statusTextView.text = getString(R.string.looking_for_beacons_status)
         Log.d(TAG, "Iniciando varredura de beacons (ranging e monitoring) para a região: ${region.uniqueId}")
 

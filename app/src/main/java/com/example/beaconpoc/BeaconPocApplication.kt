@@ -36,6 +36,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
     lateinit var beaconManager: BeaconManager // Tornar público para acesso da MainActivity
     private var backgroundPowerSaver: BackgroundPowerSaver? = null
     private var regionBootstrap: RegionBootstrap? = null
+    private var backgroundSetupDone: Boolean = false
 
     var lastSeenBeacon: Beacon? = null
     var advertisingId: String? = null
@@ -79,17 +80,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         beaconManager.enableForegroundServiceScanning(foregroundNotification, FOREGROUND_SERVICE_NOTIFICATION_ID)
         beaconManager.setEnableScheduledScanJobs(false)
         region = Region("BeaconPocRegion", Identifier.parse(beaconUUID), null, null) // Passar o UUID como String diretamente
-        regionBootstrap = RegionBootstrap(this, region)
-        backgroundPowerSaver = BackgroundPowerSaver(this)
-        // Habilitar escaneamento em serviço de primeiro plano para manter o app ativo em segundo plano
-        val foregroundNotification: Notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle(getString(R.string.foreground_service_title))
-            .setContentText(getString(R.string.foreground_service_message))
-            .setOngoing(true)
-            .build()
-        beaconManager.enableForegroundServiceScanning(foregroundNotification, FOREGROUND_SERVICE_NOTIFICATION_ID)
-        beaconManager.setEnableScheduledScanJobs(false)
+
         // BeaconManager.setDebug(true) // Para depuração
 
         // Iniciar a obtenção do Advertising ID
@@ -115,6 +106,21 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
             // Notificar a MainActivity ou qualquer outro listener
             onAdvertisingIdFetched?.invoke(advertisingId)
         }
+    }
+
+    fun enableBackgroundScanning() {
+        if (backgroundSetupDone) return
+        val foregroundNotification: Notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(getString(R.string.foreground_service_title))
+            .setContentText(getString(R.string.foreground_service_message))
+            .setOngoing(true)
+            .build()
+        beaconManager.enableForegroundServiceScanning(foregroundNotification, FOREGROUND_SERVICE_NOTIFICATION_ID)
+        beaconManager.setEnableScheduledScanJobs(false)
+        backgroundPowerSaver = BackgroundPowerSaver(this)
+        regionBootstrap = RegionBootstrap(this, region)
+        backgroundSetupDone = true
     }
 
     private fun createNotificationChannel() {
