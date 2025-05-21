@@ -9,7 +9,7 @@ Este projeto consiste em um beacon BLE configurado em um Adafruit nRF52840 Feath
 3.  **Notificações**: O usuário é notificado quando entra ou sai da região do beacon, mesmo com o aplicativo em segundo plano.
 4.  **Obtenção do Advertising ID**: O aplicativo obtém o AAID do dispositivo para ser enviado à API.
 5.  **Sincronização com API**: Ao detectar um beacon, o aplicativo envia o UUID, Major, Minor do beacon e o AAID do dispositivo para um endpoint de API configurável.
-6.  **Execução em Segundo Plano**: O monitoramento de beacons e as notificações funcionam mesmo quando o aplicativo está em segundo plano.
+6.  **Execução em Segundo Plano**: Um serviço de primeiro plano garante que o monitoramento de beacons e as notificações continuem funcionando mesmo quando o aplicativo está em segundo plano. Esse serviço só é iniciado após o usuário conceder a permissão de localização.
 7.  **Solicitação de Permissões**: O aplicativo lida com a solicitação das permissões necessárias em tempo de execução (Localização, Bluetooth Scan).
 
 ## Estrutura do Projeto Android (`android_app`)
@@ -61,7 +61,7 @@ Este projeto consiste em um beacon BLE configurado em um Adafruit nRF52840 Feath
 ## Observações
 
 -   **UUID do Beacon**: O UUID `e25b8d3c-947a-452f-a13f-589cb706d2e5` está configurado no código. Se o seu beacon Arduino usar um UUID diferente, atualize-o na constante `beaconUUID` em `BeaconPocApplication.kt`.
--   **Consumo de Bateria**: A biblioteca AltBeacon e o monitoramento em segundo plano são otimizados, mas o uso contínuo de Bluetooth e localização pode impactar a bateria. O `BackgroundPowerSaver` está habilitado para ajudar a mitigar isso.
+-   **Consumo de Bateria**: A biblioteca AltBeacon e o monitoramento em segundo plano são otimizados, mas o uso contínuo de Bluetooth e localização pode impactar a bateria. O `BackgroundPowerSaver` está habilitado para ajudar a mitigar isso e o aplicativo utiliza um serviço de primeiro plano para manter o monitoramento ativo.
 -   **Background Fetch**: A sincronização com a API ocorre quando o beacon é detectado (ao entrar na região e durante o ranging). Não foi implementado um "background fetch" no sentido de uma tarefa periódica agendada pelo sistema operacional para buscar dados da API, mas sim uma sincronização acionada por eventos de beacon. Se uma sincronização periódica independente de eventos de beacon for necessária, o WorkManager do Android seria uma boa abordagem.
 
 Este aplicativo Android fornece uma base sólida para interagir com seu beacon BLE e sincronizar dados com uma API. Sinta-se à vontade para expandir e personalizar conforme necessário.
