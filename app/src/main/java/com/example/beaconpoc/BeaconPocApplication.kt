@@ -157,7 +157,13 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
             EXIT_NOTIFICATION_ID
         )
         lastSeenBeacon?.let {
-            syncWithApi(it.id1.toString(), it.id2.toString(), it.id3.toString(), "exit")
+            syncWithApi(
+                it.id1.toString(),
+                it.id2.toString(),
+                it.id3.toString(),
+                it.rssi,
+                "exit"
+            )
         }
         beaconManager.stopRangingBeacons(region)
         beaconManager.removeRangeNotifier(rangeNotifierForSync)
@@ -174,13 +180,28 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
             val beacon = beacons.first()
             if (beacon.id1.toString() == beaconUUID) { // Verificar se o UUID corresponde ao esperado
                 lastSeenBeacon = beacon
-                Log.d(TAG, "RangeNotifierForSync: Beacon detectado - UUID: ${beacon.id1} Major: ${beacon.id2}, Minor: ${beacon.id3}")
-                syncWithApi(beacon.id1.toString(), beacon.id2.toString(), beacon.id3.toString(), "enter")
+                Log.d(
+                    TAG,
+                    "RangeNotifierForSync: Beacon detectado - UUID: ${beacon.id1} Major: ${beacon.id2}, Minor: ${beacon.id3}, RSSI: ${beacon.rssi}"
+                )
+                syncWithApi(
+                    beacon.id1.toString(),
+                    beacon.id2.toString(),
+                    beacon.id3.toString(),
+                    beacon.rssi,
+                    "enter"
+                )
             }
         }
     }
 
-    fun syncWithApi(uuid: String, major: String, minor: String, eventType: String) {
+    fun syncWithApi(
+        uuid: String,
+        major: String,
+        minor: String,
+        rssi: Int,
+        eventType: String,
+    ) {
         if (API_ENDPOINT_URL == "https://your.api.endpoint/beacon_data" || API_ENDPOINT_URL.isBlank() || API_ENDPOINT_URL == "YOUR_API_ENDPOINT_HERE") {
             Log.w(TAG, "API Endpoint não configurado ou inválido. Sincronização abortada.")
             onApiSyncStatusChanged?.invoke(getString(R.string.api_sync_failure_config))
@@ -199,7 +220,10 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         onApiSyncStatusChanged?.invoke(getString(R.string.api_sync_inprogress))
 
         CoroutineScope(Dispatchers.IO).launch {
-            Log.d(TAG, "Iniciando sincronização com API. UUID: $uuid, Major: $major, Minor: $minor, AAID: $currentAdvertisingId")
+            Log.d(
+                TAG,
+                "Iniciando sincronização com API. UUID: $uuid, Major: $major, Minor: $minor, RSSI: $rssi, AAID: $currentAdvertisingId"
+            )
             try {
                 val url = URL(API_ENDPOINT_URL)
                 val connection = url.openConnection() as HttpURLConnection
@@ -213,6 +237,8 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
                 jsonObject.put("uuid", uuid)
                 jsonObject.put("major", major)
                 jsonObject.put("minor", minor)
+                jsonObject.put("rssi", rssi)
+                jsonObject.put("deviceType", "Android")
                 jsonObject.put("idfa", currentAdvertisingId ?: "N/A")
                 jsonObject.put("eventType", eventType)
                 jsonObject.put("appState", currentAppState)
