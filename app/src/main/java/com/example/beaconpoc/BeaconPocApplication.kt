@@ -21,7 +21,7 @@ import org.altbeacon.beacon.BeaconManager
 import org.altbeacon.beacon.BeaconParser
 import org.altbeacon.beacon.RangeNotifier
 import org.altbeacon.beacon.Region
-import org.altbeacon.beacon.powersave.BackgroundPowerSaver
+//import org.altbeacon.beacon.powersave.BackgroundPowerSaver
 import org.altbeacon.beacon.startup.RegionBootstrap
 import org.altbeacon.beacon.startup.BootstrapNotifier
 import org.json.JSONObject
@@ -34,7 +34,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
     val beaconUUID = "e25b8d3c-947a-452f-a13f-589cb706d2e5" // Tornar público
     private lateinit var region: Region
     lateinit var beaconManager: BeaconManager // Tornar público para acesso da MainActivity
-    private var backgroundPowerSaver: BackgroundPowerSaver? = null
+    //private var backgroundPowerSaver: BackgroundPowerSaver? = null
     private var regionBootstrap: RegionBootstrap? = null
     private var backgroundSetupDone: Boolean = false
 
@@ -118,7 +118,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
             .build()
         beaconManager.enableForegroundServiceScanning(foregroundNotification, FOREGROUND_SERVICE_NOTIFICATION_ID)
         beaconManager.setEnableScheduledScanJobs(false)
-        backgroundPowerSaver = BackgroundPowerSaver(this)
+        //backgroundPowerSaver = BackgroundPowerSaver(this)
         regionBootstrap = RegionBootstrap(this, region)
         backgroundSetupDone = true
     }

@@ -274,8 +274,8 @@ class MainActivity : AppCompatActivity() {
         // Parar o ranging da Activity para economizar bateria quando não estiver visível.
         // O monitoramento em background (BootstrapNotifier) continuará ativo.
         Log.d(TAG, "Pausando ranging de beacons na onPause da Activity")
-        beaconManager.stopRangingBeacons(region)
-        beaconManager.removeRangeNotifier(rangeNotifier)
+        //beaconManager.stopRangingBeacons(region)
+        //beaconManager.removeRangeNotifier(rangeNotifier)
         // Não remover o MonitorNotifier se quisermos que a Application class continue a usá-lo ou se ele for compartilhado.
         // Se o MonitorNotifier for específico da Activity, podemos removê-lo:
         // beaconManager.removeMonitorNotifier(monitorNotifier)
