@@ -1,5 +1,6 @@
 package com.example.beaconpoc
 
+import android.annotation.SuppressLint
 import android.app.Application
 import android.app.Notification
 import android.app.NotificationChannel
@@ -70,6 +71,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         beaconManager = BeaconManager.getInstanceForApplication(this)
         beaconManager.beaconParsers.add(BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24"))
         createNotificationChannel()
+
         // Habilitar escaneamento em serviço de primeiro plano para manter o app ativo em segundo plano
         val foregroundNotification: Notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
@@ -80,6 +82,8 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         beaconManager.enableForegroundServiceScanning(foregroundNotification, FOREGROUND_SERVICE_NOTIFICATION_ID)
         beaconManager.setEnableScheduledScanJobs(false)
         region = Region("BeaconPocRegion", Identifier.parse(beaconUUID), null, null) // Passar o UUID como String diretamente
+        regionBootstrap = RegionBootstrap(this, region)
+
 
         // BeaconManager.setDebug(true) // Para depuração
 
@@ -89,7 +93,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
 
     fun fetchAdvertisingId() {
         if (advertisingIdFetchAttempted && advertisingId != null) {
-            Log.d(TAG, "Advertising ID já foi obtido: $advertisingId")
+            Log.i(TAG, "Advertising ID já foi obtido: $advertisingId")
             onAdvertisingIdFetched?.invoke(advertisingId)
             return
         }
@@ -108,21 +112,6 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         }
     }
 
-    fun enableBackgroundScanning() {
-        if (backgroundSetupDone) return
-        val foregroundNotification: Notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle(getString(R.string.foreground_service_title))
-            .setContentText(getString(R.string.foreground_service_message))
-            .setOngoing(true)
-            .build()
-        beaconManager.enableForegroundServiceScanning(foregroundNotification, FOREGROUND_SERVICE_NOTIFICATION_ID)
-        beaconManager.setEnableScheduledScanJobs(false)
-        //backgroundPowerSaver = BackgroundPowerSaver(this)
-        regionBootstrap = RegionBootstrap(this, region)
-        backgroundSetupDone = true
-    }
-
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val name = getString(R.string.notification_channel_name)
@@ -138,7 +127,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
     }
 
     override fun didEnterRegion(region: Region) {
-        Log.d(TAG, "didEnterRegion: Entrou na região ${region.uniqueId}")
+        Log.i(TAG, "didEnterRegion: Entrou na região ${region.uniqueId}")
         sendNotification(
             getString(R.string.notification_enter_title),
             getString(R.string.notification_enter_body, region.uniqueId),
@@ -150,7 +139,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
     }
 
     override fun didExitRegion(region: Region) {
-        Log.d(TAG, "didExitRegion: Saiu da região ${region.uniqueId}")
+        Log.i(TAG, "didExitRegion: Saiu da região ${region.uniqueId}")
         sendNotification(
             getString(R.string.notification_exit_title),
             getString(R.string.notification_exit_body, region.uniqueId),
@@ -172,18 +161,21 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
 
     override fun didDetermineStateForRegion(state: Int, region: Region) {
         val stateString = if (state == BootstrapNotifier.INSIDE) "DENTRO" else "FORA"
-        Log.d(TAG, "didDetermineStateForRegion: Estado ${region.uniqueId} para: $stateString")
+        Log.i(TAG, "didDetermineStateForRegion: Estado ${region.uniqueId} para: $stateString")
     }
 
-    private val rangeNotifierForSync = RangeNotifier { beacons, _ -> // region parameter is not used here
+    private val rangeNotifierForSync = RangeNotifier { beacons, rangedRegion ->
+        Log.i(TAG, "didRangeBeaconsInRegion: ${beacons.size} beacons encontrados na região: ${rangedRegion.uniqueId}")
         if (beacons.isNotEmpty()) {
             val beacon = beacons.first()
+
             if (beacon.id1.toString() == beaconUUID) { // Verificar se o UUID corresponde ao esperado
                 lastSeenBeacon = beacon
-                Log.d(
+                Log.i(
                     TAG,
-                    "RangeNotifierForSync: Beacon detectado - UUID: ${beacon.id1} Major: ${beacon.id2}, Minor: ${beacon.id3}, RSSI: ${beacon.rssi}"
+                    "RangeNotifierForSync: Beacon da nossa região: UUID: ${beacon.id1}, Major: ${beacon.id2}, Minor: ${beacon.id3}, Distância: ${beacon.distance} metros"
                 )
+
                 syncWithApi(
                     beacon.id1.toString(),
                     beacon.id2.toString(),
@@ -220,7 +212,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         onApiSyncStatusChanged?.invoke(getString(R.string.api_sync_inprogress))
 
         CoroutineScope(Dispatchers.IO).launch {
-            Log.d(
+            Log.i(
                 TAG,
                 "Iniciando sincronização com API. UUID: $uuid, Major: $major, Minor: $minor, RSSI: $rssi, AAID: $currentAdvertisingId"
             )
@@ -264,6 +256,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         }
     }
 
+    @SuppressLint("NotificationPermission")
     private fun sendNotification(title: String, message: String, notificationId: Int) {
         val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         val intent = Intent(this, MainActivity::class.java).apply {
@@ -285,6 +278,6 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
             .setAutoCancel(true)
 
         notificationManager.notify(notificationId, builder.build())
-        Log.d(TAG, "Notificação enviada: ID=$notificationId, Título=\"$title\"")
+        Log.i(TAG, "Notificação enviada: ID=$notificationId, Título=\"$title\"")
     }
 }
