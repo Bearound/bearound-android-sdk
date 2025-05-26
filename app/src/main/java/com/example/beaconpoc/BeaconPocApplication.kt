@@ -2,9 +2,6 @@ package com.example.beaconpoc
 
 import android.app.Application
 import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.google.android.gms.ads.identifier.AdvertisingIdClient
@@ -18,19 +15,17 @@ import org.altbeacon.beacon.BeaconManager
 import org.altbeacon.beacon.BeaconParser
 import org.altbeacon.beacon.RangeNotifier
 import org.altbeacon.beacon.Region
-import org.altbeacon.beacon.startup.RegionBootstrap
-import org.altbeacon.beacon.startup.BootstrapNotifier
 import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import org.altbeacon.beacon.Identifier
+import org.altbeacon.beacon.MonitorNotifier
 
-class BeaconPocApplication : Application(), BootstrapNotifier {
+class BeaconPocApplication : Application(), MonitorNotifier {
     private val beaconUUID = "e25b8d3c-947a-452f-a13f-589cb706d2e5"
     private lateinit var region: Region
     private lateinit var beaconManager: BeaconManager
-    private var regionBootstrap: RegionBootstrap? = null
 
     private var lastSeenBeacon: Beacon? = null
     private var advertisingId: String? = null
@@ -57,9 +52,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         super.onCreate()
         beaconManager = BeaconManager.getInstanceForApplication(this)
         beaconManager.beaconParsers.add(BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24"))
-        createNotificationChannel()
 
-        // Habilitar escaneamento em serviço de primeiro plano para manter o app ativo em segundo plano
         val foregroundNotification: Notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(getString(R.string.foreground_service_title))
@@ -68,16 +61,18 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
             .build()
         beaconManager.enableForegroundServiceScanning(foregroundNotification, FOREGROUND_SERVICE_NOTIFICATION_ID)
         beaconManager.setEnableScheduledScanJobs(false)
-        beaconManager.setBackgroundScanPeriod(10000L)
-        beaconManager.setBackgroundBetweenScanPeriod(15000L) //Timer de 15 segundos
-        beaconManager.setForegroundScanPeriod(10000L)
-        beaconManager.setForegroundBetweenScanPeriod(15000L) //Timer de 15 segundos
-        region = Region("BeaconPocRegion", Identifier.parse(beaconUUID), null, null) // Passar o UUID como String diretamente
-        regionBootstrap = RegionBootstrap(this, region)
+        beaconManager.setBackgroundScanPeriod(1100L)
+        beaconManager.setBackgroundBetweenScanPeriod(20000L)
+        beaconManager.setForegroundBetweenScanPeriod(20000L)
+        region = Region(
+            "BeaconPocRegion",
+            Identifier.parse(beaconUUID),
+            null,
+            null
+        )
+        beaconManager.addMonitorNotifier(this)
+        beaconManager.startMonitoring(region)
 
-        // BeaconManager.setDebug(true) // Para depuração
-
-        // Iniciar a obtenção do Advertising ID
         fetchAdvertisingId()
     }
 
@@ -99,23 +94,8 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         }
     }
 
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val name = getString(R.string.notification_channel_name)
-            val descriptionText = getString(R.string.notification_channel_description)
-            val importance = NotificationManager.IMPORTANCE_HIGH
-            val channel = NotificationChannel(NOTIFICATION_CHANNEL_ID, name, importance).apply {
-                description = descriptionText
-            }
-            val notificationManager: NotificationManager =
-                getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            notificationManager.createNotificationChannel(channel)
-        }
-    }
-
     override fun didEnterRegion(region: Region) {
         Log.i(TAG, "didEnterRegion: Entrou na região ${region.uniqueId}")
-        // Iniciar ranging para obter Major/Minor e então sincronizar
         beaconManager.startRangingBeacons(region)
         beaconManager.addRangeNotifier(rangeNotifierForSync)
     }
@@ -134,7 +114,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
     }
 
     override fun didDetermineStateForRegion(state: Int, region: Region) {
-        val stateString = if (state == BootstrapNotifier.INSIDE) "DENTRO" else "FORA"
+        val stateString = if (state == MonitorNotifier.INSIDE) "DENTRO" else "FORA"
         Log.i(TAG, "didDetermineStateForRegion: Estado ${region.uniqueId} para: $stateString")
     }
 
@@ -147,9 +127,12 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
                 lastSeenBeacon = beacon
                 Log.i(
                     TAG,
-                    "RangeNotifierForSync: Beacon da nossa região: UUID: ${beacon.id1}, Major: ${beacon.id2}, Minor: ${beacon.id3}, Distância: ${beacon.distance} metros"
+                    "RangeNotifierForSync: " +
+                            "Beacon da nossa região: UUID: ${beacon.id1}, " +
+                            "Major: ${beacon.id2}, " +
+                            "Minor: ${beacon.id3}, " +
+                            "Distância: ${beacon.distance} metros"
                 )
-
                 syncWithApi(
                     beacon,
                     "enter"
@@ -165,7 +148,6 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
     ) {
         if (advertisingId == null && !advertisingIdFetchAttempted) {
             Log.i(TAG, "Advertising ID não disponível, tentando buscar antes de sincronizar.")
-            //Tenta recuperar Advertising ID
             fetchAdvertisingId()
         }
 
