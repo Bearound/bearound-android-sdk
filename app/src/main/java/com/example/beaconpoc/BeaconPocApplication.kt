@@ -124,10 +124,7 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         Log.i(TAG, "didExitRegion: Saiu da região ${region.uniqueId}")
         lastSeenBeacon?.let {
             syncWithApi(
-                it.id1.toString(),
-                it.id2.toString(),
-                it.id3.toString(),
-                it.rssi,
+                it,
                 "exit"
             )
         }
@@ -154,22 +151,17 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
                 )
 
                 syncWithApi(
-                    beacon.id1.toString(),
-                    beacon.id2.toString(),
-                    beacon.id3.toString(),
-                    beacon.rssi,
+                    beacon,
                     "enter"
                 )
             }
         }
     }
 
+
     private fun syncWithApi(
-        uuid: String,
-        major: String,
-        minor: String,
-        rssi: Int,
-        eventType: String,
+        beacon: Beacon,
+        eventType: String
     ) {
         if (advertisingId == null && !advertisingIdFetchAttempted) {
             Log.i(TAG, "Advertising ID não disponível, tentando buscar antes de sincronizar.")
@@ -183,7 +175,22 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
         CoroutineScope(Dispatchers.IO).launch {
             Log.i(
                 TAG,
-                "Iniciando sincronização com API. UUID: $uuid, Major: $major, Minor: $minor, RSSI: $rssi, AAID: $currentAdvertisingId"
+                "Iniciando sincronização com API." +
+                        "UUID: ${beacon.id1}, " +
+                        "Major: ${beacon.id2}," +
+                        "Minor: ${beacon.id3}, " +
+                        "RSSI: ${beacon.rssi}, " +
+                        "idfa: ${currentAdvertisingId}, " +
+                        "eventType: ${eventType}, " +
+                        "appState: ${currentAppState}, " +
+                        "bluetoothName: ${beacon.bluetoothName}, " +
+                        "bluetoothAddress: ${beacon.bluetoothAddress}, " +
+                        "distance: ${beacon.distance}, " +
+                        "packetCountCycle: ${beacon.packetCount}, " +
+                        "firstCycleDetectionTimestamp: ${beacon.firstCycleDetectionTimestamp}, " +
+                        "lastCycleDetectionTimestamp: ${beacon.lastCycleDetectionTimestamp}, " +
+                        "txPower: ${beacon.txPower}, " +
+                        "AAID: $currentAdvertisingId"
             )
             try {
                 val url = URL(API_ENDPOINT_URL)
@@ -194,16 +201,26 @@ class BeaconPocApplication : Application(), BootstrapNotifier {
                 connection.connectTimeout = 15000 // 15 segundos timeout de conexão
                 connection.readTimeout = 15000    // 15 segundos timeout de leitura
 
+                beacon.firstCycleDetectionTimestamp
+                beacon.lastCycleDetectionTimestamp
+                beacon.txPower
+
                 val jsonObject = JSONObject()
-                jsonObject.put("uuid", uuid)
-                jsonObject.put("major", major)
-                jsonObject.put("minor", minor)
-                jsonObject.put("rssi", rssi)
+                jsonObject.put("uuid", beacon.id1)
+                jsonObject.put("major", beacon.id2)
+                jsonObject.put("minor", beacon.id3)
+                jsonObject.put("rssi", beacon.rssi)
                 jsonObject.put("deviceType", "Android")
                 jsonObject.put("idfa", currentAdvertisingId ?: "N/A")
                 jsonObject.put("eventType", eventType)
                 jsonObject.put("appState", currentAppState)
-                //COMO PEGAR O NOME DO Beacon
+                jsonObject.put("bluetoothName", beacon.bluetoothName)
+                jsonObject.put("bluetoothAddress", beacon.bluetoothAddress)
+                jsonObject.put("distance", beacon.distance)
+                jsonObject.put("packetCountCycle", beacon.packetCount)
+                jsonObject.put("firstCycleDetectionTimestamp", beacon.firstCycleDetectionTimestamp)
+                jsonObject.put("lastCycleDetectionTimestamp", beacon.lastCycleDetectionTimestamp)
+                jsonObject.put("txPower", beacon.txPower)
 
                 val outputStreamWriter = OutputStreamWriter(connection.outputStream)
                 outputStreamWriter.write(jsonObject.toString())
