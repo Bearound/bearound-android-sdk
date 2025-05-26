@@ -35,8 +35,7 @@ class BeaconPocApplication : Application(), MonitorNotifier {
         const val TAG = "BeaconPocApplication"
         const val NOTIFICATION_CHANNEL_ID = "beacon_notifications"
         const val FOREGROUND_SERVICE_NOTIFICATION_ID = 3
-        // Substituir pelo endpoint real da sua API
-        const val API_ENDPOINT_URL = "https://api.bearound.io/ingest" // Exemplo de URL. Mude para seu endpoint!
+        const val API_ENDPOINT_URL = "https://api.bearound.io/ingest"
     }
 
     private fun getAppState(): String {
@@ -53,13 +52,17 @@ class BeaconPocApplication : Application(), MonitorNotifier {
         beaconManager = BeaconManager.getInstanceForApplication(this)
         beaconManager.beaconParsers.add(BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24"))
 
-        val foregroundNotification: Notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle(getString(R.string.foreground_service_title))
-            .setContentText(getString(R.string.foreground_service_message))
-            .setOngoing(true)
-            .build()
-        beaconManager.enableForegroundServiceScanning(foregroundNotification, FOREGROUND_SERVICE_NOTIFICATION_ID)
+        val foregroundNotification: Notification =
+            NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentTitle(getString(R.string.foreground_service_title))
+                .setContentText(getString(R.string.foreground_service_message))
+                .setOngoing(true)
+                .build()
+        beaconManager.enableForegroundServiceScanning(
+            foregroundNotification,
+            FOREGROUND_SERVICE_NOTIFICATION_ID
+        )
         beaconManager.setEnableScheduledScanJobs(false)
         beaconManager.setBackgroundScanPeriod(1100L)
         beaconManager.setBackgroundBetweenScanPeriod(20000L)
@@ -81,14 +84,14 @@ class BeaconPocApplication : Application(), MonitorNotifier {
             Log.i(TAG, "Advertising ID já foi obtido: $advertisingId")
             return
         }
-        advertisingIdFetchAttempted = true // Marcar que a tentativa foi feita
+        advertisingIdFetchAttempted = true
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val adInfo = AdvertisingIdClient.getAdvertisingIdInfo(applicationContext)
                 advertisingId = adInfo.id
                 Log.i(TAG, "Advertising ID obtido com sucesso: $advertisingId")
             } catch (e: Exception) {
-                advertisingId = null // Garantir que seja nulo em caso de falha
+                advertisingId = null
                 Log.e(TAG, "Falha ao obter Advertising ID: ${e.message}", e)
             }
         }
@@ -119,11 +122,15 @@ class BeaconPocApplication : Application(), MonitorNotifier {
     }
 
     private val rangeNotifierForSync = RangeNotifier { beacons, rangedRegion ->
-        Log.i(TAG, "didRangeBeaconsInRegion: ${beacons.size} beacons encontrados na região: ${rangedRegion.uniqueId}")
+        Log.i(
+            TAG,
+            "didRangeBeaconsInRegion: ${beacons.size}," +
+                    " beacons encontrados na região: ${rangedRegion.uniqueId}"
+        )
         if (beacons.isNotEmpty()) {
             val beacon = beacons.first()
 
-            if (beacon.id1.toString() == beaconUUID) { // Verificar se o UUID corresponde ao esperado
+            if (beacon.id1.toString() == beaconUUID) {
                 lastSeenBeacon = beacon
                 Log.i(
                     TAG,
@@ -180,8 +187,8 @@ class BeaconPocApplication : Application(), MonitorNotifier {
                 connection.requestMethod = "POST"
                 connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
                 connection.doOutput = true
-                connection.connectTimeout = 15000 // 15 segundos timeout de conexão
-                connection.readTimeout = 15000    // 15 segundos timeout de leitura
+                connection.connectTimeout = 15000
+                connection.readTimeout = 15000
 
                 beacon.firstCycleDetectionTimestamp
                 beacon.lastCycleDetectionTimestamp
@@ -211,9 +218,15 @@ class BeaconPocApplication : Application(), MonitorNotifier {
 
                 val responseCode = connection.responseCode
                 if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
-                    Log.i(TAG, "Sincronização com API bem-sucedida. Resposta: ${connection.responseMessage}")
+                    Log.i(
+                        TAG,
+                        "Sincronização com API bem-sucedida. Resposta: ${connection.responseMessage}"
+                    )
                 } else {
-                    Log.e(TAG, "Falha na sincronização com API. Código: $responseCode, Mensagem: ${connection.responseMessage}")
+                    Log.e(
+                        TAG,
+                        "Falha na sincronização com API. Código: $responseCode, Mensagem: ${connection.responseMessage}"
+                    )
                 }
                 connection.disconnect()
             } catch (e: Exception) {
