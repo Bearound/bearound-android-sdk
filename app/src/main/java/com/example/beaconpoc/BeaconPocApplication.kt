@@ -2,6 +2,9 @@ package com.example.beaconpoc
 
 import android.app.Application
 import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.google.android.gms.ads.identifier.AdvertisingIdClient
@@ -47,10 +50,12 @@ class BeaconPocApplication : Application(), MonitorNotifier {
         }
     }
 
+
     override fun onCreate() {
         super.onCreate()
         beaconManager = BeaconManager.getInstanceForApplication(this)
         beaconManager.beaconParsers.add(BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24"))
+        createNotificationChannel()
 
         val foregroundNotification: Notification =
             NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
@@ -64,6 +69,7 @@ class BeaconPocApplication : Application(), MonitorNotifier {
             FOREGROUND_SERVICE_NOTIFICATION_ID
         )
         beaconManager.setEnableScheduledScanJobs(false)
+        beaconManager.setRegionStatePersistenceEnabled(false)
         beaconManager.setBackgroundScanPeriod(1100L)
         beaconManager.setBackgroundBetweenScanPeriod(20000L)
         beaconManager.setForegroundBetweenScanPeriod(20000L)
@@ -77,6 +83,20 @@ class BeaconPocApplication : Application(), MonitorNotifier {
         beaconManager.startMonitoring(region)
 
         fetchAdvertisingId()
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val name = getString(R.string.notification_channel_name)
+            val descriptionText = getString(R.string.notification_channel_description)
+            val importance = NotificationManager.IMPORTANCE_HIGH
+            val channel = NotificationChannel(NOTIFICATION_CHANNEL_ID, name, importance).apply {
+                description = descriptionText
+            }
+            val notificationManager: NotificationManager =
+                getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
     }
 
     private fun fetchAdvertisingId() {
@@ -115,6 +135,8 @@ class BeaconPocApplication : Application(), MonitorNotifier {
         beaconManager.removeRangeNotifier(rangeNotifierForSync)
         lastSeenBeacon = null
     }
+
+
 
     override fun didDetermineStateForRegion(state: Int, region: Region) {
         val stateString = if (state == MonitorNotifier.INSIDE) "DENTRO" else "FORA"
@@ -217,15 +239,19 @@ class BeaconPocApplication : Application(), MonitorNotifier {
                 outputStreamWriter.close()
 
                 val responseCode = connection.responseCode
-                if (responseCode == HttpURLConnection.HTTP_OK || responseCode == HttpURLConnection.HTTP_CREATED) {
+                if (responseCode == HttpURLConnection.HTTP_OK ||
+                    responseCode == HttpURLConnection.HTTP_CREATED
+                ) {
                     Log.i(
                         TAG,
-                        "Sincronização com API bem-sucedida. Resposta: ${connection.responseMessage}"
+                        "Sincronização com API bem-sucedida. " +
+                                "Resposta: ${connection.responseMessage}"
                     )
                 } else {
                     Log.e(
                         TAG,
-                        "Falha na sincronização com API. Código: $responseCode, Mensagem: ${connection.responseMessage}"
+                        "Falha na sincronização com API. Código: $responseCode, " +
+                                "Mensagem: ${connection.responseMessage}"
                     )
                 }
                 connection.disconnect()
