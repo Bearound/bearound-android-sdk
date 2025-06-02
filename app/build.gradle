@@ -46,5 +46,5 @@ dependencies {
     // AltBeacon Library
     implementation("org.altbeacon:android-beacon-library:2.20.2")
     // For Play Services Advertising ID
-    implementation("com.google.android.gms:play-services-ads-identifier:18.0.1")
+    implementation("com.google.android.gms:play-services-ads-identifier:18.2.0")
 }
