@@ -20,7 +20,7 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 
-class Bearound(private val context: Context) : MonitorNotifier {
+class BeAround(private val context: Context) : MonitorNotifier {
 
     private val beaconUUID = "e25b8d3c-947a-452f-a13f-589cb706d2e5"
     private lateinit var region: Region
@@ -28,49 +28,49 @@ class Bearound(private val context: Context) : MonitorNotifier {
     private var lastSeenBeacon: Beacon? = null
     private var advertisingId: String? = null
     private var advertisingIdFetchAttempted = false
+    private var debug: Boolean = false
 
     companion object {
-        private const val TAG = "BearoundSdk"
+        private const val TAG = "BeAroundSdk"
         const val API_ENDPOINT_URL = "https://api.bearound.io/ingest"
         const val NOTIFICATION_CHANNEL_ID = "beacon_notifications"
         const val FOREGROUND_SERVICE_NOTIFICATION_ID = 3
     }
 
-    fun initialize(iconNotification: Int) {
+    fun initialize(iconNotification: Int, debug: Boolean = false) {
+        this.debug = debug
         createNotificationChannel(context)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            beaconManager.beaconParsers.add(
-                BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24")
-            )
+        beaconManager.beaconParsers.add(
+            BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24")
+        )
 
-            val foregroundNotification: Notification =
-                NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
-                    .setSmallIcon(iconNotification)
-                    .setContentTitle("Monitoramento de Beacons")
-                    .setContentText("Execução contínua em segundo plano")
-                    .setOngoing(true)
-                    .build()
-            beaconManager.enableForegroundServiceScanning(
-                foregroundNotification,
-                FOREGROUND_SERVICE_NOTIFICATION_ID
-            )
+        val foregroundNotification: Notification =
+            NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
+                .setSmallIcon(iconNotification)
+                .setContentTitle("Monitoramento de Beacons")
+                .setContentText("Execução contínua em segundo plano")
+                .setOngoing(true)
+                .build()
+        beaconManager.enableForegroundServiceScanning(
+            foregroundNotification,
+            FOREGROUND_SERVICE_NOTIFICATION_ID
+        )
 
-            beaconManager.setEnableScheduledScanJobs(false)
-            beaconManager.setRegionStatePersistenceEnabled(false)
-            beaconManager.setBackgroundScanPeriod(1100L)
-            beaconManager.setBackgroundBetweenScanPeriod(20000L)
-            beaconManager.setForegroundBetweenScanPeriod(20000L)
+        beaconManager.setEnableScheduledScanJobs(false)
+        beaconManager.setRegionStatePersistenceEnabled(false)
+        beaconManager.setBackgroundScanPeriod(1100L)
+        beaconManager.setBackgroundBetweenScanPeriod(20000L)
+        beaconManager.setForegroundBetweenScanPeriod(20000L)
 
-            region = Region(
-                "BearoundSdkRegion", Identifier.parse(beaconUUID), null, null
-            )
+        region = Region(
+            "BeAroundSdkRegion", Identifier.parse(beaconUUID), null, null
+        )
 
-            beaconManager.addMonitorNotifier(this)
-            beaconManager.startMonitoring(region)
+        beaconManager.addMonitorNotifier(this)
+        beaconManager.startMonitoring(region)
 
-            fetchAdvertisingId()
-        }
+        fetchAdvertisingId()
     }
 
     fun stop() {
@@ -81,7 +81,7 @@ class Bearound(private val context: Context) : MonitorNotifier {
 
     private fun fetchAdvertisingId() {
         if (advertisingIdFetchAttempted && advertisingId != null) {
-            Log.i(TAG, "Advertising ID já foi obtido: $advertisingId")
+            log("Advertising ID já foi obtido: $advertisingId")
             return
         }
         advertisingIdFetchAttempted = true
@@ -89,7 +89,7 @@ class Bearound(private val context: Context) : MonitorNotifier {
             try {
                 val adInfo = AdvertisingIdClient.getAdvertisingIdInfo(context)
                 advertisingId = adInfo.id
-                Log.i(TAG, "Advertising ID obtido com sucesso: $advertisingId")
+                log("Advertising ID obtido com sucesso: $advertisingId")
             } catch (e: Exception) {
                 advertisingId = null
                 Log.e(TAG, "Erro ao obter Advertising ID: ${e.message}")
@@ -98,13 +98,13 @@ class Bearound(private val context: Context) : MonitorNotifier {
     }
 
     override fun didEnterRegion(region: Region) {
-        Log.i(TAG, "didEnterRegion: Entrou na região ${region.uniqueId}")
+        log("didEnterRegion: Entrou na região ${region.uniqueId}")
         beaconManager.startRangingBeacons(region)
         beaconManager.addRangeNotifier(rangeNotifierForSync)
     }
 
     override fun didExitRegion(region: Region) {
-        Log.i(TAG, "didExitRegion: Saiu da região ${region.uniqueId}")
+        log("didExitRegion: Saiu da região ${region.uniqueId}")
         lastSeenBeacon?.let {
             syncWithApi(it, "exit")
         }
@@ -115,27 +115,21 @@ class Bearound(private val context: Context) : MonitorNotifier {
 
     override fun didDetermineStateForRegion(state: Int, region: Region) {
         val stateString = if (state == MonitorNotifier.INSIDE) "DENTRO" else "FORA"
-        Log.i(TAG, "didDetermineStateForRegion: Estado ${region.uniqueId} para: $stateString")
+        log("didDetermineStateForRegion: Estado ${region.uniqueId} para: $stateString")
     }
 
     private val rangeNotifierForSync = RangeNotifier { beacons, rangedRegion ->
-        Log.i(
-            TAG,
-            "didRangeBeaconsInRegion: ${beacons.size}," +
-                    " beacons encontrados na região: ${rangedRegion.uniqueId}"
-        )
+        log("didRangeBeaconsInRegion: ${beacons.size}," +
+                " beacons encontrados na região: ${rangedRegion.uniqueId}")
         if (beacons.isNotEmpty()) {
             //Todo tratar quando tiver multiplos beacons
             val beacon = beacons.first()
             if (beacon.id1.toString() == beaconUUID) {
-                Log.i(
-                    TAG,
-                    "RangeNotifierForSync: " +
-                            "Beacon da nossa região: UUID: ${beacon.id1}, " +
-                            "Major: ${beacon.id2}, " +
-                            "Minor: ${beacon.id3}, " +
-                            "Distância: ${beacon.distance} metros"
-                )
+                log("RangeNotifierForSync: " +
+                        "Beacon da nossa região: UUID: ${beacon.id1}, " +
+                        "Major: ${beacon.id2}, " +
+                        "Minor: ${beacon.id3}, " +
+                        "Distância: ${beacon.distance} metros")
                 lastSeenBeacon = beacon
                 syncWithApi(beacon, "enter")
             }
@@ -179,11 +173,8 @@ class Bearound(private val context: Context) : MonitorNotifier {
 
                 val responseCode = connection.responseCode
                 if (responseCode in 200..299) {
-                    Log.i(
-                        TAG,
-                        "Sincronização com API bem-sucedida. " +
-                                "Resposta: ${connection.responseMessage}"
-                    )
+                    log("Sincronização com API bem-sucedida. " +
+                            "Resposta: ${connection.responseMessage}")
                 } else {
                     Log.e(
                         TAG,
@@ -219,5 +210,9 @@ class Bearound(private val context: Context) : MonitorNotifier {
                 context.getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.createNotificationChannel(channel)
         }
+    }
+
+    private fun log(message: String) {
+        if (debug) Log.d(TAG, message)
     }
 }
