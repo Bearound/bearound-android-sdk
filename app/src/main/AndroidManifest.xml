@@ -32,13 +32,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <!-- Serviço para monitoramento de beacons em background -->
-        <service
-            android:name="org.altbeacon.beacon.service.BeaconService"
-            android:exported="false"
-            android:foregroundServiceType="location" />
-
     </application>
 
 </manifest>
