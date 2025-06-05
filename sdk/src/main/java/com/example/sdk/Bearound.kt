@@ -39,36 +39,38 @@ class Bearound(private val context: Context) : MonitorNotifier {
     fun initialize(iconNotification: Int) {
         createNotificationChannel(context)
 
-        beaconManager.beaconParsers.add(
-            BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24")
-        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            beaconManager.beaconParsers.add(
+                BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24")
+            )
 
-        val foregroundNotification: Notification =
-            NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
-                .setSmallIcon(iconNotification)
-                .setContentTitle("Monitoramento de Beacons")
-                .setContentText("Execução contínua em segundo plano")
-                .setOngoing(true)
-                .build()
-        beaconManager.enableForegroundServiceScanning(
-            foregroundNotification,
-            FOREGROUND_SERVICE_NOTIFICATION_ID
-        )
+            val foregroundNotification: Notification =
+                NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
+                    .setSmallIcon(iconNotification)
+                    .setContentTitle("Monitoramento de Beacons")
+                    .setContentText("Execução contínua em segundo plano")
+                    .setOngoing(true)
+                    .build()
+            beaconManager.enableForegroundServiceScanning(
+                foregroundNotification,
+                FOREGROUND_SERVICE_NOTIFICATION_ID
+            )
 
-        beaconManager.setEnableScheduledScanJobs(false)
-        beaconManager.setRegionStatePersistenceEnabled(false)
-        beaconManager.setBackgroundScanPeriod(1100L)
-        beaconManager.setBackgroundBetweenScanPeriod(20000L)
-        beaconManager.setForegroundBetweenScanPeriod(20000L)
+            beaconManager.setEnableScheduledScanJobs(false)
+            beaconManager.setRegionStatePersistenceEnabled(false)
+            beaconManager.setBackgroundScanPeriod(1100L)
+            beaconManager.setBackgroundBetweenScanPeriod(20000L)
+            beaconManager.setForegroundBetweenScanPeriod(20000L)
 
-        region = Region(
-            "BearoundSdkRegion", Identifier.parse(beaconUUID), null, null
-        )
+            region = Region(
+                "BearoundSdkRegion", Identifier.parse(beaconUUID), null, null
+            )
 
-        beaconManager.addMonitorNotifier(this)
-        beaconManager.startMonitoring(region)
+            beaconManager.addMonitorNotifier(this)
+            beaconManager.startMonitoring(region)
 
-        fetchAdvertisingId()
+            fetchAdvertisingId()
+        }
     }
 
     fun stop() {
@@ -123,6 +125,7 @@ class Bearound(private val context: Context) : MonitorNotifier {
                     " beacons encontrados na região: ${rangedRegion.uniqueId}"
         )
         if (beacons.isNotEmpty()) {
+            //Todo tratar quando tiver multiplos beacons
             val beacon = beacons.first()
             if (beacon.id1.toString() == beaconUUID) {
                 Log.i(
