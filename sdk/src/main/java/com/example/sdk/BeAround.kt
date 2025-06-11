@@ -9,8 +9,8 @@ import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.Lifecycle
-import com.google.android.gms.ads.identifier.AdvertisingIdClient
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.google.android.gms.ads.identifier.AdvertisingIdClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -149,6 +149,22 @@ class BeAround(private val context: Context) : MonitorNotifier {
                 )
                 lastSeenBeacon = beacon
                 syncWithApi(beacon, EVENT_ENTER)
+
+
+                // Do we have telemetry data?
+                if (beacon.extraDataFields.size > 0) {
+                    val telemetryVersion = beacon.extraDataFields[0]
+                    val batteryMilliVolts = beacon.extraDataFields[1]
+                    val pduCount = beacon.extraDataFields[3]
+                    val uptime = beacon.extraDataFields[4]
+
+                    Log.d(
+                        TAG, "The above beacon is sending telemetry version " + telemetryVersion +
+                                ", has been up for : " + uptime + " seconds" +
+                                ", has a battery level of " + batteryMilliVolts + " mV" +
+                                ", and has transmitted " + pduCount + " advertisements."
+                    )
+                }
             }
         }
     }
