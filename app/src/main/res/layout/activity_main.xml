@@ -25,7 +25,7 @@
         android:textStyle="bold"
         app:layout_constraintTop_toBottomOf="@+id/requestPermissionButton"
         app:layout_constraintStart_toStartOf="parent"
-        android:layout_marginTop="16dp"/>
+        android:layout_marginTop="18dp"/>
 
     <TextView
         android:id="@+id/statusTextView"
@@ -35,106 +35,6 @@
         app:layout_constraintTop_toTopOf="@+id/statusLabelTextView"
         app:layout_constraintStart_toEndOf="@+id/statusLabelTextView"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginStart="8dp"/>
-
-    <TextView
-        android:id="@+id/uuidLabelTextView"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/uuid_text"
-        android:textStyle="bold"
-        app:layout_constraintTop_toBottomOf="@+id/statusLabelTextView"
-        app:layout_constraintStart_toStartOf="parent"
-        android:layout_marginTop="8dp"/>
-
-    <TextView
-        android:id="@+id/uuidTextView"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:text="@string/not_available_placeholder"
-        app:layout_constraintTop_toTopOf="@+id/uuidLabelTextView"
-        app:layout_constraintStart_toEndOf="@+id/uuidLabelTextView"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginStart="8dp"/>
-
-    <TextView
-        android:id="@+id/majorLabelTextView"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/major_text"
-        android:textStyle="bold"
-        app:layout_constraintTop_toBottomOf="@+id/uuidLabelTextView"
-        app:layout_constraintStart_toStartOf="parent"
-        android:layout_marginTop="8dp"/>
-
-    <TextView
-        android:id="@+id/majorTextView"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:text="@string/not_available_placeholder"
-        app:layout_constraintTop_toTopOf="@+id/majorLabelTextView"
-        app:layout_constraintStart_toEndOf="@+id/majorLabelTextView"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginStart="8dp"/>
-
-    <TextView
-        android:id="@+id/minorLabelTextView"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/minor_text"
-        android:textStyle="bold"
-        app:layout_constraintTop_toBottomOf="@+id/majorLabelTextView"
-        app:layout_constraintStart_toStartOf="parent"
-        android:layout_marginTop="8dp"/>
-
-    <TextView
-        android:id="@+id/minorTextView"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:text="@string/not_available_placeholder"
-        app:layout_constraintTop_toTopOf="@+id/minorLabelTextView"
-        app:layout_constraintStart_toEndOf="@+id/minorLabelTextView"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginStart="8dp"/>
-
-    <TextView
-        android:id="@+id/advertisingIdLabelTextView"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/advertising_id_text"
-        android:textStyle="bold"
-        app:layout_constraintTop_toBottomOf="@+id/minorLabelTextView"
-        app:layout_constraintStart_toStartOf="parent"
-        android:layout_marginTop="8dp"/>
-
-    <TextView
-        android:id="@+id/advertisingIdTextView"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:text="@string/not_available_placeholder"
-        app:layout_constraintTop_toTopOf="@+id/advertisingIdLabelTextView"
-        app:layout_constraintStart_toEndOf="@+id/advertisingIdLabelTextView"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginStart="8dp"/>
-
-    <TextView
-        android:id="@+id/apiSyncStatusLabelTextView"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/api_sync_status_text"
-        android:textStyle="bold"
-        app:layout_constraintTop_toBottomOf="@+id/advertisingIdLabelTextView"
-        app:layout_constraintStart_toStartOf="parent"
-        android:layout_marginTop="8dp"/>
-
-    <TextView
-        android:id="@+id/apiSyncStatusTextView"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:text="@string/not_available_placeholder"
-        app:layout_constraintTop_toTopOf="@+id/apiSyncStatusLabelTextView"
-        app:layout_constraintStart_toEndOf="@+id/apiSyncStatusLabelTextView"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginStart="8dp"/>
+        android:layout_marginStart="12dp"/>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
