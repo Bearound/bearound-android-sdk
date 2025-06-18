@@ -1,20 +1,21 @@
-# 🐻 Bearound SDKs Documentation
+# 🐻 BeAround-android-sdkDocumentation
 
-Official SDKs for integrating Bearound's secure BLE beacon detection and indoor location technology across Android, iOS, React Native, and Flutter.
+**BeAround** is an Android SDK for monitoring Bluetooth LE beacons and sending `enter` and `exit` events to a remote API. It's ideal for proximity detection and indoor tracking applications.
 
-## 📱 bearound-android-sdk
+## 🧩 Features
 
-Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by Bearound.
+- Continuous region monitoring for beacons
+- Sends `enter` and `exit` events to a remote API
+- Captures distance, RSSI, UUID, major/minor, Advertising ID
+- Runs as a foreground service in the background
+- Supports notifications and telemetry data (if available)
 
-### 📦 Installation
+---
 
-Add the following to your build.gradle dependencies block:
+## ⚙️ Requirements
 
-```gradle
-implementation "com.bearound:sdk:"
-```
-
-Sync your Gradle project after adding the dependency.
+- **Minimum SDK**: 21 (Android 5.0 Lollipop)
+- **Bluetooth LE** must be enabled
 
 ### ⚙️ Required Permissions
 
@@ -24,14 +25,13 @@ Add the following to AndroidManifest.xml:
 <uses-permission android:name="android.permission.BLUETOOTH" />
 <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
 <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-```
-
-For Android 12+ (API 31+), also include:
-
-```xml
+<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+<uses-permission android:name="android.permission.INTERNET" />
 <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 ```
 
 ### 🚀 Features
@@ -45,16 +45,27 @@ For Android 12+ (API 31+), also include:
 
 ### 🛠️ Usage
 
-```kotlin
-// Start scanning:
-BeaconScanner.startScan { beacon ->
-    Log.d("Beacon", "Detected: ${beacon.id} at ${beacon.distance} meters")
-}
+### Initialization
+Initialize the SDK inside your Application class after checking the required permissions:
 
-// Register enter/exit:
-BeaconScanner.onEnterZone = { zoneId -> Log.i("Geofence", "Entered zone $zoneId") }
-BeaconScanner.onExitZone = { zoneId -> Log.i("Geofence", "Exited zone $zoneId") }
+```kotlin
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        val beAround = BeAround(applicationContext)
+        // Check permissions before initializing
+        beAround.initialize(
+            iconNotification = R.drawable.ic_notification_icon, //icon show notification service
+            debug = true // optional, enable debug logging
+        )
+    }
+}
 ```
+
+- The SDK automatically monitors beacons with the UUID
+- When entering or exiting beacon regions, it sends a JSON payload to the remote API.
+- Events include beacon identifiers, RSSI, distance, app state (foreground/background/inactive), Bluetooth details, and Google Advertising ID.
+
 
 ### 🔐 Security
 
