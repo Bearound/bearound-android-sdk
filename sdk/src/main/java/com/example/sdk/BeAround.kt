@@ -15,6 +15,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.altbeacon.beacon.*
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
@@ -29,7 +30,7 @@ class BeAround(private val context: Context) : MonitorNotifier {
 
     private val beaconUUID = "e25b8d3c-947a-452f-a13f-589cb706d2e5"
     private val beaconManager = BeaconManager.getInstanceForApplication(context.applicationContext)
-    private var lastSeenBeacon: Beacon? = null
+    private var lastSeenBeacon: Collection<Beacon>? = null
     private var advertisingId: String? = null
     private var advertisingIdFetchAttempted = false
     private var debug: Boolean = false
@@ -134,65 +135,73 @@ class BeAround(private val context: Context) : MonitorNotifier {
     }
 
     /**
-     * Handles beacons detected during ranging. Only processes the first one with matching UUID.
+     * Handles beacons detected during ranging.
+     *
+     * Typically used to initiate a sync when a beacon "enter" event is detected.
      */
     private val rangeNotifierForSync = RangeNotifier { beacons, rangedRegion ->
         log("Beacons ranged in region ${rangedRegion.uniqueId}: ${beacons.size} found")
-
-        for (beacon: Beacon in beacons) {
-            if (beacon.id1.toString() == beaconUUID) {
-                log(
-                    "I see a beacon transmitting namespace id: ${beacon.id1}," +
-                            " major: ${beacon.id2}," +
-                            " minor: ${beacon.id3}," +
-                            " approximately ${beacon.distance} meters away."
-                )
-                lastSeenBeacon = beacon
-                syncWithApi(beacon, EVENT_ENTER)
-
-
-                // Do we have telemetry data?
-                if (beacon.extraDataFields.size > 0) {
-                    val telemetryVersion = beacon.extraDataFields[0]
-                    val batteryMilliVolts = beacon.extraDataFields[1]
-                    val pduCount = beacon.extraDataFields[3]
-                    val uptime = beacon.extraDataFields[4]
-
-                    Log.d(
-                        TAG, "The above beacon is sending telemetry version " + telemetryVersion +
-                                ", has been up for : " + uptime + " seconds" +
-                                ", has a battery level of " + batteryMilliVolts + " mV" +
-                                ", and has transmitted " + pduCount + " advertisements."
-                    )
-                }
-            }
-        }
+        syncWithApi(beacons, EVENT_ENTER)
     }
 
     /**
-     * Sends beacon event data to the remote API.
+     * Sends multiple beacon events to the remote API.
      *
-     * @param beacon The beacon that triggered the event.
-     * @param eventType Either "enter" or "exit".
+     * Filters the provided collection of beacons to include only those matching the expected UUID,
+     * constructs a JSON payload with relevant beacon data, and sends it to the remote API via an HTTP POST request.
+     *
+     * The payload includes beacon identifiers, signal data (RSSI), estimated distance, Bluetooth information,
+     * the device's advertising ID, and the current app state.
+     *
+     * @param beacons A collection of beacons detected during the scan.
+     * @param eventType The type of event associated with the detection (e.g., "enter", "exit").
      */
-    private fun syncWithApi(beacon: Beacon, eventType: String) {
+    private fun syncWithApi(beacons: Collection<Beacon>, eventType: String) {
         val currentAdvertisingId = advertisingId
         val currentAppState = getAppState()
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
+
+                val matchingBeacons = beacons.filter {
+                    it.id1.toString() == beaconUUID
+                }
+
+                if (matchingBeacons.isEmpty()) {
+                    log("No beacon with matching UUID found.")
+                    return@launch
+                }
+
+                lastSeenBeacon = matchingBeacons
+                val beaconsArray = JSONArray()
+
+                for (beacon in matchingBeacons) {
+                    if(eventType == EVENT_ENTER) {
+                        log(
+                            "I see a beacon transmitting namespace id: ${beacon.id1}," +
+                                    " major: ${beacon.id2}," +
+                                    " minor: ${beacon.id3}," +
+                                    " approximately ${beacon.distance} meters away."
+                        )
+                    }
+                    val beaconJson = JSONObject().apply {
+                        put("uuid", beacon.id1)
+                        put("major", beacon.id2)
+                        put("minor", beacon.id3)
+                        put("rssi", beacon.rssi)
+                        put("bluetoothName", beacon.bluetoothName)
+                        put("bluetoothAddress", beacon.bluetoothAddress)
+                        put("distanceMeters", beacon.distance)
+                    }
+                    beaconsArray.put(beaconJson)
+                }
+
                 val jsonObject = JSONObject().apply {
-                    put("uuid", beacon.id1)
-                    put("major", beacon.id2)
-                    put("minor", beacon.id3)
-                    put("rssi", beacon.rssi)
                     put("deviceType", "Android")
                     put("idfa", currentAdvertisingId ?: "N/A")
                     put("eventType", eventType)
                     put("appState", currentAppState)
-                    put("bluetoothName", beacon.bluetoothName)
-                    put("bluetoothAddress", beacon.bluetoothAddress)
-                    put("distanceMeters", beacon.distance)
+                    put("beacons", beaconsArray)
                 }
 
                 val url = URL(API_ENDPOINT_URL)

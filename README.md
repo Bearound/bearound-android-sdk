@@ -77,12 +77,11 @@ You need to manually request permissions from the user, especially:
 
 📌 Without these permissions, the SDK will not function properly and will not be able to detect beacons in the background.
 
-### After initializing it, it starts executing the service, you can follow this by activating the debug and looking at the Logs with the TAG: BeAroundSdk
+### ⚠️ After initializing it, it starts executing the service, you can follow this by activating the debug and looking at the Logs with the TAG: BeAroundSdk
 
 - The SDK automatically monitors beacons with the UUID
 - When entering or exiting beacon regions, it sends a JSON payload to the remote API.
 - Events include beacon identifiers, RSSI, distance, app state (foreground/background/inactive), Bluetooth details, and Google Advertising ID.
-
 
 ### 🔐 Security
 
