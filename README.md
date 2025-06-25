@@ -1,20 +1,26 @@
-# 🐻 Bearound SDKs Documentation
+# 🐻 BeAround SDKs Documentation
 
 Official SDKs for integrating Bearound's secure BLE beacon detection and indoor location technology across Android, iOS, React Native, and Flutter.
 
-## 📱 bearound-android-sdk
+## 📱 beAround-android-sdk
 
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by Bearound.
 
-### 📦 Installation
+## 🧩 Features
 
-Add the following to your build.gradle dependencies block:
+- Continuous region monitoring for beacons
+- Sends `enter` and `exit` events to a remote API
+- Captures distance, RSSI, UUID, major/minor, Advertising ID
+- Foreground service support for background execution
+- Sends telemetry data (if available)
+- Built-in debug logging with tag BeAroundSdk
 
-```gradle
-implementation "com.bearound:sdk:"
-```
+---
 
-Sync your Gradle project after adding the dependency.
+## ⚙️ Requirements
+
+- **Minimum SDK**: 21 (Android 5.0 Lollipop)
+- **Bluetooth LE** must be enabled on the device
 
 ### ⚙️ Required Permissions
 
@@ -24,37 +30,58 @@ Add the following to AndroidManifest.xml:
 <uses-permission android:name="android.permission.BLUETOOTH" />
 <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
 <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-```
-
-For Android 12+ (API 31+), also include:
-
-```xml
+<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+<uses-permission android:name="android.permission.INTERNET" />
 <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 ```
+✅ Important: Starting with Android 10 (API 29) and Android 12 (API 31), location and Bluetooth permissions must be requested at runtime, with clear justification to the user.
 
-### 🚀 Features
+### 📦 Installation
 
-- BLE beacon scanning and filtering
-- Indoor geofence-based proximity detection
-- Real-time enter/exit events
-- AES-GCM encryption
-- Battery-efficient scanning
-- Android 5.0+ support
+*Add the following to your build.gradle dependencies block:
 
-### 🛠️ Usage
+```gradle
+implementation "com.bearound:sdk:<latest-version>"
+```
+-Replace <latest-version> with the latest published version.
+
+### Initialization
+Initialize the SDK inside your Application class after checking the required permissions:
 
 ```kotlin
-// Start scanning:
-BeaconScanner.startScan { beacon ->
-    Log.d("Beacon", "Detected: ${beacon.id} at ${beacon.distance} meters")
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        val beAround = BeAround(applicationContext)
+        // Check permissions before initializing
+        beAround.initialize(
+            iconNotification = R.drawable.ic_notification_icon, //icon show notification service
+            debug = true // optional, enable debug logging
+        )
+    }
 }
-
-// Register enter/exit:
-BeaconScanner.onEnterZone = { zoneId -> Log.i("Geofence", "Entered zone $zoneId") }
-BeaconScanner.onExitZone = { zoneId -> Log.i("Geofence", "Exited zone $zoneId") }
 ```
+☝️ You must prompt the user for permissions before initializing the SDK — see example below.
+
+### 🔐 Runtime Permissions
+
+You need to manually request permissions from the user, especially:
+
+- ACCESS_FINE_LOCATION (Android 6+)
+- ACCESS_BACKGROUND_LOCATION (Android 10+)
+- BLUETOOTH_SCAN (Android 12+)
+
+📌 Without these permissions, the SDK will not function properly and will not be able to detect beacons in the background.
+
+### ⚠️ After initializing it, it starts executing the service, you can follow this by activating the debug and looking at the Logs with the TAG: BeAroundSdk
+
+- The SDK automatically monitors beacons with the UUID
+- When entering or exiting beacon regions, it sends a JSON payload to the remote API.
+- Events include beacon identifiers, RSSI, distance, app state (foreground/background/inactive), Bluetooth details, and Google Advertising ID.
 
 ### 🔐 Security
 
