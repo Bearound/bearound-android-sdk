@@ -1,10 +1,12 @@
 plugins {
     id 'com.android.library'
     id 'org.jetbrains.kotlin.android'
+    id 'maven-publish'
 }
 
 android {
-    namespace 'com.example.sdk'
+    namespace 'com.bearound.beacon'
+
     compileSdk 35
 
     defaultConfig {
@@ -26,6 +28,37 @@ android {
     }
     kotlinOptions {
         jvmTarget = '11'
+    }
+}
+
+publishing {
+    publications {
+        release(MavenPublication) {
+            groupId = 'org.bearound'
+            artifactId = 'android-beacon-sdk'
+            version = '0.6-alpha'
+        }
+    }
+
+    repositories {
+        maven {
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
+            credentials {
+                username = System.getenv("GPR_USER")
+                password = System.getenv("GPR_KEY")
+            }
+        }
+    }
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            release {
+                from components.release
+            }
+        }
     }
 }
 

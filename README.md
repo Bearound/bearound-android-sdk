@@ -42,12 +42,56 @@ Add the following to AndroidManifest.xml:
 
 ### 📦 Installation
 
+*Add the following to your settings.gradle.kts dependencies block:
+
+```gradle
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+        maven {
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
+            credentials {
+                username = System.getenv("GPR_USER")
+                password = System.getenv("GPR_KEY")
+            }
+        }
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven {
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
+            credentials {
+                username = System.getenv("GPR_USER")
+                password = System.getenv("GPR_KEY")
+            }
+        }
+    }
+}
+
+rootProject.name = "My Application"
+include(":app")
+```
+
 *Add the following to your build.gradle dependencies block:
 
 ```gradle
-implementation "com.bearound:sdk:<latest-version>"
+implementation("org.bearound:android-beacon-sdk:<latest-version>")
 ```
 -Replace <latest-version> with the latest published version.
+
+*Add the variables GPR_USER and GPR_KEY, example:
+
+export GPR_USER=<Name User Git>
+export GPR_KEY=<Your Key Token>
 
 ### Initialization
 Initialize the SDK inside your Application class after checking the required permissions:
