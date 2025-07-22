@@ -81,7 +81,7 @@ rootProject.name = "My Application"
 include(":app")
 ```
 
-*Add the following to your build.gradle dependencies block:
+*Add the following to your build.gradle (app) dependencies block:
 
 ```gradle
 implementation("org.bearound:android-beacon-sdk:<latest-version>")
@@ -90,8 +90,10 @@ implementation("org.bearound:android-beacon-sdk:<latest-version>")
 
 *Add the variables GPR_USER and GPR_KEY, example:
 
-export GPR_USER=<Name User Git>
-export GPR_KEY=<Your Key Token>
+```bash
+  export GPR_USER=<Name User Git>
+  export GPR_KEY=<Your Key Token>
+```
 
 ### Initialization
 Initialize the SDK inside your Application class after checking the required permissions:
