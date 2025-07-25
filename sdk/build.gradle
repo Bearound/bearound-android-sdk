@@ -2,6 +2,7 @@ plugins {
     id 'com.android.library'
     id 'org.jetbrains.kotlin.android'
     id 'maven-publish'
+    id 'org.jetbrains.dokka' version '1.9.10'
 }
 
 android {
@@ -29,36 +30,47 @@ android {
     kotlinOptions {
         jvmTarget = '11'
     }
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+        }
+    }
 }
 
-publishing {
-    publications {
-        release(MavenPublication) {
-            groupId = 'org.bearound'
-            artifactId = 'android-beacon-sdk'
-            version = '0.6-alpha'
-        }
-    }
-
-    repositories {
-        maven {
-            name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
-            credentials {
-                username = System.getenv("GPR_USER")
-                password = System.getenv("GPR_KEY")
-            }
-        }
-    }
+task javadocJar(type: Jar, dependsOn: dokkaJavadoc) {
+    archiveClassifier.set('javadoc')
+    from dokkaJavadoc.outputDirectory
 }
 
 afterEvaluate {
+
     publishing {
         publications {
-            release {
+            release(MavenPublication) {
+                groupId = 'org.bearound'
+                artifactId = 'android-beacon-sdk'
+                version = '0.9.9-alpha'
+
                 from components.release
+
+                artifact javadocJar
             }
         }
+
+        repositories {
+            maven {
+                name = "GitHubPackages"
+                url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
+                credentials {
+                    username = System.getenv("GPR_USER")
+                    password = System.getenv("GPR_KEY")
+                }
+            }
+        }
+    }
+
+    tasks.named("generateMetadataFileForReleasePublication") {
+        dependsOn(javadocJar)
     }
 }
 

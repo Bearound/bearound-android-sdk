@@ -45,40 +45,14 @@ Add the following to AndroidManifest.xml:
 *Add the following to your settings.gradle.kts dependencies block:
 
 ```gradle
-pluginManagement {
-    repositories {
-        gradlePluginPortal()
-        google()
-        mavenCentral()
-        maven {
-            name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
-            credentials {
-                username = System.getenv("GPR_USER")
-                password = System.getenv("GPR_KEY")
-            }
-        }
+ maven {
+    name = "GitHubPackages"
+    url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
+    credentials {
+        username = System.getenv("GPR_USER")
+        password = System.getenv("GPR_KEY")
     }
-}
-
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-        maven {
-            name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
-            credentials {
-                username = System.getenv("GPR_USER")
-                password = System.getenv("GPR_KEY")
-            }
-        }
-    }
-}
-
-rootProject.name = "My Application"
-include(":app")
+ }
 ```
 
 *Add the following to your build.gradle (app) dependencies block:
