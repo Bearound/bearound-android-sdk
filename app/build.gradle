@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.beaconpoc"
+    namespace = "com.example.bearound"
     compileSdk = 35
 
     defaultConfig {

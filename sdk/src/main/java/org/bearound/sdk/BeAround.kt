@@ -1,4 +1,4 @@
-package com.example.sdk
+package org.bearound.sdk
 
 import android.app.Application.NOTIFICATION_SERVICE
 import android.app.Notification

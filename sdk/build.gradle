@@ -49,7 +49,7 @@ afterEvaluate {
             release(MavenPublication) {
                 groupId = 'org.bearound'
                 artifactId = 'android-beacon-sdk'
-                version = '0.9.9-alpha'
+                version = '0.1.1-alpha'
 
                 from components.release
 

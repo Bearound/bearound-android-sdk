@@ -1,12 +1,12 @@
-package com.example.beaconpoc
+package com.example.bearound
 
 import android.Manifest
 import android.app.Application
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
-import com.example.sdk.BeAround
+import org.bearound.sdk.BeAround
 
-class BeaconPocApplication : Application() {
+class BeAroundAppLocalApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()

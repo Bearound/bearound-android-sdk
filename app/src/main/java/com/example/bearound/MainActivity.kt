@@ -1,4 +1,4 @@
-package com.example.beaconpoc
+package com.example.bearound
 
 import android.Manifest
 import android.content.pm.PackageManager

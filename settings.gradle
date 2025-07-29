@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "BeaconPOC"
+rootProject.name = "AndroidSDK"
 include ':app', ':sdk'
