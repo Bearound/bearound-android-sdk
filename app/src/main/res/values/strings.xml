@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">BeaconPOC</string>
+    <string name="app_name">BeAroundAndroidSdk</string>
     <string name="notification_channel_name">Notificações de Beacon</string>
     <string name="notification_channel_description">Canal para notificações relacionadas a beacons.</string>
     <string name="request_permission">Solicitar Permissões</string>
