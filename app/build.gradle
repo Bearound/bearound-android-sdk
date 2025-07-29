@@ -8,7 +8,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.beaconpoc"
+        applicationId = "com.example.bearound"
         minSdk = 21
         targetSdk = 34
         versionCode = 1
