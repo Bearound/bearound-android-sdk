@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "AndroidSDK"
+rootProject.name = "BeAroundSDK"
 include ':app', ':sdk'
