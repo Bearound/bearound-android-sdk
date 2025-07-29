@@ -2,7 +2,7 @@
 
 Official SDKs for integrating BeAround's secure BLE beacon detection and indoor location technology across Android, iOS, React Native, and Flutter.
 
-## 📱 Bgit push --set-upstream origin developeAround-android-sdk
+## 📱 BeAround-android-sdk
 
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by BeAround.
 
