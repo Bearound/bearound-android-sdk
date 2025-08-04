@@ -1,7 +1,6 @@
 package org.bearound.sdk
 
 import android.app.Application.NOTIFICATION_SERVICE
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
@@ -51,10 +50,10 @@ class BeAround(private val context: Context) : MonitorNotifier {
     /**
      * Initializes the SDK, sets up beacon monitoring and notification channel.
      *
-     * @param clientToken The client token for the SDK, used for authentication with the API.
+     * @param iconNotification The resource ID of the small icon used in the foreground notification.
      * @param debug Enables or disables debug logging.
      */
-    fun initialize(clientToken: String, debug: Boolean = false) {
+    fun initialize(iconNotification: Int, debug: Boolean = false) {
         this.debug = debug
         createNotificationChannel(context)
 
@@ -64,7 +63,7 @@ class BeAround(private val context: Context) : MonitorNotifier {
 
         if (!foregroundServiceScanningEnabled) {
             val foregroundNotification = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
-                .setSmallIcon(context.applicationInfo.icon)
+                .setSmallIcon(iconNotification)
                 .setContentTitle("Monitoramento de Beacons")
                 .setContentText("Execução contínua em segundo plano")
                 .setOngoing(true)
