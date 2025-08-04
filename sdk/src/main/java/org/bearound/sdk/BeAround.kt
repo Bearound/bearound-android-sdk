@@ -36,6 +36,7 @@ class BeAround(private val context: Context) : MonitorNotifier {
     private var advertisingId: String? = null
     private var advertisingIdFetchAttempted = false
     private var debug: Boolean = false
+    private var foregroundServiceScanningEnabled = false
 
     private companion object {
         private const val TAG = "BeAroundSdk"
@@ -50,10 +51,10 @@ class BeAround(private val context: Context) : MonitorNotifier {
     /**
      * Initializes the SDK, sets up beacon monitoring and notification channel.
      *
-     * @param iconNotification The resource ID of the small icon used in the foreground notification.
+     * @param clientToken The client token for the SDK, used for authentication with the API.
      * @param debug Enables or disables debug logging.
      */
-    fun initialize(iconNotification: Int, debug: Boolean = false) {
+    fun initialize(clientToken: String, debug: Boolean = false) {
         this.debug = debug
         createNotificationChannel(context)
 
@@ -61,17 +62,19 @@ class BeAround(private val context: Context) : MonitorNotifier {
             BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24")
         )
 
-        val foregroundNotification: Notification =
-            NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
-                .setSmallIcon(iconNotification)
+        if (!foregroundServiceScanningEnabled) {
+            val foregroundNotification = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
+                .setSmallIcon(context.applicationInfo.icon)
                 .setContentTitle("Monitoramento de Beacons")
                 .setContentText("Execução contínua em segundo plano")
                 .setOngoing(true)
                 .build()
-        beaconManager.enableForegroundServiceScanning(
-            foregroundNotification,
-            FOREGROUND_SERVICE_NOTIFICATION_ID
-        )
+            beaconManager.enableForegroundServiceScanning(
+                foregroundNotification,
+                FOREGROUND_SERVICE_NOTIFICATION_ID
+            )
+            foregroundServiceScanningEnabled = true
+        }
 
         beaconManager.setEnableScheduledScanJobs(false)
         beaconManager.setRegionStatePersistenceEnabled(false)
