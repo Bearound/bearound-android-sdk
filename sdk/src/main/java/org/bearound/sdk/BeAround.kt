@@ -35,7 +35,10 @@ class BeAround(private val context: Context) : MonitorNotifier {
     private var syncFailedBeaconsArray = JSONArray()
     private var advertisingId: String? = null
     private var advertisingIdFetchAttempted = false
+    private var clientToken: String? = null
     private var debug: Boolean = false
+    private var listener: Listener? = null
+    private var foregroundServiceScanningEnabled = false
 
     private companion object {
         private const val TAG = "BeAroundSdk"
@@ -47,31 +50,48 @@ class BeAround(private val context: Context) : MonitorNotifier {
         const val EVENT_FAILED = "failed"
     }
 
+    fun setListener(listener: Listener?) {
+        this.listener = listener
+    }
+
+    interface Listener {
+        /**
+         * Called when a beacon is detected in the monitored region.
+         *
+         * @param beacon The collection of beacons detected.
+         */
+        fun onBeaconDetected(beacon: Beacon)
+    }
+
     /**
      * Initializes the SDK, sets up beacon monitoring and notification channel.
      *
-     * @param iconNotification The resource ID of the small icon used in the foreground notification.
+     * @param clientToken The client token used for API authentication.
      * @param debug Enables or disables debug logging.
      */
-    fun initialize(iconNotification: Int, debug: Boolean = false) {
+    fun initialize(clientToken: String, debug: Boolean = false)  {
         this.debug = debug
+        this.clientToken = clientToken
         createNotificationChannel(context)
 
         beaconManager.beaconParsers.add(
             BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24")
         )
 
-        val foregroundNotification: Notification =
-            NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
-                .setSmallIcon(iconNotification)
+        if (!foregroundServiceScanningEnabled) {
+            val foregroundNotification = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
+                .setSmallIcon(context.applicationInfo.icon)
                 .setContentTitle("Monitoramento de Beacons")
                 .setContentText("Execução contínua em segundo plano")
                 .setOngoing(true)
                 .build()
-        beaconManager.enableForegroundServiceScanning(
-            foregroundNotification,
-            FOREGROUND_SERVICE_NOTIFICATION_ID
-        )
+
+            beaconManager.enableForegroundServiceScanning(
+                foregroundNotification,
+                FOREGROUND_SERVICE_NOTIFICATION_ID
+            )
+            foregroundServiceScanningEnabled = true
+        }
 
         beaconManager.setEnableScheduledScanJobs(false)
         beaconManager.setRegionStatePersistenceEnabled(false)
@@ -93,6 +113,7 @@ class BeAround(private val context: Context) : MonitorNotifier {
         beaconManager.stopMonitoring(getRegion())
         beaconManager.removeAllMonitorNotifiers()
         beaconManager.removeAllRangeNotifiers()
+        lastSeenBeacon = null
     }
 
     /**
@@ -144,6 +165,9 @@ class BeAround(private val context: Context) : MonitorNotifier {
      */
     private val rangeNotifierForSync = RangeNotifier { beacons, rangedRegion ->
         log("Beacons ranged in region ${rangedRegion.uniqueId}: ${beacons.size} found")
+        for (beacon in beacons) {
+            listener?.onBeaconDetected(beacon)
+        }
         syncWithApi(beacons, EVENT_ENTER)
     }
 

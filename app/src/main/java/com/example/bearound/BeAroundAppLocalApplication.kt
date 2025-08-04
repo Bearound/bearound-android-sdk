@@ -17,7 +17,7 @@ class BeAroundAppLocalApplication : Application() {
             == PackageManager.PERMISSION_GRANTED
         ) {
             beAround.initialize(
-                iconNotification = R.drawable.ic_launcher_foreground,
+                "",
                 debug = true
             )
         }

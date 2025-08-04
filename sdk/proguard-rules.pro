@@ -19,3 +19,15 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+-keep public class org.bearound.sdk.** {
+    public *;
+}
+
+-keepclassmembers class org.bearound.sdk.** {
+    public *;
+}
+
+-keep public interface org.bearound.sdk.** {
+    public *;
+}
