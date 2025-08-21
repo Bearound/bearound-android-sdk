@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.bearound.beacon.BuildConfig
 import com.google.android.gms.ads.identifier.AdvertisingIdClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +36,10 @@ class BeAround(private val context: Context) : MonitorNotifier {
     private var advertisingId: String? = null
     private var advertisingIdFetchAttempted = false
     private var debug: Boolean = false
+    private var clientId: String = ""
     private var foregroundServiceScanningEnabled = false
+    private var timeScanBeacons = TimeScanBeacons.TIME_20
+    private var sizeListBackupLostBeacons = SizeBackupLostBeacons.SIZE_40
 
     private companion object {
         private const val TAG = "BeAroundSdk"
@@ -47,13 +51,62 @@ class BeAround(private val context: Context) : MonitorNotifier {
         const val EVENT_FAILED = "failed"
     }
 
+    enum class TimeScanBeacons(val seconds: Long) {
+        TIME_5(5000L),
+        TIME_10(10000L),
+        TIME_15(15000L),
+        TIME_20(20000L),
+        TIME_25(25000L)
+    }
+
+    enum class SizeBackupLostBeacons(val size: Int) {
+        SIZE_5(5),
+        SIZE_10(10),
+        SIZE_15(15),
+        SIZE_20(20),
+        SIZE_25(25),
+        SIZE_30(30),
+        SIZE_35(35),
+        SIZE_40(40),
+        SIZE_45(45),
+        SIZE_50(50)
+    }
+
+    /**
+     * ⚠️ These functions **must be called before** invoking [initialize] to ensure the SDK is properly configured.
+     *
+     * Use `changeListSizeBackupLostBeacons` to set the size of the backup list for lost beacons,
+     * and `changeScanTimeBeacons` to define the scan interval between beacon detections.
+     *
+     * If not called prior to `initialize`, the SDK will use default values.
+     */
+
+    /**
+     * Sets the size of the backup list for lost beacons.
+     */
+    public fun changeListSizeBackupLostBeacons(size: SizeBackupLostBeacons){
+        sizeListBackupLostBeacons = size
+    }
+
+    /**
+     * Sets the scan interval for beacon detection.
+     */
+    public fun changeScamTimeBeacons(time: TimeScanBeacons){
+        timeScanBeacons = time
+    }
+
     /**
      * Initializes the SDK, sets up beacon monitoring and notification channel.
      *
      * @param iconNotification The resource ID of the small icon used in the foreground notification.
      * @param debug Enables or disables debug logging.
      */
-    fun initialize(iconNotification: Int, debug: Boolean = false) {
+    fun initialize(
+        iconNotification: Int = context.applicationInfo.icon,
+        clientId: String,
+        debug: Boolean = false
+    ) {
+        this.clientId = clientId
         this.debug = debug
         createNotificationChannel(context)
 
@@ -64,8 +117,12 @@ class BeAround(private val context: Context) : MonitorNotifier {
         if (!foregroundServiceScanningEnabled) {
             val foregroundNotification = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
                 .setSmallIcon(iconNotification)
-                .setContentTitle("Monitoramento de Beacons")
-                .setContentText("Execução contínua em segundo plano")
+                .setContentTitle(
+                    context.getString(com.bearound.beacon.R.string.title_notification_sdk)
+                )
+                .setContentText(
+                    context.getString(com.bearound.beacon.R.string.subtitle_notification_sdk)
+                )
                 .setOngoing(true)
                 .build()
             beaconManager.enableForegroundServiceScanning(
@@ -78,8 +135,8 @@ class BeAround(private val context: Context) : MonitorNotifier {
         beaconManager.setEnableScheduledScanJobs(false)
         beaconManager.setRegionStatePersistenceEnabled(false)
         beaconManager.setBackgroundScanPeriod(1100L)
-        beaconManager.setBackgroundBetweenScanPeriod(20000L)
-        beaconManager.setForegroundBetweenScanPeriod(20000L)
+        beaconManager.setBackgroundBetweenScanPeriod(timeScanBeacons.seconds)
+        beaconManager.setForegroundBetweenScanPeriod(timeScanBeacons.seconds)
 
         beaconManager.addMonitorNotifier(this)
         beaconManager.startMonitoring(getRegion())
@@ -190,7 +247,7 @@ class BeAround(private val context: Context) : MonitorNotifier {
                             "I see a beacon transmitting namespace id: ${beacon.id1}," +
                                     " major: ${beacon.id2}," +
                                     " minor: ${beacon.id3}," +
-                                    " approximately ${beacon.distance} meters away."
+                                    " rssi ${beacon.rssi}."
                         )
                     }
                     val beaconJson = JSONObject().apply {
@@ -208,6 +265,8 @@ class BeAround(private val context: Context) : MonitorNotifier {
 
                 val jsonObject = JSONObject().apply {
                     put("deviceType", "Android")
+                    put("clientId", clientId)
+                    put("versionSdk", BuildConfig.SDK_VERSION)
                     put("idfa", currentAdvertisingId ?: "N/A")
                     put("eventType", eventType)
                     put("appState", currentAppState)
@@ -243,7 +302,7 @@ class BeAround(private val context: Context) : MonitorNotifier {
                     )
                     // Todo add beacons com erro.
                     for (i in 0 until beaconsArray.length()) {
-                        if (syncFailedBeaconsArray.length() < 10) {
+                        if (syncFailedBeaconsArray.length() < sizeListBackupLostBeacons.size) {
                             syncFailedBeaconsArray.put(beaconsArray.getJSONObject(i))
                         }
                     }
@@ -255,7 +314,7 @@ class BeAround(private val context: Context) : MonitorNotifier {
             } catch (e: Exception) {
                 // Todo add beacons com erro.
                 for (i in 0 until beaconsArray.length()) {
-                    if (syncFailedBeaconsArray.length() < 10) {
+                    if (syncFailedBeaconsArray.length() < sizeListBackupLostBeacons.size) {
                         syncFailedBeaconsArray.put(beaconsArray.getJSONObject(i))
                     }
                 }
