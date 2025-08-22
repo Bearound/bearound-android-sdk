@@ -1,5 +1,6 @@
 package org.bearound.sdk
 
+import android.annotation.SuppressLint
 import android.app.Application.NOTIFICATION_SERVICE
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -27,7 +28,7 @@ import java.util.Date
  *
  * @param context Application context for initializing the beacon manager and accessing system services.
  */
-class BeAround(private val context: Context) : MonitorNotifier {
+class BeAround private constructor(private val context: Context) : MonitorNotifier {
 
     private val beaconUUID = "e25b8d3c-947a-452f-a13f-589cb706d2e5"
     private val beaconManager = BeaconManager.getInstanceForApplication(context.applicationContext)
@@ -37,18 +38,45 @@ class BeAround(private val context: Context) : MonitorNotifier {
     private var advertisingIdFetchAttempted = false
     private var debug: Boolean = false
     private var clientId: String = ""
-    private var foregroundServiceScanningEnabled = false
+    private var sdkInitialized = false
     private var timeScanBeacons = TimeScanBeacons.TIME_20
     private var sizeListBackupLostBeacons = SizeBackupLostBeacons.SIZE_40
 
-    private companion object {
+    companion object {
+
+        @SuppressLint("StaticFieldLeak")
+        @Volatile
+        private var instance: BeAround? = null
+
+        fun getInstance(context: Context): BeAround {
+            return instance ?: synchronized(this) {
+                instance ?: BeAround(context.applicationContext).also { instance = it }
+            }
+        }
+
+        fun isInitialized(): Boolean {
+            return instance?.sdkInitialized == true
+        }
+
         private const val TAG = "BeAroundSdk"
-        const val API_ENDPOINT_URL = "https://api.bearound.io/ingest"
-        const val NOTIFICATION_CHANNEL_ID = "beacon_notifications"
-        const val FOREGROUND_SERVICE_NOTIFICATION_ID = 3
-        const val EVENT_ENTER = "enter"
-        const val EVENT_EXIT = "exit"
-        const val EVENT_FAILED = "failed"
+        private const val API_ENDPOINT_URL = "https://api.bearound.io/ingest"
+        private const val NOTIFICATION_CHANNEL_ID = "beacon_notifications"
+        private const val FOREGROUND_SERVICE_NOTIFICATION_ID = 3
+        private const val EVENT_ENTER = "enter"
+        private const val EVENT_EXIT = "exit"
+        private const val EVENT_FAILED = "failed"
+    }
+
+    private val logListeners = mutableListOf<LogListener>()
+
+    fun addLogListener(listener: LogListener) {
+        if (!logListeners.contains(listener)) {
+            logListeners.add(listener)
+        }
+    }
+
+    fun removeLogListener(listener: LogListener) {
+        logListeners.remove(listener)
     }
 
     enum class TimeScanBeacons(val seconds: Long) {
@@ -84,14 +112,14 @@ class BeAround(private val context: Context) : MonitorNotifier {
     /**
      * Sets the size of the backup list for lost beacons.
      */
-    public fun changeListSizeBackupLostBeacons(size: SizeBackupLostBeacons){
+    public fun changeListSizeBackupLostBeacons(size: SizeBackupLostBeacons) {
         sizeListBackupLostBeacons = size
     }
 
     /**
      * Sets the scan interval for beacon detection.
      */
-    public fun changeScamTimeBeacons(time: TimeScanBeacons){
+    public fun changeScamTimeBeacons(time: TimeScanBeacons) {
         timeScanBeacons = time
     }
 
@@ -106,42 +134,44 @@ class BeAround(private val context: Context) : MonitorNotifier {
         clientId: String,
         debug: Boolean = false
     ) {
-        this.clientId = clientId
-        this.debug = debug
-        createNotificationChannel(context)
+        if (!isInitialized()) {
+            this.clientId = clientId
+            this.debug = debug
+            createNotificationChannel(context)
 
-        beaconManager.beaconParsers.add(
-            BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24")
-        )
+            beaconManager.beaconParsers.add(
+                BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24")
+            )
 
-        if (!foregroundServiceScanningEnabled) {
-            val foregroundNotification = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
-                .setSmallIcon(iconNotification)
-                .setContentTitle(
-                    context.getString(com.bearound.beacon.R.string.title_notification_sdk)
-                )
-                .setContentText(
-                    context.getString(com.bearound.beacon.R.string.subtitle_notification_sdk)
-                )
-                .setOngoing(true)
-                .build()
+            val foregroundNotification =
+                NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
+                    .setSmallIcon(iconNotification)
+                    .setContentTitle(
+                        context.getString(com.bearound.beacon.R.string.title_notification_sdk)
+                    )
+                    .setContentText(
+                        context.getString(com.bearound.beacon.R.string.subtitle_notification_sdk)
+                    )
+                    .setOngoing(true)
+                    .build()
+
             beaconManager.enableForegroundServiceScanning(
                 foregroundNotification,
                 FOREGROUND_SERVICE_NOTIFICATION_ID
             )
-            foregroundServiceScanningEnabled = true
+
+            beaconManager.setEnableScheduledScanJobs(false)
+            beaconManager.setRegionStatePersistenceEnabled(false)
+            beaconManager.setBackgroundScanPeriod(1100L)
+            beaconManager.setBackgroundBetweenScanPeriod(timeScanBeacons.seconds)
+            beaconManager.setForegroundBetweenScanPeriod(timeScanBeacons.seconds)
+
+            beaconManager.addMonitorNotifier(this)
+            beaconManager.startMonitoring(getRegion())
+
+            fetchAdvertisingId()
+            sdkInitialized = true
         }
-
-        beaconManager.setEnableScheduledScanJobs(false)
-        beaconManager.setRegionStatePersistenceEnabled(false)
-        beaconManager.setBackgroundScanPeriod(1100L)
-        beaconManager.setBackgroundBetweenScanPeriod(timeScanBeacons.seconds)
-        beaconManager.setForegroundBetweenScanPeriod(timeScanBeacons.seconds)
-
-        beaconManager.addMonitorNotifier(this)
-        beaconManager.startMonitoring(getRegion())
-
-        fetchAdvertisingId()
     }
 
     /**
@@ -152,6 +182,8 @@ class BeAround(private val context: Context) : MonitorNotifier {
         beaconManager.stopMonitoring(getRegion())
         beaconManager.removeAllMonitorNotifiers()
         beaconManager.removeAllRangeNotifiers()
+        instance = null
+        sdkInitialized = false
     }
 
     /**
@@ -176,13 +208,13 @@ class BeAround(private val context: Context) : MonitorNotifier {
     }
 
     override fun didEnterRegion(region: Region) {
-        log("I detected a beacon in the region: ${region.uniqueId}")
+        log("Beacons detected in the region")
         beaconManager.startRangingBeacons(region)
         beaconManager.addRangeNotifier(rangeNotifierForSync)
     }
 
     override fun didExitRegion(region: Region) {
-        log("Exited beacon region: ${region.uniqueId}")
+        log("No sign of Beacons in the region")
         lastSeenBeacon?.let {
             syncWithApi(it, EVENT_EXIT)
         }
@@ -193,7 +225,7 @@ class BeAround(private val context: Context) : MonitorNotifier {
 
     override fun didDetermineStateForRegion(state: Int, region: Region) {
         val stateString = if (state == MonitorNotifier.INSIDE) EVENT_ENTER else EVENT_EXIT
-        log("State determined for region ${region.uniqueId}: $stateString")
+        log("State of the region: $stateString")
     }
 
     /**
@@ -202,7 +234,7 @@ class BeAround(private val context: Context) : MonitorNotifier {
      * Typically used to initiate a sync when a beacon "enter" event is detected.
      */
     private val rangeNotifierForSync = RangeNotifier { beacons, rangedRegion ->
-        log("Beacons ranged in region ${rangedRegion.uniqueId}: ${beacons.size} found")
+        log("Beacons found in the region: ${beacons.size}")
         syncWithApi(beacons, EVENT_ENTER)
     }
 
@@ -244,7 +276,8 @@ class BeAround(private val context: Context) : MonitorNotifier {
                 for (beacon in matchingBeacons) {
                     if (eventType == EVENT_ENTER) {
                         log(
-                            "I see a beacon transmitting namespace id: ${beacon.id1}," +
+                            "Beacon detected" +
+                                    " id: ${beacon.id1}," +
                                     " major: ${beacon.id2}," +
                                     " minor: ${beacon.id3}," +
                                     " rssi ${beacon.rssi}."
@@ -257,7 +290,7 @@ class BeAround(private val context: Context) : MonitorNotifier {
                         put("rssi", beacon.rssi)
                         put("bluetoothName", beacon.bluetoothName)
                         put("bluetoothAddress", beacon.bluetoothAddress)
-                        put("distanceMeters", beacon.distance)
+//                        put("distanceMeters", beacon.distance)
                         put("lastSeen", Date().time)
                     }
                     beaconsArray.put(beaconJson)
@@ -265,8 +298,8 @@ class BeAround(private val context: Context) : MonitorNotifier {
 
                 val jsonObject = JSONObject().apply {
                     put("deviceType", "Android")
-                    put("clientId", clientId)
-                    put("versionSdk", BuildConfig.SDK_VERSION)
+                    put("clientToken", clientId)
+                    put("sdkVersion", BuildConfig.SDK_VERSION)
                     put("idfa", currentAdvertisingId ?: "N/A")
                     put("eventType", eventType)
                     put("appState", currentAppState)
@@ -293,11 +326,11 @@ class BeAround(private val context: Context) : MonitorNotifier {
                     if (syncFailedBeaconsArray.length() > 0) {
                         syncFailedBeaconsArrayWithApi()
                     }
-                    log("Successfully synced with API. Response: ${connection.responseMessage}")
+                    log("Successfully call API. Response: ${connection.responseMessage}")
                 } else {
                     Log.e(
                         TAG,
-                        "API sync failed. " +
+                        "Error call API. " +
                                 "Code: $responseCode, Message: ${connection.responseMessage}}"
                     )
                     // Todo add beacons com erro.
@@ -306,8 +339,9 @@ class BeAround(private val context: Context) : MonitorNotifier {
                             syncFailedBeaconsArray.put(beaconsArray.getJSONObject(i))
                         }
                     }
-                    log("List beacons that failed to sync size: " +
-                            "${syncFailedBeaconsArray.length()}"
+                    log(
+                        "List beacons backup size: " +
+                                "${syncFailedBeaconsArray.length()}"
                     )
                 }
                 connection.disconnect()
@@ -318,7 +352,7 @@ class BeAround(private val context: Context) : MonitorNotifier {
                         syncFailedBeaconsArray.put(beaconsArray.getJSONObject(i))
                     }
                 }
-                log("List beacons that failed to sync size: ${syncFailedBeaconsArray.length()}")
+                log("List beacons backup size: ${syncFailedBeaconsArray.length()}")
                 Log.e(TAG, "Exception during API sync: ${e.message}")
             }
         }
@@ -362,8 +396,9 @@ class BeAround(private val context: Context) : MonitorNotifier {
                 val responseCode = connection.responseCode
                 if (responseCode in 200..299) {
                     syncFailedBeaconsArray = JSONArray()
-                    log("Successfully synced Failed beacons with API. Response:" +
-                            " ${connection.responseMessage}"
+                    log(
+                        "Successfully synced Failed beacons with API. Response:" +
+                                " ${connection.responseMessage}"
                     )
                 } else {
                     Log.e(
@@ -372,8 +407,9 @@ class BeAround(private val context: Context) : MonitorNotifier {
                                 "Code: $responseCode, Message: ${connection.responseMessage}}"
                     )
 
-                    log("List beacons that failed to sync size: " +
-                            "${syncFailedBeaconsArray.length()}"
+                    log(
+                        "List beacons that failed to sync size: " +
+                                "${syncFailedBeaconsArray.length()}"
                     )
                 }
                 connection.disconnect()
@@ -418,6 +454,9 @@ class BeAround(private val context: Context) : MonitorNotifier {
      */
     private fun log(message: String) {
         if (debug) Log.d(TAG, message)
+
+        val logEntry = message
+        logListeners.forEach { it.onLogAdded(logEntry) }
     }
 
     /**
@@ -431,4 +470,8 @@ class BeAround(private val context: Context) : MonitorNotifier {
             "BeAroundSdkRegion", Identifier.parse(beaconUUID), null, null
         )
     }
+}
+
+interface LogListener {
+    fun onLogAdded(log: String)
 }
