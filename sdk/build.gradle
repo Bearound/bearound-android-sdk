@@ -69,8 +69,8 @@ afterEvaluate {
             maven {
                 url = uri("https://nexus.intranet-fca.com.br/repository/maven-releases/")
                 credentials {
-                    username = "open"
-                    password = "OpenCircle*"
+                    username = ""
+                    password = ""
                 }
             }
         }
