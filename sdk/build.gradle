@@ -67,10 +67,11 @@ afterEvaluate {
 
         repositories {
             maven {
-                url = uri("https://nexus.intranet-fca.com.br/repository/maven-releases/")
+                name = "GitHubPackages"
+                url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
                 credentials {
-                    username = ""
-                    password = ""
+                    username = System.getenv("GPR_USER")
+                    password = System.getenv("GPR_KEY")
                 }
             }
         }
