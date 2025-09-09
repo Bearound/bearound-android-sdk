@@ -8,13 +8,21 @@ plugins {
 android {
     namespace 'com.bearound.beacon'
 
-    compileSdk 35
+    compileSdk 36
+
+    buildFeatures {
+        buildConfig = true
+    }
 
     defaultConfig {
         minSdk 21
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles "consumer-rules.pro"
+
+        buildConfigField("String", "SDK_GROUP_ID", "\"${findProperty("SDK_GROUP_ID")}\"")
+        buildConfigField("String", "SDK_ARTIFACT_ID", "\"${findProperty("SDK_ARTIFACT_ID")}\"")
+        buildConfigField("String", "SDK_VERSION", "\"${findProperty("SDK_VERSION")}\"")
     }
 
     buildTypes {
@@ -47,9 +55,9 @@ afterEvaluate {
     publishing {
         publications {
             release(MavenPublication) {
-                groupId = 'org.bearound'
-                artifactId = 'android-beacon-sdk'
-                version = '0.1.1-alpha'
+                groupId = findProperty("SDK_GROUP_ID") as String
+                artifactId = findProperty("SDK_ARTIFACT_ID") as String
+                version = findProperty("SDK_VERSION") as String
 
                 from components.release
 

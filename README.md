@@ -2,7 +2,7 @@
 
 Official SDKs for integrating BeAround's secure BLE beacon detection and indoor location technology across Android, iOS, React Native, and Flutter.
 
-## 📱 beAround-android-sdk
+## 📱 BeAround-android-sdk
 
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by BeAround.
 
@@ -76,10 +76,11 @@ Initialize the SDK inside your Application class after checking the required per
 class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        val beAround = BeAround(applicationContext)
+        val beAround = BeAround.getInstance(applicationContext)
         // Check permissions before initializing
         beAround.initialize(
             iconNotification = R.drawable.ic_notification_icon, //icon show notification service
+            clientId = "Client Id", //Set Client Id
             debug = true // optional, enable debug logging
         )
     }
