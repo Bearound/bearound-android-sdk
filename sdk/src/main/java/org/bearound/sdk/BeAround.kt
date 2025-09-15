@@ -59,7 +59,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
         }
 
         private const val TAG = "BeAroundSdk"
-        private const val API_ENDPOINT_URL = "https://api.bearound.io/ingest"
+        private const val API_ENDPOINT_URL = "https://ingest.bearound.io/ingest"
         private const val NOTIFICATION_CHANNEL_ID = "beacon_notifications"
         private const val FOREGROUND_SERVICE_NOTIFICATION_ID = 3
         private const val EVENT_ENTER = "enter"
