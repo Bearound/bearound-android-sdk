@@ -139,6 +139,11 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
             this.debug = debug
             createNotificationChannel(context)
 
+            // Used to parse the iBeacon standard
+            beaconManager.beaconParsers.add(
+                BeaconParser().setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24")
+            )
+
             val foregroundNotification =
                 NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
                     .setSmallIcon(iconNotification)
