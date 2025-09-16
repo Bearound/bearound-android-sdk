@@ -42,6 +42,8 @@ Add the following to AndroidManifest.xml:
 
 ### 📦 Installation
 
+[![](https://jitpack.io/v/Bearound/bearound-android-sdk.svg)](https://jitpack.io/#Bearound/bearound-android-sdk)
+
 *Add the following to your settings.gradle.kts dependencies block:
 
 ```gradle
