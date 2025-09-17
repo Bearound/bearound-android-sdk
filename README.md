@@ -44,32 +44,7 @@ Add the following to AndroidManifest.xml:
 
 [![](https://jitpack.io/v/Bearound/bearound-android-sdk.svg)](https://jitpack.io/#Bearound/bearound-android-sdk)
 
-*Add the following to your settings.gradle.kts dependencies block:
-
-```gradle
- maven {
-    name = "GitHubPackages"
-    url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
-    credentials {
-        username = System.getenv("GPR_USER")
-        password = System.getenv("GPR_KEY")
-    }
- }
-```
-
-*Add the following to your build.gradle (app) dependencies block:
-
-```gradle
-implementation("org.bearound:android-beacon-sdk:<latest-version>")
-```
--Replace <latest-version> with the latest published version.
-
-*Add the variables GPR_USER and GPR_KEY, example:
-
-```bash
-  export GPR_USER=<Name User Git>
-  export GPR_KEY=<Your Key Token>
-```
+[![](https://jitpack.io/v/Bearound/bearound-android-sdk.svg)](https://github.com/Bearound/bearound-android-sdk/packages/2631094?version=1.0.2)
 
 ### Initialization
 Initialize the SDK inside your Application class after checking the required permissions:
