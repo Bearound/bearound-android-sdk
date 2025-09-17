@@ -42,7 +42,7 @@ Add the following to AndroidManifest.xml:
 
 ### 📦 Installation
 
-[![](https://jitpack.io/v/Bearound/bearound-android-sdk.svg)](https://jitpack.io/#Bearound/bearound-android-sdk) [![](https://img.shields.io/badge/GitHub%20Packages-1.0.2-blue)](https://github.com/Bearound/bearound-android-sdk/packages/2631094?version=1.0.2)
+[![](https://jitpack.io/v/Bearound/bearound-android-sdk.svg)](https://jitpack.io/#Bearound/bearound-android-sdk) [![](https://img.shields.io/badge/GitHub%20Packages-v1.0.2-blue)](https://github.com/Bearound/bearound-android-sdk/packages/2631094?version=1.0.2)
 
 ### Initialization
 Initialize the SDK inside your Application class after checking the required permissions:
