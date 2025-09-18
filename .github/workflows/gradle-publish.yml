@@ -62,4 +62,4 @@ jobs:
             New SDK version published automatically 🎉
             - Version: `${{ steps.version.outputs.sdk_version }}`
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
