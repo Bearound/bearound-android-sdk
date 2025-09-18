@@ -1,40 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/root_layout"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:padding="16dp"
-    tools:context=".MainActivity">
+    android:layout_height="match_parent">
 
     <Button
-        android:id="@+id/requestPermissionButton"
+        android:id="@+id/clearLogsButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="@string/request_permission"
+        android:text="Limpar Logs"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginBottom="16dp"/>
+        android:layout_marginTop="16dp" />
 
-    <TextView
-        android:id="@+id/statusLabelTextView"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/status_text"
-        android:textStyle="bold"
-        app:layout_constraintTop_toBottomOf="@+id/requestPermissionButton"
-        app:layout_constraintStart_toStartOf="parent"
-        android:layout_marginTop="18dp"/>
-
-    <TextView
-        android:id="@+id/statusTextView"
+    <ScrollView
+        android:id="@+id/logScrollView"
         android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:text="@string/not_available_placeholder"
-        app:layout_constraintTop_toTopOf="@+id/statusLabelTextView"
-        app:layout_constraintStart_toEndOf="@+id/statusLabelTextView"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginStart="12dp"/>
+        android:layout_height="0dp"
+        android:fillViewport="true"
+        app:layout_constraintTop_toBottomOf="@id/clearLogsButton"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <TextView
+            android:id="@+id/logTextView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textAlignment="center"
+            android:textSize="20sp"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+    </ScrollView>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

@@ -2,7 +2,7 @@
 
 Official SDKs for integrating BeAround's secure BLE beacon detection and indoor location technology across Android, iOS, React Native, and Flutter.
 
-## 📱 beAround-android-sdk
+## 📱 BeAround-android-sdk
 
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by BeAround.
 
@@ -42,32 +42,7 @@ Add the following to AndroidManifest.xml:
 
 ### 📦 Installation
 
-*Add the following to your settings.gradle.kts dependencies block:
-
-```gradle
- maven {
-    name = "GitHubPackages"
-    url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
-    credentials {
-        username = System.getenv("GPR_USER")
-        password = System.getenv("GPR_KEY")
-    }
- }
-```
-
-*Add the following to your build.gradle (app) dependencies block:
-
-```gradle
-implementation("org.bearound:android-beacon-sdk:<latest-version>")
-```
--Replace <latest-version> with the latest published version.
-
-*Add the variables GPR_USER and GPR_KEY, example:
-
-```bash
-  export GPR_USER=<Name User Git>
-  export GPR_KEY=<Your Key Token>
-```
+[![](https://jitpack.io/v/Bearound/bearound-android-sdk.svg)](https://jitpack.io/#Bearound/bearound-android-sdk) [![](https://img.shields.io/badge/GitHub%20Packages-v1.0.3-blue)](https://github.com/Bearound/bearound-android-sdk/packages/2631094?version=1.0.3)
 
 ### Initialization
 Initialize the SDK inside your Application class after checking the required permissions:
@@ -76,10 +51,11 @@ Initialize the SDK inside your Application class after checking the required per
 class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        val beAround = BeAround(applicationContext)
+        val beAround = BeAround.getInstance(applicationContext)
         // Check permissions before initializing
         beAround.initialize(
             iconNotification = R.drawable.ic_notification_icon, //icon show notification service
+            clientId = "Client Id", //Set Client Id
             debug = true // optional, enable debug logging
         )
     }

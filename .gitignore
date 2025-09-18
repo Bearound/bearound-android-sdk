@@ -39,9 +39,6 @@ out/
 target/
 build/
 .gradle/
-gradle/
-gradlew
-gradlew.bat
 
 # build application files
 *.apk
