@@ -1,0 +1,61 @@
+name: Publish SDK and Create TAG and Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  auto-tag-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - name: Read SDK version from gradle.properties
+        id: version
+        run: |
+          version=$(grep SDK_VERSION gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          echo "sdk_version=$version" >> $GITHUB_OUTPUT
+
+      - name: Check if tag already exists
+        id: tagcheck
+        run: |
+          tag="v${{ steps.version.outputs.sdk_version }}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists. Closing workflow."
+            exit 1
+          else
+            echo "Tag $tag does not exist yet. Continuing..."
+          fi
+
+      - name: Create Git Tag
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git tag "v${{ steps.version.outputs.sdk_version }}"
+          git push origin "v${{ steps.version.outputs.sdk_version }}"
+
+      - name: Publish to GitHub Packages
+        run: ./gradlew :sdk:publishReleasePublicationToGitHubPackagesRepository
+        env:
+          GPR_USER: ${{ secrets.GPR_USER }}
+          GPR_KEY: ${{ secrets.GPR_KEY }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.sdk_version }}
+          name: Release v${{ steps.version.outputs.sdk_version }}
+          body: |
+            New SDK version published automatically 🎉
+            - Version: `${{ steps.version.outputs.sdk_version }}`
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
