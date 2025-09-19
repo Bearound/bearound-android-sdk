@@ -74,7 +74,9 @@ jobs:
           repo="github.com/${{ github.repository }}"
 
           echo "Triggering JitPack build for $repo tag $tag..."
-          curl -X POST "https://jitpack.io/api/builds/$repo/$tag"    
+          curl -X POST "https://jitpack.io/api/builds/$repo/$tag" \
+          -H "Content-Type: application/json" \
+          -d '{}'  
 
       - name: Publish to GitHub Packages
         run: ./gradlew :sdk:publishReleasePublicationToGitHubPackagesRepository
