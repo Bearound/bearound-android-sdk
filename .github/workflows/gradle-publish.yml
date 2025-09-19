@@ -76,6 +76,7 @@ jobs:
           echo "Triggering JitPack build for $repo tag $tag..."
           curl -X POST "https://jitpack.io/api/builds/$repo/$tag" \
           -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ secrets.JITPACK_TOKEN }}" \
           -d '{}'  
 
       - name: Publish to GitHub Packages
