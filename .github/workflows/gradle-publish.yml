@@ -29,8 +29,10 @@ jobs:
       - name: Replace SDK version in README badge
         run: |
           sdk_version="${{ steps.version.outputs.sdk_version }}"
-          echo "Substituindo v{{SDK_VERSION}} por v$sdk_version no README.md"
-          sed -i.bak "s/v{{SDK_VERSION}}/v$sdk_version/g" README.md
+          branch="$(echo "${GITHUB_REF}" | sed 's|refs/heads/||')"
+          
+          echo "Replacing any vX.Y.Z with v$sdk_version in README.md"
+          sed -i.bak -E "s/v[0-9]+\.[0-9]+\.[0-9]+/v$sdk_version/g" README.md
           rm README.md.bak
           
           git config user.name "${{ github.actor }}"
@@ -41,6 +43,8 @@ jobs:
           else
             git add README.md
             git commit -m "Update SDK version badge to v$sdk_version"
+            git remote set-url origin https://${{ secrets.GH_PUSH_TOKEN }}@github.com/${{ github.repository }}
+            git push origin "$branch"
           fi  
 
       - name: Check if tag already exists
@@ -63,6 +67,17 @@ jobs:
           git tag "$tag"
           git remote set-url origin https://${{ secrets.GH_PUSH_TOKEN }}@github.com/${{ github.repository }}
           git push origin "$tag"
+
+      - name: Trigger JitPack build via API
+        run: |
+          tag="v${{ steps.version.outputs.sdk_version }}"
+          repo="github.com/${{ github.repository }}"
+
+          echo "Triggering JitPack build for $repo tag $tag..."
+          curl -X POST "https://jitpack.io/api/builds/$repo/$tag" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ secrets.JITPACK_TOKEN }}" \
+          -d '{}'  
 
       - name: Publish to GitHub Packages
         run: ./gradlew :sdk:publishReleasePublicationToGitHubPackagesRepository
