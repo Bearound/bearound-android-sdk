@@ -68,6 +68,14 @@ jobs:
           git remote set-url origin https://${{ secrets.GH_PUSH_TOKEN }}@github.com/${{ github.repository }}
           git push origin "$tag"
 
+      - name: Trigger JitPack build via API
+        run: |
+          tag="v${{ steps.version.outputs.sdk_version }}"
+          repo="github.com/${{ github.repository }}"
+
+          echo "Triggering JitPack build for $repo tag $tag..."
+          curl -X POST "https://jitpack.io/api/builds/$repo/$tag"    
+
       - name: Publish to GitHub Packages
         run: ./gradlew :sdk:publishReleasePublicationToGitHubPackagesRepository
         env:
