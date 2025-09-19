@@ -31,8 +31,8 @@ jobs:
           sdk_version="${{ steps.version.outputs.sdk_version }}"
           branch="$(echo "${GITHUB_REF}" | sed 's|refs/heads/||')"
           
-          echo "Substituindo v{{SDK_VERSION}} por v$sdk_version no README.md"
-          sed -i.bak "s/v{{SDK_VERSION}}/v$sdk_version/g" README.md
+          echo "Replacing any vX.Y.Z with v$sdk_version in README.md"
+          sed -i.bak -E "s/v[0-9]+\.[0-9]+\.[0-9]+/v$sdk_version/g" README.md
           rm README.md.bak
           
           git config user.name "${{ github.actor }}"
