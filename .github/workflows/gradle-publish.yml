@@ -28,12 +28,20 @@ jobs:
 
       - name: Replace SDK version in README badge
         run: |
-          sdk_version=${{ steps.version.outputs.sdk_version }}
-          sed -i "s/v{{SDK_VERSION}}/v$sdk_version/g" README.md
+          sdk_version="${{ steps.version.outputs.sdk_version }}"
+          echo "Substituindo v{{SDK_VERSION}} por v$sdk_version no README.md"
+          sed -i.bak "s/v{{SDK_VERSION}}/v$sdk_version/g" README.md
+          rm README.md.bak
+          
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
-          git add README.md
-          git commit -m "Update SDK version badge to v$sdk_version"    
+          
+          if git diff --quiet; then
+            echo "README.md is already updated. Nothing to commit."
+          else
+            git add README.md
+            git commit -m "Update SDK version badge to v$sdk_version"
+          fi  
 
       - name: Check if tag already exists
         id: tagcheck
