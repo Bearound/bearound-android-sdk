@@ -29,6 +29,8 @@ jobs:
       - name: Replace SDK version in README badge
         run: |
           sdk_version="${{ steps.version.outputs.sdk_version }}"
+          branch="$(echo "${GITHUB_REF}" | sed 's|refs/heads/||')"
+          
           echo "Substituindo v{{SDK_VERSION}} por v$sdk_version no README.md"
           sed -i.bak "s/v{{SDK_VERSION}}/v$sdk_version/g" README.md
           rm README.md.bak
@@ -41,6 +43,8 @@ jobs:
           else
             git add README.md
             git commit -m "Update SDK version badge to v$sdk_version"
+            git remote set-url origin https://${{ secrets.GH_PUSH_TOKEN }}@github.com/${{ github.repository }}
+            git push origin "$branch"
           fi  
 
       - name: Check if tag already exists
