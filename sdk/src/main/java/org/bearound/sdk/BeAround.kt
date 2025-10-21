@@ -10,7 +10,6 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
-import com.bearound.beacon.BuildConfig
 import com.google.android.gms.ads.identifier.AdvertisingIdClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,7 +36,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
     private var advertisingId: String? = null
     private var advertisingIdFetchAttempted = false
     private var debug: Boolean = false
-    private var clientId: String = ""
+    private var clientToken: String = ""
     private var sdkInitialized = false
     private var timeScanBeacons = TimeScanBeacons.TIME_20
     private var sizeListBackupLostBeacons = SizeBackupLostBeacons.SIZE_40
@@ -135,7 +134,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
         debug: Boolean = false
     ) {
         if (!isInitialized()) {
-            this.clientId = clientId
+            this.clientToken = clientId
             this.debug = debug
             createNotificationChannel(context)
 
@@ -299,7 +298,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
 
                 val jsonObject = JSONObject().apply {
                     put("deviceType", "Android")
-                    put("clientToken", clientId)
+                    put("clientToken", clientToken)
                     put("sdkVersion", BuildConfig.SDK_VERSION)
                     put("idfa", currentAdvertisingId ?: "N/A")
                     put("eventType", eventType)
