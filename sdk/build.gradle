@@ -27,8 +27,11 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            minifyEnabled false
         }
     }
     compileOptions {
@@ -50,8 +53,16 @@ task javadocJar(type: Jar, dependsOn: dokkaJavadoc) {
     from dokkaJavadoc.outputDirectory
 }
 
-afterEvaluate {
+// Task to copy the release AAR to the project root for easy distribution
+task copyReleaseAAR(type: Copy) {
+    from("$buildDir/outputs/aar")
+    into("$rootDir/release")
+    include("sdk-release.aar")
+    rename("sdk-release.aar", "bearound-android-sdk-${findProperty('SDK_VERSION')}.aar")
+}
 
+// JitPack + GitHub Packages configuration
+afterEvaluate {
     publishing {
         publications {
             release(MavenPublication) {
@@ -78,7 +89,7 @@ afterEvaluate {
                         developer {
                             id.set("bearound")
                             name.set("BeAround Team")
-                            email.set("adnroid-sdk@bearound.com")
+                            email.set("android-sdk@bearound.com")
                         }
                     }
 
@@ -108,6 +119,11 @@ afterEvaluate {
     }
 }
 
+// Make assembleRelease automatically copy the AAR
+tasks.named("assembleRelease") {
+    finalizedBy(copyReleaseAAR)
+}
+
 dependencies {
     implementation 'androidx.core:core-ktx:1.16.0'
     implementation 'androidx.appcompat:appcompat:1.7.1'
@@ -116,7 +132,7 @@ dependencies {
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
 
-    api 'org.altbeacon:android-beacon-library:2.20.2'
+    api 'org.altbeacon:android-beacon-library:2.21.1'
     implementation 'com.google.android.gms:play-services-ads-identifier:18.2.0'
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
     implementation 'androidx.lifecycle:lifecycle-process:2.9.1'

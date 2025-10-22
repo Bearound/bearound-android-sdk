@@ -9,8 +9,8 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import org.bearound.sdk.BeAround
-import org.bearound.sdk.LogListener
+import io.bearound.sdk.BeAround
+import io.bearound.sdk.LogListener
 
 class MainActivity : AppCompatActivity(), LogListener {
 

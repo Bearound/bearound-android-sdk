@@ -42,7 +42,27 @@ Add the following to AndroidManifest.xml:
 
 ### 📦 Installation
 
-[![](https://jitpack.io/v/Bearound/bearound-android-sdk.svg)](https://jitpack.io/#Bearound/bearound-android-sdk) [![](https://img.shields.io/badge/GitHub%20Packages-v1.0.15-blue)](https://github.com/Bearound/bearound-android-sdk/packages/2631094)
+[![](https://jitpack.io/v/Bearound/bearound-android-sdk.svg)](https://jitpack.io/#Bearound/bearound-android-sdk)
+
+**Step 1:** Add JitPack repository to your `settings.gradle` (root level):
+
+```gradle
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }
+    }
+}
+```
+
+**Step 2:** Add the dependency to your app's `build.gradle`:
+
+```gradle
+dependencies {
+    implementation 'com.github.Bearound:bearound-android-sdk:1.0.16'
+}
+```
 
 ### Initialization
 Initialize the SDK inside your Application class after checking the required permissions:
@@ -90,6 +110,16 @@ You need to manually request permissions from the user, especially:
 - Use physical beacons or nRF Connect
 - Check logs tagged BeaconScanner
 - Ensure runtime permissions are granted
+
+## 📚 Documentation
+
+For detailed technical documentation, see the [docs/](docs/) folder:
+
+- **[JitPack Publishing Guide](docs/JITPACK_GUIDE.md)** - How to publish new versions (instant!)
+- **[Quick Reference](docs/QUICK_REFERENCE.md)** - Commands and common workflows
+- **[Build AAR Guide](docs/BUILD_AAR_GUIDE.md)** - How to generate .aar binaries
+- **[ProGuard Configuration](docs/PROGUARD_CONFIG_EXPLAINED.md)** - Obfuscation details
+- **[Changelog](CHANGELOG.md)** - Version history
 
 ### 📄 License
 

@@ -31,6 +31,13 @@ replay_pid*
 # Local configuration file (sdk path, etc)
 local.properties
 
+# GPG/PGP keys - NEVER commit these
+*.gpg
+*.pgp
+secring.*
+*.asc
+private-key.*
+
 # Generated files
 bin/
 gen/
@@ -48,3 +55,9 @@ build/
 *.ipr
 *.iws
 .idea/
+
+# Release AAR files (optional - uncomment to track .aar files)
+# release/*.aar
+
+# Keep the release directory structure
+!release/.gitkeep
