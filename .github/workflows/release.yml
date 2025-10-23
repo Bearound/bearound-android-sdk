@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.0.4)'
+        required: true
+        type: string
+
+jobs:
+  pre_release_validation:
+    name: Pre-Release Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Get version
+        id: get_version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate gradle.properties version
+        run: |
+          version="${{ steps.get_version.outputs.version }}"
+          gradle_version=$(grep SDK_VERSION gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          if [ "$gradle_version" != "$version" ]; then
+            echo "❌ Version mismatch: tag v$version != gradle.properties $gradle_version"
+            exit 1
+          fi
+          echo "✅ Version matches: $version"
+
+      - name: Verify changelog
+        run: |
+          version="${{ steps.get_version.outputs.version }}"
+          if [ ! -f CHANGELOG.md ]; then
+            echo "❌ CHANGELOG.md not found"
+            exit 1
+          fi
+          if ! grep -q "## \[$version\]" CHANGELOG.md; then
+            echo "❌ Version $version not found in CHANGELOG.md"
+            exit 1
+          fi
+          echo "✅ CHANGELOG.md is up to date"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run tests
+        run: ./gradlew :sdk:test
+
+      - name: Run lint
+        run: ./gradlew :sdk:lint
+
+      - name: Build release AAR
+        run: ./gradlew :sdk:assembleRelease
+
+      - name: Verify AAR was created
+        run: |
+          if [ ! -f sdk/build/outputs/aar/sdk-release.aar ]; then
+            echo "❌ Release AAR not found"
+            exit 1
+          fi
+          echo "✅ Release AAR created successfully"
+
+  publish_to_jitpack:
+    name: Publish to JitPack
+    runs-on: ubuntu-latest
+    needs: [pre_release_validation]
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Trigger JitPack build
+        run: |
+          version="${{ needs.pre_release_validation.outputs.version }}"
+          tag="v$version"
+          repo="github.com/${{ github.repository }}"
+
+          echo "Triggering JitPack build for $repo tag $tag..."
+          response=$(curl -X POST "https://jitpack.io/api/builds/$repo/$tag" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.JITPACK_TOKEN }}" \
+            -d '{}' -w "\n%{http_code}")
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n-1)
+
+          echo "JitPack response: $body"
+
+          if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; then
+            echo "✅ JitPack build triggered successfully"
+          else
+            echo "⚠️ JitPack build trigger returned HTTP $http_code"
+          fi
+
+  create_github_release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [pre_release_validation, publish_to_jitpack]
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          version="${{ needs.pre_release_validation.outputs.version }}"
+
+          # Extract the section for this version from CHANGELOG.md
+          changelog_entry=$(sed -n "/## \[$version\]/,/## \[/p" CHANGELOG.md | sed '$d' | tail -n +2)
+
+          if [ -z "$changelog_entry" ]; then
+            changelog_entry="Release version $version"
+          fi
+
+          # Save to file to handle multiline
+          echo "$changelog_entry" > /tmp/changelog.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.pre_release_validation.outputs.version }}
+          name: Release v${{ needs.pre_release_validation.outputs.version }}
+          body_path: /tmp/changelog.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release_success:
+    name: Release Success Notification
+    runs-on: ubuntu-latest
+    needs: [pre_release_validation, publish_to_jitpack, create_github_release]
+    if: always() && needs.publish_to_jitpack.result == 'success'
+
+    steps:
+      - name: Release completed successfully
+        run: |
+          version="${{ needs.pre_release_validation.outputs.version }}"
+          echo "🎉 Release v$version completed successfully!"
+          echo "🚀 JitPack: Published"
+          echo "📦 Implementation: com.github.Bearound:bearound-android-sdk:$version"
