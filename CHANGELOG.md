@@ -7,14 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.4] - 2025-10-23
+## [1.0.5] - 2025-10-23
 
 ### Fixed
-- **ProGuard/R8 Complete API Preservation**: Enhanced ProGuard rules to fully preserve all public APIs
-  - Fixed companion object accessibility with all static methods (`getInstance()`, `isInitialized()`)
-  - Ensured all public methods in BeAround class are preserved (initialize, stop, addBeaconEventListener, etc.)
-  - Fixed enum classes visibility (TimeScanBeacons, SizeBackupLostBeacons)
-  - All public interfaces and data classes now fully accessible (BeaconEventListener, LogListener, BeaconData, SyncResult)
 
 ### Changed
 - Simplified ProGuard rules using wildcard pattern `*` for better reliability
@@ -26,10 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added explicit rule: `-keep class io.bearound.sdk.BeAround$Companion { * }`
 - Added wildcard rule for all nested classes: `-keep class io.bearound.sdk.BeAround$* { * }`
 - Ensures Flutter, React Native, and native Android can access all SDK features without "Unresolved reference" errors
-
----
-
-## [1.0.3] - 2025-10-22
 
 ### ⚠️ BREAKING CHANGES
 - **Package Name Changed**: `org.bearound.sdk` → `io.bearound.sdk`

@@ -192,17 +192,6 @@ After initialization, the SDK automatically:
 - Check logs tagged BeaconScanner
 - Ensure runtime permissions are granted
 
-## 📚 Documentation
-
-For detailed technical documentation, see the [docs/](docs/) folder:
-
-- **[Battery Optimization Guide](docs/BATTERY_OPTIMIZATION.md)** - Handle battery restrictions and background execution
-- **[JitPack Publishing Guide](docs/JITPACK_GUIDE.md)** - How to publish new versions (instant!)
-- **[Quick Reference](docs/QUICK_REFERENCE.md)** - Commands and common workflows
-- **[Build AAR Guide](docs/BUILD_AAR_GUIDE.md)** - How to generate .aar binaries
-- **[ProGuard Configuration](docs/PROGUARD_CONFIG_EXPLAINED.md)** - Obfuscation details
-- **[Changelog](CHANGELOG.md)** - Version history
-
 ### 📄 License
 
 MIT © Bearound
