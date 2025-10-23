@@ -8,12 +8,22 @@ Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by
 
 ## 🧩 Features
 
-- Continuous region monitoring for beacons
-- Sends `enter` and `exit` events to a remote API
-- Captures distance, RSSI, UUID, major/minor, Advertising ID
-- Foreground service support for background execution
-- Sends telemetry data (if available)
-- Built-in debug logging with tag BeAroundSdk
+- **Continuous region monitoring** for BLE beacons
+- **Real-time beacon events** with `BeaconEventListener` system
+- **Automatic API synchronization** for beacon enter/exit events
+- **Rich beacon data capture**:
+  - Distance estimation and RSSI
+  - UUID, major, minor identifiers
+  - Bluetooth MAC address
+  - Timestamp and app state (foreground/background/inactive)
+  - Google Advertising ID
+- **Event listener callbacks**:
+  - `onBeaconEnter` - Triggered when entering beacon range
+  - `onBeaconExit` - Triggered when leaving beacon range
+  - `onBeaconSync` - Confirmation of successful API sync
+- **Foreground service** support for background execution
+- **Built-in debug logging** with tag BeAroundSdk
+- **Privacy-first architecture** with AES-GCM encryption
 
 ---
 
@@ -60,7 +70,7 @@ dependencyResolutionManagement {
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:1.0.16'
+    implementation 'com.github.Bearound:bearound-android-sdk:1.0.17'
 }
 ```
 
@@ -93,11 +103,80 @@ You need to manually request permissions from the user, especially:
 
 📌 Without these permissions, the SDK will not function properly and will not be able to detect beacons in the background.
 
-### ⚠️ After initializing it, it starts executing the service, you can follow this by activating the debug and looking at the Logs with the TAG: BeAroundSdk
+### 📡 Beacon Event Listeners
 
-- The SDK automatically monitors beacons with the UUID
-- When entering or exiting beacon regions, it sends a JSON payload to the remote API.
-- Events include beacon identifiers, RSSI, distance, app state (foreground/background/inactive), Bluetooth details, and Google Advertising ID.
+The SDK provides a powerful event system to receive real-time beacon detection updates:
+
+```kotlin
+import io.bearound.sdk.BeAround
+import io.bearound.sdk.listeners.BeaconEventListener
+import io.bearound.sdk.model.BeaconEventData
+
+class MyActivity : AppCompatActivity() {
+
+    private val beaconListener = object : BeaconEventListener {
+        override fun onBeaconEnter(beacon: BeaconEventData) {
+            // Called when entering a beacon's range
+            Log.d("BeAround", "Entered beacon: ${beacon.uuid}")
+            Log.d("BeAround", "Distance: ${beacon.distance}m, RSSI: ${beacon.rssi}")
+        }
+
+        override fun onBeaconExit(beacon: BeaconEventData) {
+            // Called when leaving a beacon's range
+            Log.d("BeAround", "Exited beacon: ${beacon.uuid}")
+        }
+
+        override fun onBeaconSync(beacon: BeaconEventData, success: Boolean) {
+            // Called after API synchronization attempt
+            if (success) {
+                Log.d("BeAround", "Beacon event synced to API")
+            }
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val beAround = BeAround.getInstance(applicationContext)
+        beAround.addBeaconEventListener(beaconListener)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        BeAround.getInstance(applicationContext).removeBeaconEventListener(beaconListener)
+    }
+}
+```
+
+### 📊 Beacon Event Data
+
+Each beacon event contains rich information:
+
+```kotlin
+data class BeaconEventData(
+    val uuid: String,           // Beacon UUID
+    val major: Int,             // Major identifier
+    val minor: Int,             // Minor identifier
+    val rssi: Int,              // Signal strength
+    val distance: Double,       // Estimated distance in meters
+    val bluetoothAddress: String, // MAC address
+    val timestamp: Long,        // Event timestamp
+    val eventType: String,      // "enter" or "exit"
+    val appState: String        // "foreground", "background", or "inactive"
+)
+```
+
+### ⚠️ Automatic Background Monitoring
+
+After initialization, the SDK automatically:
+
+- Starts a foreground service for continuous monitoring
+- Detects beacons with the configured UUID
+- Sends enter/exit events to the remote API with AES-GCM encryption
+- Triggers registered event listeners in real-time
+- Captures telemetry data including Google Advertising ID (if available)
+
+💡 Enable debug mode to see detailed logs with tag `BeAroundSdk`
 
 ### 🔐 Security
 
@@ -115,6 +194,7 @@ You need to manually request permissions from the user, especially:
 
 For detailed technical documentation, see the [docs/](docs/) folder:
 
+- **[Battery Optimization Guide](docs/BATTERY_OPTIMIZATION.md)** - Handle battery restrictions and background execution
 - **[JitPack Publishing Guide](docs/JITPACK_GUIDE.md)** - How to publish new versions (instant!)
 - **[Quick Reference](docs/QUICK_REFERENCE.md)** - Commands and common workflows
 - **[Build AAR Guide](docs/BUILD_AAR_GUIDE.md)** - How to generate .aar binaries
