@@ -119,5 +119,5 @@ dependencies {
     api 'org.altbeacon:android-beacon-library:2.21.1'
     implementation 'com.google.android.gms:play-services-ads-identifier:18.2.0'
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
-    implementation 'androidx.lifecycle:lifecycle-process:2.9.1'
+    implementation 'androidx.lifecycle:lifecycle-process:2.9.4'
 }
