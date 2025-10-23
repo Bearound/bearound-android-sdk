@@ -11,15 +11,33 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.bearound.sdk.BeAround
+import io.bearound.sdk.BeaconData
+import io.bearound.sdk.BeaconListener
 import io.bearound.sdk.LogListener
+import io.bearound.sdk.RegionListener
+import io.bearound.sdk.SyncListener
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-class MainActivity : AppCompatActivity(), LogListener {
+class MainActivity : AppCompatActivity(),
+    LogListener,
+    BeaconListener,
+    SyncListener,
+    RegionListener {
 
     private val logs = mutableListOf<String>()
     private lateinit var beAround: BeAround
 
+    // UI Components
     private lateinit var logTextView: TextView
     private lateinit var clearLogsButton: Button
+    private lateinit var regionStatusTextView: TextView
+    private lateinit var beaconCountTextView: TextView
+    private lateinit var beaconsTextView: TextView
+    private lateinit var syncStatusTextView: TextView
+
+    private val dateFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
     companion object {
         private const val LOCATION_PERMISSION_REQUEST_CODE = 1001
@@ -27,19 +45,21 @@ class MainActivity : AppCompatActivity(), LogListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Usa o layout XML
         setContentView(R.layout.activity_main)
 
         beAround = BeAround.getInstance(applicationContext)
 
+        // Initialize UI components
         logTextView = findViewById(R.id.logTextView)
-
-        clearLogsButton = findViewById<Button>(R.id.clearLogsButton)
+        clearLogsButton = findViewById(R.id.clearLogsButton)
+        regionStatusTextView = findViewById(R.id.regionStatusTextView)
+        beaconCountTextView = findViewById(R.id.beaconCountTextView)
+        beaconsTextView = findViewById(R.id.beaconsTextView)
+        syncStatusTextView = findViewById(R.id.syncStatusTextView)
 
         clearLogsButton.setOnClickListener {
             logs.clear()
-            logTextView.text = ""
+            logTextView.text = "Logs cleared"
         }
 
         // Verifica permissões
@@ -93,10 +113,17 @@ class MainActivity : AppCompatActivity(), LogListener {
     private fun initializeBeAround() {
         beAround.initialize(
             iconNotification = R.drawable.ic_launcher_foreground,
-            clientId = "",
+            clientToken = "",
             debug = true
         )
+
+        // Add all listeners
         beAround.addLogListener(this)
+        beAround.addBeaconListener(this)
+        beAround.addSyncListener(this)
+        beAround.addRegionListener(this)
+
+        addLog("SDK initialized successfully")
     }
 
     // Callback da permissão
@@ -123,17 +150,108 @@ class MainActivity : AppCompatActivity(), LogListener {
         }
     }
 
+    // LogListener
     override fun onLogAdded(log: String) {
-        logs.add(log)
+        addLog(log)
+    }
+
+    // BeaconListener
+    override fun onBeaconsDetected(beacons: List<BeaconData>, eventType: String) {
+        addLog("Beacons detected - Event: $eventType, Count: ${beacons.size}")
+
         runOnUiThread {
-            logTextView.text = logs.joinToString("\n")
+            beaconCountTextView.text = "Count: ${beacons.size} (Event: $eventType)"
+
+            val beaconsText = beacons.joinToString("\n\n") { beacon ->
+                """
+                Major: ${beacon.major} | Minor: ${beacon.minor}
+                RSSI: ${beacon.rssi} dBm
+                BT: ${beacon.bluetoothName ?: "N/A"}
+                Address: ${beacon.bluetoothAddress}
+                Time: ${dateFormat.format(Date(beacon.lastSeen))}
+                """.trimIndent()
+            }
+
+            beaconsTextView.text = if (beacons.isEmpty()) {
+                "No beacons detected yet"
+            } else {
+                beaconsText
+            }
+        }
+    }
+
+    // SyncListener
+    override fun onSyncSuccess(eventType: String, beaconCount: Int, message: String) {
+        addLog("✓ Sync SUCCESS - Event: $eventType, Count: $beaconCount")
+
+        runOnUiThread {
+            syncStatusTextView.text = "✓ Success (${dateFormat.format(Date())})\n" +
+                    "Event: $eventType\n" +
+                    "Beacons: $beaconCount\n" +
+                    "Response: $message"
+            syncStatusTextView.setTextColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
+        }
+    }
+
+    override fun onSyncError(eventType: String, beaconCount: Int, errorCode: Int?, errorMessage: String) {
+        addLog("✗ Sync ERROR - Event: $eventType, Code: $errorCode, Message: $errorMessage")
+
+        runOnUiThread {
+            syncStatusTextView.text = "✗ Error (${dateFormat.format(Date())})\n" +
+                    "Event: $eventType\n" +
+                    "Beacons: $beaconCount\n" +
+                    "Error Code: ${errorCode ?: "N/A"}\n" +
+                    "Message: $errorMessage"
+            syncStatusTextView.setTextColor(ContextCompat.getColor(this, android.R.color.holo_red_dark))
+        }
+    }
+
+    // RegionListener
+    override fun onRegionEnter(regionName: String) {
+        addLog("→ ENTERED region: $regionName")
+
+        runOnUiThread {
+            regionStatusTextView.text = "✓ Inside Region\n$regionName\nEntered at: ${dateFormat.format(Date())}"
+            regionStatusTextView.setTextColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
+
+            Toast.makeText(this, "Entered beacon region!", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onRegionExit(regionName: String) {
+        addLog("← EXITED region: $regionName")
+
+        runOnUiThread {
+            regionStatusTextView.text = "○ Outside Region\n$regionName\nExited at: ${dateFormat.format(Date())}"
+            regionStatusTextView.setTextColor(ContextCompat.getColor(this, android.R.color.darker_gray))
+
+            Toast.makeText(this, "Exited beacon region", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Helper method to add logs with timestamp
+    private fun addLog(message: String) {
+        val timestamp = dateFormat.format(Date())
+        val logEntry = "[$timestamp] $message"
+        logs.add(logEntry)
+
+        // Keep only last 50 logs
+        if (logs.size > 50) {
+            logs.removeAt(0)
+        }
+
+        runOnUiThread {
+            logTextView.text = logs.takeLast(20).joinToString("\n")
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        // Remove o listener para evitar memory leaks
+        // Remove all listeners to prevent memory leaks
         beAround.removeLogListener(this)
+        beAround.removeBeaconListener(this)
+        beAround.removeSyncListener(this)
+        beAround.removeRegionListener(this)
     }
 }
 

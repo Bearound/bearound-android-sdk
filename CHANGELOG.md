@@ -7,7 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.18] - 2025-10-23
+## [1.0.4] - 2025-01-23
+
+### 🎉 New Features - Event Listeners System
+
+The SDK now provides comprehensive listener interfaces for real-time monitoring of beacon detection, region events, and API synchronization status.
+
+#### Added Listener Interfaces
+- **`BeaconListener`** - Receive callbacks when beacons are detected
+  - `onBeaconsDetected(beacons: List<BeaconData>, eventType: String)` - Called when beacons are found
+  - Provides complete beacon information (UUID, major, minor, RSSI, Bluetooth details, timestamp)
+  - Event types: "enter", "exit", "failed"
+
+- **`SyncListener`** - Monitor API synchronization operations
+  - `onSyncSuccess(eventType: String, beaconCount: Int, message: String)` - Called on successful sync
+  - `onSyncError(eventType: String, beaconCount: Int, errorCode: Int?, errorMessage: String)` - Called on sync failure
+  - Track both HTTP errors and network exceptions
+
+- **`RegionListener`** - Track beacon region entry and exit
+  - `onRegionEnter(regionName: String)` - Called when entering a beacon region
+  - `onRegionExit(regionName: String)` - Called when exiting a beacon region
+
+#### New Data Models
+- **`BeaconData`** - Data class representing detected beacon information
+  - `uuid: String` - Beacon UUID
+  - `major: Int` - Major identifier
+  - `minor: Int` - Minor identifier
+  - `rssi: Int` - Signal strength
+  - `bluetoothName: String?` - Bluetooth device name
+  - `bluetoothAddress: String` - MAC address
+  - `lastSeen: Long` - Detection timestamp
+
+### Usage Example
+
+```kotlin
+class MainActivity : AppCompatActivity(),
+    BeaconListener,
+    SyncListener,
+    RegionListener {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val beAround = BeAround.getInstance(this)
+        beAround.initialize(
+            iconNotification = R.drawable.ic_notification,
+            clientToken = "your-token",
+            debug = true
+        )
+
+        // Add listeners
+        beAround.addBeaconListener(this)
+        beAround.addSyncListener(this)
+        beAround.addRegionListener(this)
+    }
+
+    // BeaconListener
+    override fun onBeaconsDetected(beacons: List<BeaconData>, eventType: String) {
+        beacons.forEach { beacon ->
+            Log.d("Beacon", "Major: ${beacon.major}, Minor: ${beacon.minor}, RSSI: ${beacon.rssi}")
+        }
+    }
+
+    // SyncListener
+    override fun onSyncSuccess(eventType: String, beaconCount: Int, message: String) {
+        Log.d("Sync", "Success: $beaconCount beacons synced")
+    }
+
+    override fun onSyncError(eventType: String, beaconCount: Int, errorCode: Int?, errorMessage: String) {
+        Log.e("Sync", "Error: $errorMessage")
+    }
+
+    // RegionListener
+    override fun onRegionEnter(regionName: String) {
+        Toast.makeText(this, "Entered beacon region!", Toast.LENGTH_SHORT).show()
+    }
+
+    override fun onRegionExit(regionName: String) {
+        Toast.makeText(this, "Exited beacon region", Toast.LENGTH_SHORT).show()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // Remove listeners to prevent memory leaks
+        val beAround = BeAround.getInstance(this)
+        beAround.removeBeaconListener(this)
+        beAround.removeSyncListener(this)
+        beAround.removeRegionListener(this)
+    }
+}
+```
+
+### Enhanced Example App
+
+The example app has been completely redesigned to demonstrate all new features:
+- **Modern UI** with Material CardView components
+- **Real-time beacon detection** display with detailed information
+- **Sync status monitoring** with visual success/error indicators
+- **Region status tracking** with entry/exit timestamps
+- **Comprehensive SDK logs** with timestamps and automatic cleanup
+- **Color-coded status** (green for success, red for errors)
+
+### Technical Details
+- All listener callbacks are executed on background threads (IO dispatcher)
+- Use `runOnUiThread` when updating UI from listener callbacks
+- Multiple listeners of the same type can be registered simultaneously
+- Listeners are properly managed to prevent memory leaks
+- Thread-safe listener management with mutableListOf
 
 ### Fixed
 
@@ -15,12 +121,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Simplified ProGuard rules using wildcard pattern `*` for better reliability
 - Updated both `proguard-rules.pro` and `consumer-rules.pro` for consistent behavior
 - All nested classes and companion objects now explicitly preserved
+- **Enhanced Event Notifications**: All beacon detection events now trigger listener callbacks in addition to API sync
+- **Improved Error Handling**: Listener callbacks are wrapped in try-catch blocks to prevent single listener failures from affecting others
+- **Thread Safety**: Sync callbacks are dispatched on background threads using `CoroutineScope(Dispatchers.IO)`
 
-### Technical Details
+### ProGuard Configuration
 - Changed from `public <methods>` to `public *` for comprehensive preservation
 - Added explicit rule: `-keep class io.bearound.sdk.BeAround$Companion { * }`
 - Added wildcard rule for all nested classes: `-keep class io.bearound.sdk.BeAround$* { * }`
 - Ensures Flutter, React Native, and native Android can access all SDK features without "Unresolved reference" errors
+- New listener interfaces are fully preserved and accessible
 
 ### ⚠️ BREAKING CHANGES
 - **Package Name Changed**: `org.bearound.sdk` → `io.bearound.sdk`
@@ -35,27 +145,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     ```
 
 ### Added
-- **BeaconEventListener Interface**: New comprehensive listener system for receiving real-time beacon events and API sync status updates
-  - `onBeaconsDetected(beacons, eventType)`: Notifies when beacons are detected with ENTER or EXIT event type
-  - `onBeaconRegionEnter(beacons)`: Triggered when entering a beacon region
-  - `onBeaconRegionExit(beacons)`: Triggered when exiting a beacon region
-  - `onSyncSuccess(result)`: Called when API sync completes successfully with event details
-  - `onSyncError(result)`: Called when API sync fails with error details
-
-- **BeaconData Data Class**: New structured representation of beacon information
-  - Includes: `uuid`, `major`, `minor`, `rssi`, `bluetoothName`, `bluetoothAddress`, `lastSeen`
-  - Provides type-safe access to beacon properties for consumers
-
-- **BeaconEventType Enum**: Defines beacon event types (`ENTER`, `EXIT`)
-
-- **SyncResult Sealed Class**: Represents API sync operation results
-  - `SyncResult.Success`: Contains event type and beacon count
-  - `SyncResult.Error`: Contains event type, error message, and beacon count
-
-- **Listener Management Methods**:
-  - `addBeaconEventListener(listener)`: Register a listener for beacon events
-  - `removeBeaconEventListener(listener)`: Unregister a specific listener
-  - `removeAllBeaconEventListeners()`: Clear all registered listeners
 
 ### Changed
 - **Enhanced Event Notifications**: All beacon detection events now trigger listener callbacks in addition to API sync
