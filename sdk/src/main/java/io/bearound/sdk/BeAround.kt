@@ -27,7 +27,7 @@ import java.util.Date
  *
  * @param context Application context for initializing the beacon manager and accessing system services.
  */
-class BeAround private constructor(private val context: Context) : MonitorNotifier {
+public class BeAround private constructor(private val context: Context) : MonitorNotifier {
 
     private val beaconUUID = "e25b8d3c-947a-452f-a13f-589cb706d2e5"
     private val beaconManager = BeaconManager.getInstanceForApplication(context.applicationContext)
@@ -126,7 +126,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
         }
     }
 
-    enum class TimeScanBeacons(val seconds: Long) {
+    public enum class TimeScanBeacons(val seconds: Long) {
         TIME_5(5000L),
         TIME_10(10000L),
         TIME_15(15000L),
@@ -134,7 +134,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
         TIME_25(25000L)
     }
 
-    enum class SizeBackupLostBeacons(val size: Int) {
+    public enum class SizeBackupLostBeacons(val size: Int) {
         SIZE_5(5),
         SIZE_10(10),
         SIZE_15(15),

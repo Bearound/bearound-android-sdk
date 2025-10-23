@@ -27,7 +27,7 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled true
+            minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {
@@ -89,7 +89,7 @@ afterEvaluate {
                         developer {
                             id.set("bearound")
                             name.set("BeAround Team")
-                            email.set("android-sdk@bearound.com")
+                            email.set("contact@bearound.com")
                         }
                     }
 
