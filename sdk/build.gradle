@@ -30,9 +30,6 @@ android {
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
-        debug {
-            minifyEnabled false
-        }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_11
@@ -53,16 +50,8 @@ task javadocJar(type: Jar, dependsOn: dokkaJavadoc) {
     from dokkaJavadoc.outputDirectory
 }
 
-// Task to copy the release AAR to the project root for easy distribution
-task copyReleaseAAR(type: Copy) {
-    from("$buildDir/outputs/aar")
-    into("$rootDir/release")
-    include("sdk-release.aar")
-    rename("sdk-release.aar", "bearound-android-sdk-${findProperty('SDK_VERSION')}.aar")
-}
-
-// JitPack + GitHub Packages configuration
 afterEvaluate {
+
     publishing {
         publications {
             release(MavenPublication) {
@@ -101,6 +90,17 @@ afterEvaluate {
                 }
             }
         }
+
+        repositories {
+            maven {
+                name = "GitHubPackages"
+                url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
+                credentials {
+                    username = System.getenv("GPR_USER")
+                    password = System.getenv("GPR_KEY")
+                }
+            }
+        }
     }
 
     tasks.named("generateMetadataFileForReleasePublication") {
@@ -116,8 +116,8 @@ dependencies {
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
 
-    api 'org.altbeacon:android-beacon-library:2.21.1'
+    api 'org.altbeacon:android-beacon-library:2.20.2'
     implementation 'com.google.android.gms:play-services-ads-identifier:18.2.0'
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
-    implementation 'androidx.lifecycle:lifecycle-process:2.9.4'
+    implementation 'androidx.lifecycle:lifecycle-process:2.9.1'
 }
