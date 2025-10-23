@@ -1,5 +1,7 @@
 # 🐻 BeAround SDKs Documentation
 
+[![Release](https://github.com/Bearound/bearound-android-sdk/actions/workflows/release.yml/badge.svg)](https://github.com/Bearound/bearound-android-sdk/actions/workflows/release.yml)
+
 Official SDKs for integrating BeAround's secure BLE beacon detection and indoor location technology across Android, iOS, React Native, and Flutter.
 
 ## 📱 BeAround-android-sdk
