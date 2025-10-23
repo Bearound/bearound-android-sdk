@@ -27,7 +27,7 @@ import java.util.Date
  *
  * @param context Application context for initializing the beacon manager and accessing system services.
  */
-public class BeAround private constructor(private val context: Context) : MonitorNotifier {
+class BeAround private constructor(private val context: Context) : MonitorNotifier {
 
     private val beaconUUID = "e25b8d3c-947a-452f-a13f-589cb706d2e5"
     private val beaconManager = BeaconManager.getInstanceForApplication(context.applicationContext)
@@ -126,7 +126,7 @@ public class BeAround private constructor(private val context: Context) : Monito
         }
     }
 
-    public enum class TimeScanBeacons(val seconds: Long) {
+    enum class TimeScanBeacons(val seconds: Long) {
         TIME_5(5000L),
         TIME_10(10000L),
         TIME_15(15000L),
@@ -134,7 +134,7 @@ public class BeAround private constructor(private val context: Context) : Monito
         TIME_25(25000L)
     }
 
-    public enum class SizeBackupLostBeacons(val size: Int) {
+    enum class SizeBackupLostBeacons(val size: Int) {
         SIZE_5(5),
         SIZE_10(10),
         SIZE_15(15),
@@ -159,14 +159,14 @@ public class BeAround private constructor(private val context: Context) : Monito
     /**
      * Sets the size of the backup list for lost beacons.
      */
-    public fun changeListSizeBackupLostBeacons(size: SizeBackupLostBeacons) {
+    fun changeListSizeBackupLostBeacons(size: SizeBackupLostBeacons) {
         sizeListBackupLostBeacons = size
     }
 
     /**
      * Sets the scan interval for beacon detection.
      */
-    public fun changeScamTimeBeacons(time: TimeScanBeacons) {
+    fun changeScamTimeBeacons(time: TimeScanBeacons) {
         timeScanBeacons = time
     }
 
@@ -195,10 +195,10 @@ public class BeAround private constructor(private val context: Context) : Monito
                 NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
                     .setSmallIcon(iconNotification)
                     .setContentTitle(
-                        context.getString(io.bearound.sdk.R.string.title_notification_sdk)
+                        context.getString(R.string.title_notification_sdk)
                     )
                     .setContentText(
-                        context.getString(io.bearound.sdk.R.string.subtitle_notification_sdk)
+                        context.getString(R.string.subtitle_notification_sdk)
                     )
                     .setOngoing(true)
                     .build()
