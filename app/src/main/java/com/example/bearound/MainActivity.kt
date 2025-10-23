@@ -2,6 +2,7 @@ package com.example.bearound
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
@@ -41,23 +42,61 @@ class MainActivity : AppCompatActivity(), LogListener {
             logTextView.text = ""
         }
 
-        // Verifica permissão
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-            == PackageManager.PERMISSION_GRANTED
-        ) {
-            beAround.initialize(
-                iconNotification = R.drawable.ic_launcher_foreground,
-                clientId = "",
-                debug = true
-            )
-            beAround.addLogListener(this) // Registrar o listener
+        // Verifica permissões
+        if (hasRequiredPermissions()) {
+            initializeBeAround()
         } else {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
-                LOCATION_PERMISSION_REQUEST_CODE
-            )
+            requestRequiredPermissions()
         }
+    }
+
+    private fun hasRequiredPermissions(): Boolean {
+        val locationGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        // Para Android 12+ (API 31+), também precisamos das permissões de Bluetooth
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val bluetoothScanGranted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.BLUETOOTH_SCAN
+            ) == PackageManager.PERMISSION_GRANTED
+
+            val bluetoothConnectGranted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) == PackageManager.PERMISSION_GRANTED
+
+            return locationGranted && bluetoothScanGranted && bluetoothConnectGranted
+        }
+
+        return locationGranted
+    }
+
+    private fun requestRequiredPermissions() {
+        val permissions = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
+
+        // Para Android 12+ (API 31+), adiciona permissões de Bluetooth
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+
+        ActivityCompat.requestPermissions(
+            this,
+            permissions.toTypedArray(),
+            LOCATION_PERMISSION_REQUEST_CODE
+        )
+    }
+
+    private fun initializeBeAround() {
+        beAround.initialize(
+            iconNotification = R.drawable.ic_launcher_foreground,
+            clientId = "",
+            debug = true
+        )
+        beAround.addLogListener(this)
     }
 
     // Callback da permissão
@@ -69,15 +108,17 @@ class MainActivity : AppCompatActivity(), LogListener {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
 
         if (requestCode == LOCATION_PERMISSION_REQUEST_CODE) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                beAround.initialize(
-                    iconNotification = R.drawable.ic_launcher_foreground,
-                    clientId = "",
-                    debug = true
-                )
-                beAround.addLogListener(this) // Registrar o listener
+            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                initializeBeAround()
             } else {
-                Toast.makeText(this, "Permissão de localização é necessária.", Toast.LENGTH_LONG).show()
+                val deniedPermissions = permissions.filterIndexed { index, _ ->
+                    grantResults[index] != PackageManager.PERMISSION_GRANTED
+                }
+                Toast.makeText(
+                    this,
+                    "Permissões necessárias: ${deniedPermissions.joinToString(", ")}",
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
     }

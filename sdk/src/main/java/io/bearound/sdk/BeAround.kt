@@ -195,10 +195,10 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                 NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
                     .setSmallIcon(iconNotification)
                     .setContentTitle(
-                        context.getString(com.bearound.beacon.R.string.title_notification_sdk)
+                        context.getString(io.bearound.sdk.R.string.title_notification_sdk)
                     )
                     .setContentText(
-                        context.getString(com.bearound.beacon.R.string.subtitle_notification_sdk)
+                        context.getString(io.bearound.sdk.R.string.subtitle_notification_sdk)
                     )
                     .setOngoing(true)
                     .build()

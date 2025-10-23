@@ -82,7 +82,7 @@
 -keep class kotlin.Metadata { *; }
 
 # Keep BuildConfig
--keep class com.bearound.beacon.BuildConfig { *; }
+-keep class io.bearound.sdk.BuildConfig { *; }
 
 # Preserve generic signatures for Kotlin
 -keepattributes Signature
