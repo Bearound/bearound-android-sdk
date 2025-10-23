@@ -24,20 +24,35 @@
 # BeAround SDK - ProGuard Rules
 # ============================================================================
 
-# Keep BeAround class - preserve all public APIs and companion object
+# Keep BeAround class completely - NO obfuscation on public members
 -keep public class io.bearound.sdk.BeAround {
-    public *;
-    public static *;
-}
-
-# Explicitly keep companion object and ALL its members
--keep class io.bearound.sdk.BeAround$Companion {
     *;
 }
 
-# Keep all nested classes (enums)
+# CRITICAL: Keep companion object - this holds getInstance() and isInitialized()
+-keepclassmembers class io.bearound.sdk.BeAround {
+    ** Companion;
+}
+
+# CRITICAL: Keep ALL companion object methods and fields
+-keep,allowobfuscation class io.bearound.sdk.BeAround$Companion {
+    *;
+}
+
+# Keep companion object methods by name (explicit)
+-keepclassmembers class io.bearound.sdk.BeAround$Companion {
+    public ** getInstance(...);
+    public ** isInitialized();
+}
+
+# Keep all nested classes (enums, companion)
 -keep class io.bearound.sdk.BeAround$* {
     *;
+}
+
+# Additional safeguard - keep all static methods in BeAround
+-keepclassmembers class io.bearound.sdk.BeAround {
+    public static **;
 }
 
 # Keep public listener interfaces
