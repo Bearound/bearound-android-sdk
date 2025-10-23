@@ -10,6 +10,15 @@
     public <fields>;
 }
 
+# Keep companion object and its methods
+-keepclassmembers class io.bearound.sdk.BeAround {
+    public static ** Companion;
+}
+-keep class io.bearound.sdk.BeAround$Companion {
+    public <methods>;
+    public <fields>;
+}
+
 # Keep all public interfaces
 -keep public interface io.bearound.sdk.BeaconEventListener {
     public <methods>;

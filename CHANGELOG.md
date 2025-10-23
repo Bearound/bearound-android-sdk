@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.16] - 2025-10-22
+## [1.0.4] - 2025-10-23
+
+### Fixed
+- **ProGuard/R8 Obfuscation Issue**: Fixed companion object being obfuscated, which caused "Unresolved reference 'getInstance'" errors in Flutter SDK and other consumers
+  - Added explicit ProGuard rules to preserve `BeAround.Companion` class
+  - Added rules to keep all companion object methods and fields
+  - Ensures `getInstance()` and `isInitialized()` methods remain accessible after code obfuscation
+
+### Changed
+- Updated consumer ProGuard rules (`consumer-rules.pro`) to protect companion object from obfuscation
+- These rules are automatically applied to all projects that consume the SDK via JitPack
+
+### Technical Details
+- Added `-keep class io.bearound.sdk.BeAround$Companion` rule
+- Added `-keepclassmembers` rule to preserve companion object reference in parent class
+- Companion object methods are now guaranteed to be accessible in release builds
+
+---
+
+## [1.0.3] - 2025-10-22
 
 ### ⚠️ BREAKING CHANGES
 - **Package Name Changed**: `org.bearound.sdk` → `io.bearound.sdk`
