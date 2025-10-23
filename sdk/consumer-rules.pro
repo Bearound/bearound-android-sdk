@@ -3,20 +3,20 @@
 # These rules will be applied to projects that consume this SDK
 # ============================================================================
 
-# Keep all public API classes and methods
+# Keep BeAround class - preserve all public APIs and companion object
 -keep public class io.bearound.sdk.BeAround {
-    public <methods>;
-    public static <methods>;
-    public <fields>;
+    public *;
+    public static *;
 }
 
-# Keep companion object and its methods
--keepclassmembers class io.bearound.sdk.BeAround {
-    public static ** Companion;
-}
+# Explicitly keep companion object and ALL its members
 -keep class io.bearound.sdk.BeAround$Companion {
-    public <methods>;
-    public <fields>;
+    *;
+}
+
+# Keep all nested classes (enums)
+-keep class io.bearound.sdk.BeAround$* {
+    *;
 }
 
 # Keep all public interfaces

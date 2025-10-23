@@ -24,55 +24,50 @@
 # BeAround SDK - ProGuard Rules
 # ============================================================================
 
-# Keep all public APIs - these are meant to be used by consumers
+# Keep BeAround class - preserve all public APIs and companion object
 -keep public class io.bearound.sdk.BeAround {
     public *;
     public static *;
 }
 
+# Explicitly keep companion object and ALL its members
+-keep class io.bearound.sdk.BeAround$Companion {
+    *;
+}
+
+# Keep all nested classes (enums)
+-keep class io.bearound.sdk.BeAround$* {
+    *;
+}
+
 # Keep public listener interfaces
 -keep public interface io.bearound.sdk.BeaconEventListener {
-    public *;
+    *;
 }
 
 -keep public interface io.bearound.sdk.LogListener {
-    public *;
+    *;
 }
 
 # Keep public data classes and their properties
 -keep public class io.bearound.sdk.BeaconData {
-    public *;
+    *;
 }
 
--keep public class io.bearound.sdk.BeaconEventType {
-    public *;
+-keep public enum io.bearound.sdk.BeaconEventType {
+    *;
 }
 
 -keep public class io.bearound.sdk.SyncResult {
-    public *;
+    *;
 }
 
 -keep public class io.bearound.sdk.SyncResult$Success {
-    public *;
+    *;
 }
 
 -keep public class io.bearound.sdk.SyncResult$Error {
-    public *;
-}
-
-# Keep public enums
--keep public enum io.bearound.sdk.BeAround$TimeScanBeacons {
-    public *;
-}
-
--keep public enum io.bearound.sdk.BeAround$SizeBackupLostBeacons {
-    public *;
-}
-
-# Obfuscate all private and internal methods
--keepclassmembers class io.bearound.sdk.BeAround {
-    private *;
-    private static *;
+    *;
 }
 
 # Keep annotations
