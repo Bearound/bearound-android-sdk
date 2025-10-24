@@ -96,24 +96,13 @@ afterEvaluate {
             }
         }
 
-//        repositories {
-//            maven {
-//                name = "GitHubPackages"
-//                url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
-//                credentials {
-//                    username = System.getenv("GPR_USER")
-//                    password = System.getenv("GPR_KEY")
-//                }
-//            }
-//        }
-
         repositories {
             maven {
-                url = uri("http://192.168.10.29:8081/repository/maven-releases/")
-                allowInsecureProtocol = true
+                name = "GitHubPackages"
+                url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
                 credentials {
-                    username = "faraujo"
-                    password = "Goup11xmano*"
+                    username = System.getenv("GPR_USER")
+                    password = System.getenv("GPR_KEY")
                 }
             }
         }
