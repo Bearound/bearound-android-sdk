@@ -21,7 +21,6 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Date
-
 /**
  * BeAround SDK - Class for managing beacon monitoring and syncing events with a remote API.
  *
@@ -67,7 +66,9 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
     }
 
     private val logListeners = mutableListOf<LogListener>()
-    private val beaconEventListeners = mutableListOf<BeaconEventListener>()
+    private val beaconListeners = mutableListOf<BeaconListener>()
+    private val syncListeners = mutableListOf<SyncListener>()
+    private val regionListeners = mutableListOf<RegionListener>()
 
     fun addLogListener(listener: LogListener) {
         if (!logListeners.contains(listener)) {
@@ -79,51 +80,34 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
         logListeners.remove(listener)
     }
 
-    /**
-     * Adds a beacon event listener to receive beacon detection and sync events.
-     *
-     * @param listener The listener to add.
-     */
-    fun addBeaconEventListener(listener: BeaconEventListener) {
-        if (!beaconEventListeners.contains(listener)) {
-            beaconEventListeners.add(listener)
-            log("BeaconEventListener added. Total listeners: ${beaconEventListeners.size}")
+    fun addBeaconListener(listener: BeaconListener) {
+        if (!beaconListeners.contains(listener)) {
+            beaconListeners.add(listener)
         }
     }
 
-    /**
-     * Removes a beacon event listener.
-     *
-     * @param listener The listener to remove.
-     */
-    fun removeBeaconEventListener(listener: BeaconEventListener) {
-        beaconEventListeners.remove(listener)
-        log("BeaconEventListener removed. Total listeners: ${beaconEventListeners.size}")
+    fun removeBeaconListener(listener: BeaconListener) {
+        beaconListeners.remove(listener)
     }
 
-    /**
-     * Removes all beacon event listeners.
-     */
-    fun removeAllBeaconEventListeners() {
-        beaconEventListeners.clear()
-        log("All BeaconEventListeners removed")
-    }
-
-    /**
-     * Converts a collection of Beacon objects to BeaconData objects.
-     */
-    private fun beaconsToBeaconData(beacons: Collection<Beacon>): List<BeaconData> {
-        return beacons.map { beacon ->
-            BeaconData(
-                uuid = beacon.id1.toString(),
-                major = beacon.id2.toInt(),
-                minor = beacon.id3.toInt(),
-                rssi = beacon.rssi,
-                bluetoothName = beacon.bluetoothName,
-                bluetoothAddress = beacon.bluetoothAddress,
-                lastSeen = Date().time
-            )
+    fun addSyncListener(listener: SyncListener) {
+        if (!syncListeners.contains(listener)) {
+            syncListeners.add(listener)
         }
+    }
+
+    fun removeSyncListener(listener: SyncListener) {
+        syncListeners.remove(listener)
+    }
+
+    fun addRegionListener(listener: RegionListener) {
+        if (!regionListeners.contains(listener)) {
+            regionListeners.add(listener)
+        }
+    }
+
+    fun removeRegionListener(listener: RegionListener) {
+        regionListeners.remove(listener)
     }
 
     enum class TimeScanBeacons(val seconds: Long) {
@@ -159,14 +143,14 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
     /**
      * Sets the size of the backup list for lost beacons.
      */
-    fun changeListSizeBackupLostBeacons(size: SizeBackupLostBeacons) {
+    public fun changeListSizeBackupLostBeacons(size: SizeBackupLostBeacons) {
         sizeListBackupLostBeacons = size
     }
 
     /**
      * Sets the scan interval for beacon detection.
      */
-    fun changeScamTimeBeacons(time: TimeScanBeacons) {
+    public fun changeScamTimeBeacons(time: TimeScanBeacons) {
         timeScanBeacons = time
     }
 
@@ -178,11 +162,11 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
      */
     fun initialize(
         iconNotification: Int = context.applicationInfo.icon,
-        clientId: String,
+        clientToken: String,
         debug: Boolean = false
     ) {
         if (!isInitialized()) {
-            this.clientToken = clientId
+            this.clientToken = clientToken
             this.debug = debug
             createNotificationChannel(context)
 
@@ -223,15 +207,13 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
     }
 
     /**
-     * Stops beacon monitoring and clears all notifiers and listeners.
+     * Stops beacon monitoring and clears all notifiers.
      */
     fun stop() {
         log("Stopped monitoring beacons region")
         beaconManager.stopMonitoring(getRegion())
         beaconManager.removeAllMonitorNotifiers()
         beaconManager.removeAllRangeNotifiers()
-        beaconEventListeners.clear()
-        logListeners.clear()
         instance = null
         sdkInitialized = false
     }
@@ -261,28 +243,22 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
         log("Beacons detected in the region")
         beaconManager.startRangingBeacons(region)
         beaconManager.addRangeNotifier(rangeNotifierForSync)
+
+        // Notify region listeners
+        regionListeners.forEach { it.onRegionEnter(region.uniqueId) }
     }
 
     override fun didExitRegion(region: Region) {
         log("No sign of Beacons in the region")
-        lastSeenBeacon?.let { beacons ->
-            val beaconDataList = beaconsToBeaconData(beacons)
-
-            // Notify listeners about exit event
-            beaconEventListeners.forEach { listener ->
-                try {
-                    listener.onBeaconRegionExit(beaconDataList)
-                    listener.onBeaconsDetected(beaconDataList, BeaconEventType.EXIT)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error notifying listener on exit: ${e.message}")
-                }
-            }
-
-            syncWithApi(beacons, EVENT_EXIT)
+        lastSeenBeacon?.let {
+            syncWithApi(it, EVENT_EXIT)
         }
         beaconManager.stopRangingBeacons(region)
         beaconManager.removeRangeNotifier(rangeNotifierForSync)
         lastSeenBeacon = null
+
+        // Notify region listeners
+        regionListeners.forEach { it.onRegionExit(region.uniqueId) }
     }
 
     override fun didDetermineStateForRegion(state: Int, region: Region) {
@@ -295,29 +271,26 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
      *
      * Typically used to initiate a sync when a beacon "enter" event is detected.
      */
-    private val rangeNotifierForSync = RangeNotifier { beacons, rangedRegion ->
+    private val rangeNotifierForSync = RangeNotifier { beacons, _ ->
         log("Beacons found in the region: ${beacons.size}")
-
-        // Filter beacons matching the UUID before notifying
-        val matchingBeacons = beacons.filter {
-            it.id1.toString() == beaconUUID
-        }
-
-        if (matchingBeacons.isNotEmpty()) {
-            val beaconDataList = beaconsToBeaconData(matchingBeacons)
-
-            // Notify listeners about detected beacons
-            beaconEventListeners.forEach { listener ->
-                try {
-                    listener.onBeaconRegionEnter(beaconDataList)
-                    listener.onBeaconsDetected(beaconDataList, BeaconEventType.ENTER)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error notifying listener on enter: ${e.message}")
-                }
-            }
-        }
-
         syncWithApi(beacons, EVENT_ENTER)
+    }
+
+    /**
+     * Converts a collection of AltBeacon Beacon objects to BeaconData objects.
+     */
+    private fun convertToBeaconDataList(beacons: Collection<Beacon>): List<BeaconData> {
+        return beacons.map { beacon ->
+            BeaconData(
+                uuid = beacon.id1.toString(),
+                major = beacon.id2.toInt(),
+                minor = beacon.id3.toInt(),
+                rssi = beacon.rssi,
+                bluetoothName = beacon.bluetoothName,
+                bluetoothAddress = beacon.bluetoothAddress,
+                lastSeen = Date().time
+            )
+        }
     }
 
     /**
@@ -355,6 +328,10 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
 
                 lastSeenBeacon = matchingBeacons
 
+                // Notify beacon listeners
+                val beaconDataList = convertToBeaconDataList(matchingBeacons)
+                beaconListeners.forEach { it.onBeaconsDetected(beaconDataList, eventType) }
+
                 for (beacon in matchingBeacons) {
                     if (eventType == EVENT_ENTER) {
                         log(
@@ -381,7 +358,6 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                 val jsonObject = JSONObject().apply {
                     put("deviceType", "Android")
                     put("clientToken", clientToken)
-                    // BuildConfig.SDK_VERSION is generated at build time from gradle.properties
                     put("sdkVersion", BuildConfig.SDK_VERSION)
                     put("idfa", currentAdvertisingId ?: "N/A")
                     put("eventType", eventType)
@@ -411,75 +387,60 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                     }
                     log("Successfully call API. Response: ${connection.responseMessage}")
 
-                    // Notify listeners about successful sync
-                    val result = SyncResult.Success(
-                        eventType = eventType,
-                        beaconsCount = beaconsArray.length()
-                    )
-                    CoroutineScope(Dispatchers.Main).launch {
-                        beaconEventListeners.forEach { listener ->
-                            try {
-                                listener.onSyncSuccess(result)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Error notifying listener on sync success: ${e.message}")
-                            }
-                        }
+                    // Notify sync listeners of success
+                    syncListeners.forEach {
+                        it.onSyncSuccess(
+                            eventType,
+                            matchingBeacons.size,
+                            connection.responseMessage
+                        )
                     }
                 } else {
-                    val errorMessage = "Code: $responseCode, Message: ${connection.responseMessage}"
-                    Log.e(TAG, "Error call API. $errorMessage")
-
-                    // Add beacons to failed list
+                    Log.e(
+                        TAG,
+                        "Error call API. " +
+                                "Code: $responseCode, Message: ${connection.responseMessage}}"
+                    )
+                    // Todo add beacons com erro.
                     for (i in 0 until beaconsArray.length()) {
                         if (syncFailedBeaconsArray.length() < sizeListBackupLostBeacons.size) {
                             syncFailedBeaconsArray.put(beaconsArray.getJSONObject(i))
                         }
                     }
-                    log("List beacons backup size: ${syncFailedBeaconsArray.length()}")
-
-                    // Notify listeners about sync error
-                    val result = SyncResult.Error(
-                        eventType = eventType,
-                        errorMessage = errorMessage,
-                        beaconsCount = beaconsArray.length()
+                    log(
+                        "List beacons backup size: " +
+                                "${syncFailedBeaconsArray.length()}"
                     )
-                    CoroutineScope(Dispatchers.Main).launch {
-                        beaconEventListeners.forEach { listener ->
-                            try {
-                                listener.onSyncError(result)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Error notifying listener on sync error: ${e.message}")
-                            }
-                        }
+
+                    // Notify sync listeners of error
+                    syncListeners.forEach {
+                        it.onSyncError(
+                            eventType,
+                            matchingBeacons.size,
+                            responseCode,
+                            connection.responseMessage
+                        )
                     }
                 }
                 connection.disconnect()
             } catch (e: Exception) {
-                val errorMessage = "Exception: ${e.message}"
-                Log.e(TAG, "Exception during API sync: $errorMessage")
-
-                // Add beacons to failed list
+                // Todo add beacons com erro.
                 for (i in 0 until beaconsArray.length()) {
                     if (syncFailedBeaconsArray.length() < sizeListBackupLostBeacons.size) {
                         syncFailedBeaconsArray.put(beaconsArray.getJSONObject(i))
                     }
                 }
                 log("List beacons backup size: ${syncFailedBeaconsArray.length()}")
+                Log.e(TAG, "Exception during API sync: ${e.message}")
 
-                // Notify listeners about sync exception
-                val result = SyncResult.Error(
-                    eventType = eventType,
-                    errorMessage = errorMessage,
-                    beaconsCount = beaconsArray.length()
-                )
-                CoroutineScope(Dispatchers.Main).launch {
-                    beaconEventListeners.forEach { listener ->
-                        try {
-                            listener.onSyncError(result)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error notifying listener on sync error: ${e.message}")
-                        }
-                    }
+                // Notify sync listeners of exception
+                syncListeners.forEach {
+                    it.onSyncError(
+                        eventType,
+                        beaconsArray.length(),
+                        null,
+                        e.message ?: "Unknown error"
+                    )
                 }
             }
         }
@@ -601,74 +562,4 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
 
 interface LogListener {
     fun onLogAdded(log: String)
-}
-
-/**
- * Data class representing a beacon with its properties.
- */
-data class BeaconData(
-    val uuid: String,
-    val major: Int,
-    val minor: Int,
-    val rssi: Int,
-    val bluetoothName: String?,
-    val bluetoothAddress: String?,
-    val lastSeen: Long
-)
-
-/**
- * Event types for beacon monitoring.
- */
-enum class BeaconEventType {
-    ENTER,
-    EXIT
-}
-
-/**
- * Result of API sync operation.
- */
-sealed class SyncResult {
-    data class Success(val eventType: String, val beaconsCount: Int) : SyncResult()
-    data class Error(val eventType: String, val errorMessage: String, val beaconsCount: Int) : SyncResult()
-}
-
-/**
- * Listener interface for receiving beacon events and sync status updates.
- */
-interface BeaconEventListener {
-    /**
-     * Called when beacons are detected.
-     *
-     * @param beacons List of detected beacons.
-     * @param eventType Type of event (ENTER or EXIT).
-     */
-    fun onBeaconsDetected(beacons: List<BeaconData>, eventType: BeaconEventType)
-
-    /**
-     * Called when entering a beacon region.
-     *
-     * @param beacons List of beacons in the region.
-     */
-    fun onBeaconRegionEnter(beacons: List<BeaconData>)
-
-    /**
-     * Called when exiting a beacon region.
-     *
-     * @param beacons List of beacons that were in the region.
-     */
-    fun onBeaconRegionExit(beacons: List<BeaconData>)
-
-    /**
-     * Called when sync with API completes successfully.
-     *
-     * @param result Result containing event type and beacon count.
-     */
-    fun onSyncSuccess(result: SyncResult.Success)
-
-    /**
-     * Called when sync with API fails.
-     *
-     * @param result Result containing error details.
-     */
-    fun onSyncError(result: SyncResult.Error)
 }

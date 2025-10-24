@@ -11,21 +11,20 @@ Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by
 ## 🧩 Features
 
 - **Continuous region monitoring** for BLE beacons
-- **Real-time beacon events** with `BeaconEventListener` system
+- **🎉 NEW: Comprehensive Event Listener System** (v1.0.4)
+  - `BeaconListener` - Real-time beacon detection callbacks
+  - `SyncListener` - API synchronization status monitoring
+  - `RegionListener` - Beacon region entry/exit notifications
 - **Automatic API synchronization** for beacon enter/exit events
 - **Rich beacon data capture**:
   - Distance estimation and RSSI
   - UUID, major, minor identifiers
-  - Bluetooth MAC address
+  - Bluetooth MAC address and name
   - Timestamp and app state (foreground/background/inactive)
   - Google Advertising ID
-- **Event listener callbacks**:
-  - `onBeaconEnter` - Triggered when entering beacon range
-  - `onBeaconExit` - Triggered when leaving beacon range
-  - `onBeaconSync` - Confirmation of successful API sync
 - **Foreground service** support for background execution
 - **Built-in debug logging** with tag BeAroundSdk
-- **Privacy-first architecture** with AES-GCM encryption
+- **Privacy-first architecture** with encrypted API communication
 
 ---
 
@@ -72,7 +71,7 @@ dependencyResolutionManagement {
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:1.0.17'
+    implementation 'com.github.Bearound:bearound-android-sdk:1.0.4'
 }
 ```
 
@@ -105,68 +104,194 @@ You need to manually request permissions from the user, especially:
 
 📌 Without these permissions, the SDK will not function properly and will not be able to detect beacons in the background.
 
-### 📡 Beacon Event Listeners
+### 🎉 Event Listener System (v1.0.4)
 
-The SDK provides a powerful event system to receive real-time beacon detection updates:
+The SDK provides three powerful listener interfaces for comprehensive beacon monitoring:
+
+#### 1. BeaconListener - Track Detected Beacons
+
+Receive real-time callbacks when beacons are detected:
 
 ```kotlin
 import io.bearound.sdk.BeAround
-import io.bearound.sdk.listeners.BeaconEventListener
-import io.bearound.sdk.model.BeaconEventData
+import io.bearound.sdk.BeaconListener
+import io.bearound.sdk.BeaconData
 
-class MyActivity : AppCompatActivity() {
-
-    private val beaconListener = object : BeaconEventListener {
-        override fun onBeaconEnter(beacon: BeaconEventData) {
-            // Called when entering a beacon's range
-            Log.d("BeAround", "Entered beacon: ${beacon.uuid}")
-            Log.d("BeAround", "Distance: ${beacon.distance}m, RSSI: ${beacon.rssi}")
-        }
-
-        override fun onBeaconExit(beacon: BeaconEventData) {
-            // Called when leaving a beacon's range
-            Log.d("BeAround", "Exited beacon: ${beacon.uuid}")
-        }
-
-        override fun onBeaconSync(beacon: BeaconEventData, success: Boolean) {
-            // Called after API synchronization attempt
-            if (success) {
-                Log.d("BeAround", "Beacon event synced to API")
-            }
-        }
-    }
+class MyActivity : AppCompatActivity(), BeaconListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val beAround = BeAround.getInstance(applicationContext)
-        beAround.addBeaconEventListener(beaconListener)
+        beAround.addBeaconListener(this)
+    }
+
+    override fun onBeaconsDetected(beacons: List<BeaconData>, eventType: String) {
+        // Called when beacons are detected
+        // eventType: "enter", "exit", or "failed"
+        beacons.forEach { beacon ->
+            Log.d("BeAround", "Beacon detected: Major ${beacon.major}, Minor ${beacon.minor}")
+            Log.d("BeAround", "RSSI: ${beacon.rssi}, Address: ${beacon.bluetoothAddress}")
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        BeAround.getInstance(applicationContext).removeBeaconEventListener(beaconListener)
+        BeAround.getInstance(applicationContext).removeBeaconListener(this)
     }
 }
 ```
 
-### 📊 Beacon Event Data
+#### 2. SyncListener - Monitor API Synchronization
 
-Each beacon event contains rich information:
+Track the status of API synchronization operations:
 
 ```kotlin
-data class BeaconEventData(
-    val uuid: String,           // Beacon UUID
-    val major: Int,             // Major identifier
-    val minor: Int,             // Minor identifier
-    val rssi: Int,              // Signal strength
-    val distance: Double,       // Estimated distance in meters
-    val bluetoothAddress: String, // MAC address
-    val timestamp: Long,        // Event timestamp
-    val eventType: String,      // "enter" or "exit"
-    val appState: String        // "foreground", "background", or "inactive"
+import io.bearound.sdk.SyncListener
+
+class MyActivity : AppCompatActivity(), SyncListener {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val beAround = BeAround.getInstance(applicationContext)
+        beAround.addSyncListener(this)
+    }
+
+    override fun onSyncSuccess(eventType: String, beaconCount: Int, message: String) {
+        // Called when sync succeeds
+        Log.d("BeAround", "✓ Sync successful: $beaconCount beacons synced")
+        Toast.makeText(this, "Beacons synced successfully!", Toast.LENGTH_SHORT).show()
+    }
+
+    override fun onSyncError(eventType: String, beaconCount: Int, errorCode: Int?, errorMessage: String) {
+        // Called when sync fails
+        Log.e("BeAround", "✗ Sync failed: $errorMessage (Code: $errorCode)")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        BeAround.getInstance(applicationContext).removeSyncListener(this)
+    }
+}
+```
+
+#### 3. RegionListener - Track Region Entry/Exit
+
+Get notified when entering or exiting beacon regions:
+
+```kotlin
+import io.bearound.sdk.RegionListener
+
+class MyActivity : AppCompatActivity(), RegionListener {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val beAround = BeAround.getInstance(applicationContext)
+        beAround.addRegionListener(this)
+    }
+
+    override fun onRegionEnter(regionName: String) {
+        // Called when entering a beacon region
+        Log.d("BeAround", "→ Entered region: $regionName")
+        Toast.makeText(this, "Welcome! Entered beacon region", Toast.LENGTH_SHORT).show()
+    }
+
+    override fun onRegionExit(regionName: String) {
+        // Called when exiting a beacon region
+        Log.d("BeAround", "← Exited region: $regionName")
+        Toast.makeText(this, "Goodbye! Exited beacon region", Toast.LENGTH_SHORT).show()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        BeAround.getInstance(applicationContext).removeRegionListener(this)
+    }
+}
+```
+
+#### Combined Usage - All Listeners
+
+You can implement multiple listeners in a single class:
+
+```kotlin
+class MainActivity : AppCompatActivity(),
+    BeaconListener,
+    SyncListener,
+    RegionListener {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val beAround = BeAround.getInstance(this)
+        beAround.initialize(
+            iconNotification = R.drawable.ic_notification,
+            clientToken = "your-client-token",
+            debug = true
+        )
+
+        // Add all listeners
+        beAround.addBeaconListener(this)
+        beAround.addSyncListener(this)
+        beAround.addRegionListener(this)
+    }
+
+    // BeaconListener
+    override fun onBeaconsDetected(beacons: List<BeaconData>, eventType: String) {
+        // Handle beacon detection
+    }
+
+    // SyncListener
+    override fun onSyncSuccess(eventType: String, beaconCount: Int, message: String) {
+        // Handle sync success
+    }
+
+    override fun onSyncError(eventType: String, beaconCount: Int, errorCode: Int?, errorMessage: String) {
+        // Handle sync error
+    }
+
+    // RegionListener
+    override fun onRegionEnter(regionName: String) {
+        // Handle region enter
+    }
+
+    override fun onRegionExit(regionName: String) {
+        // Handle region exit
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        val beAround = BeAround.getInstance(this)
+        beAround.removeBeaconListener(this)
+        beAround.removeSyncListener(this)
+        beAround.removeRegionListener(this)
+    }
+}
+```
+
+### 📊 BeaconData Model
+
+Each detected beacon contains rich information:
+
+```kotlin
+data class BeaconData(
+    val uuid: String,              // Beacon UUID
+    val major: Int,                // Major identifier
+    val minor: Int,                // Minor identifier
+    val rssi: Int,                 // Signal strength (RSSI)
+    val bluetoothName: String?,    // Bluetooth device name (nullable)
+    val bluetoothAddress: String,  // Bluetooth MAC address
+    val lastSeen: Long            // Detection timestamp (milliseconds)
 )
 ```
+
+### 💡 Important Notes
+
+- **Thread Safety**: All listener callbacks are executed on background threads (IO dispatcher). Use `runOnUiThread` when updating UI.
+- **Memory Leaks**: Always remove listeners in `onDestroy()` to prevent memory leaks.
+- **Multiple Listeners**: You can register multiple listeners of the same type.
+- **Event Types**: BeaconListener receives events with type: `"enter"`, `"exit"`, or `"failed"`
 
 ### ⚠️ Automatic Background Monitoring
 

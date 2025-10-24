@@ -8,7 +8,7 @@ plugins {
 android {
     namespace 'io.bearound.sdk'
 
-    compileSdk 36
+    compileSdk = 36
 
     buildFeatures {
         buildConfig = true
@@ -16,7 +16,6 @@ android {
 
     defaultConfig {
         minSdk 21
-
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles "consumer-rules.pro"
 
@@ -27,7 +26,7 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
@@ -45,9 +44,15 @@ android {
     }
 }
 
-task javadocJar(type: Jar, dependsOn: dokkaJavadoc) {
+// Desabilitado temporariamente para desenvolvimento (problema de memória Metaspace)
+// task javadocJar(type: Jar, dependsOn: dokkaJavadoc) {
+//     archiveClassifier.set('javadoc')
+//     from dokkaJavadoc.outputDirectory
+// }
+
+// Javadoc jar vazio para desenvolvimento
+task javadocJar(type: Jar) {
     archiveClassifier.set('javadoc')
-    from dokkaJavadoc.outputDirectory
 }
 
 afterEvaluate {
@@ -91,13 +96,24 @@ afterEvaluate {
             }
         }
 
+//        repositories {
+//            maven {
+//                name = "GitHubPackages"
+//                url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
+//                credentials {
+//                    username = System.getenv("GPR_USER")
+//                    password = System.getenv("GPR_KEY")
+//                }
+//            }
+//        }
+
         repositories {
             maven {
-                name = "GitHubPackages"
-                url = uri("https://maven.pkg.github.com/Bearound/bearound-android-sdk")
+                url = uri("http://192.168.10.29:8081/repository/maven-releases/")
+                allowInsecureProtocol = true
                 credentials {
-                    username = System.getenv("GPR_USER")
-                    password = System.getenv("GPR_KEY")
+                    username = "faraujo"
+                    password = "Goup11xmano*"
                 }
             }
         }
