@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.4] - 2025-01-23
+## [1.1.0] - 2025-01-24
 
 ### 🎉 New Features - Event Listeners System
 
