@@ -11,7 +11,7 @@ Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by
 ## 🧩 Features
 
 - **Continuous region monitoring** for BLE beacons
-- **🎉 NEW: Comprehensive Event Listener System** (v1.0.4)
+- **🎉 NEW: Comprehensive Event Listener System** (v1.1.0)
   - `BeaconListener` - Real-time beacon detection callbacks
   - `SyncListener` - API synchronization status monitoring
   - `RegionListener` - Beacon region entry/exit notifications
@@ -104,7 +104,7 @@ You need to manually request permissions from the user, especially:
 
 📌 Without these permissions, the SDK will not function properly and will not be able to detect beacons in the background.
 
-### 🎉 Event Listener System (v1.0.4)
+### 🎉 Event Listener System (v1.1.0)
 
 The SDK provides three powerful listener interfaces for comprehensive beacon monitoring:
 
