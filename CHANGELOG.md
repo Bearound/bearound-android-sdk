@@ -7,6 +7,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2025-02-08
+
+### 🚀 Major Update - Enhanced Device Context & Telemetry
+
+This version introduces a comprehensive device information collection system, significantly enriching the data sent to the BeAround API with detailed device, network, and scan context information.
+
+#### 🎯 New Payload Structure
+
+The API payload has been completely restructured to include four main sections:
+
+1. **`beacons`** - Beacon detection data (UUID and name)
+2. **`sdk`** - SDK metadata (version, platform, app ID, build number)
+3. **`userDevice`** - Comprehensive device information (see below)
+4. **`scanContext`** - Real-time scan details (RSSI, TX power, distance, session ID, timestamp)
+
+#### 📱 New Device Information Collected
+
+**Device & System:**
+- Manufacturer (e.g., "Samsung", "Google", "Xiaomi")
+- Model (e.g., "SM-G991B", "Pixel 6")
+- OS version and SDK level
+- Timestamp and timezone
+
+**Battery & Power:**
+- Battery level (0.0 to 1.0)
+- Charging status
+- Power save mode (Android)
+- Low power mode (iOS placeholder)
+
+**Connectivity:**
+- Bluetooth state (on/off/unauthorized/unknown)
+- Network type (wifi/cellular/ethernet/none)
+- WiFi SSID and BSSID
+- Cellular generation (2g/3g/4g/5g)
+- Roaming status
+- Connection metered/expensive status
+
+**Permissions & Privacy:**
+- Location permission (authorized_always/authorized_when_in_use/denied)
+- Location accuracy (full/reduced)
+- Notification permission (authorized/denied)
+- Advertising ID (AAID/GAID)
+- Ad tracking enabled status
+
+**Device Resources:**
+- Total RAM (MB)
+- Available RAM (MB)
+- Screen width and height (pixels)
+
+**App State:**
+- App in foreground status
+- App uptime (milliseconds)
+- Cold start detection
+
+**Scan Context:**
+- RSSI (signal strength)
+- TX Power
+- Approximate distance in meters
+- Unique scan session ID
+- Detection timestamp
+
+#### 🛠️ New Internal Components
+
+- **`DeviceInfoCollector`** - Collects comprehensive device and system information
+- **`SdkInfoCollector`** - Gathers SDK metadata and app information
+- **`ScanContextCollector`** - Processes beacon scan data and calculates distances
+- Scan session tracking for better event correlation
+
+#### 🔧 Technical Improvements
+
+- API level compatibility checks for newer Android APIs
+- Graceful fallbacks for unavailable data
+- Proper permission handling with `@SuppressLint` annotations
+- Deprecation warnings suppressed for backward compatibility
+- Distance calculation using log-distance path loss model
+
+#### 📝 Breaking Changes
+
+- API payload structure has changed - **ensure backend is updated to handle new format**
+- Authorization header now uses `Bearer` token format
+- Beacon payload simplified to only include UUID and name
+
+#### 🐛 Bug Fixes
+
+- Fixed advertising ID tracking status not being captured
+- Improved error handling for device info collection
+- Added null safety for all device info fields
+
+### Migration Guide
+
+**For Backend Integration:**
+
+The new payload structure is:
+```json
+{
+  "beacons": [{ "uuid": "...", "name": "..." }],
+  "sdk": { "version": "1.2.0", "platform": "android", "appId": "...", "build": 123 },
+  "userDevice": { /* 30+ device fields */ },
+  "scanContext": { "rssi": -63, "txPower": -59, "approxDistanceMeters": 1.8, "scanSessionId": "scan_ABC123", "detectedAt": 1234567890 }
+}
+```
+
+**For SDK Users:**
+
+No changes required to your integration code. The SDK automatically collects and sends the enhanced data.
+
 ## [1.1.0] - 2025-01-24
 
 ### 🎉 New Features - Event Listeners System

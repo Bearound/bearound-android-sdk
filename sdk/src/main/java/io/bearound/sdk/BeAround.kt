@@ -34,11 +34,19 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
     private var syncFailedBeaconsArray = JSONArray()
     private var advertisingId: String? = null
     private var advertisingIdFetchAttempted = false
+    private var adTrackingEnabled: Boolean = true
     private var debug: Boolean = false
     private var clientToken: String = ""
     private var sdkInitialized = false
     private var timeScanBeacons = TimeScanBeacons.TIME_20
     private var sizeListBackupLostBeacons = SizeBackupLostBeacons.SIZE_40
+    private var appStartTime: Long = 0L
+    private var currentScanSessionId: String = ""
+
+    // Collectors
+    private val deviceInfoCollector by lazy { DeviceInfoCollector(context) }
+    private val sdkInfoCollector by lazy { SdkInfoCollector(context) }
+    private val scanContextCollector by lazy { ScanContextCollector() }
 
     companion object {
 
@@ -168,6 +176,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
         if (!isInitialized()) {
             this.clientToken = clientToken
             this.debug = debug
+            this.appStartTime = System.currentTimeMillis()
             createNotificationChannel(context)
 
             // Used to parse the iBeacon standard
@@ -231,9 +240,11 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
             try {
                 val adInfo = AdvertisingIdClient.getAdvertisingIdInfo(context)
                 advertisingId = adInfo.id
-                log("Successfully fetched Advertising ID: $advertisingId")
+                adTrackingEnabled = !adInfo.isLimitAdTrackingEnabled
+                log("Successfully fetched Advertising ID: $advertisingId, Ad Tracking: $adTrackingEnabled")
             } catch (e: Exception) {
                 advertisingId = null
+                adTrackingEnabled = false
                 Log.e(TAG, "Failed to fetch Advertising ID: ${e.message}")
             }
         }
@@ -241,6 +252,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
 
     override fun didEnterRegion(region: Region) {
         log("Beacons detected in the region")
+        currentScanSessionId = scanContextCollector.generateScanSessionId()
         beaconManager.startRangingBeacons(region)
         beaconManager.addRangeNotifier(rangeNotifierForSync)
 
@@ -310,10 +322,6 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
      * @param eventType The type of event associated with the detection (e.g., "enter", "exit").
      */
     private fun syncWithApi(beacons: Collection<Beacon>, eventType: String) {
-        val currentAdvertisingId = advertisingId
-        val currentAppState = getAppState()
-        val beaconsArray = JSONArray()
-
         CoroutineScope(Dispatchers.IO).launch {
             try {
 
@@ -332,6 +340,8 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                 val beaconDataList = convertToBeaconDataList(matchingBeacons)
                 beaconListeners.forEach { it.onBeaconsDetected(beaconDataList, eventType) }
 
+                // Build beacons array with scan context
+                val beaconsArray = JSONArray()
                 for (beacon in matchingBeacons) {
                     if (eventType == EVENT_ENTER) {
                         log(
@@ -342,27 +352,43 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                                     " rssi ${beacon.rssi}."
                         )
                     }
+
+                    // Parse beacon name to extract firmware, battery, movements, and temperature
+                    val beaconName = beacon.bluetoothName ?: ""
+
                     val beaconJson = JSONObject().apply {
-                        put("uuid", beacon.id1)
-                        put("major", beacon.id2)
-                        put("minor", beacon.id3)
-                        put("rssi", beacon.rssi)
-                        put("bluetoothName", beacon.bluetoothName)
-                        put("bluetoothAddress", beacon.bluetoothAddress)
-//                        put("distanceMeters", beacon.distance)
-                        put("lastSeen", Date().time)
+                        put("uuid", beacon.id1.toString().uppercase())
+                        put("name", beaconName)
                     }
                     beaconsArray.put(beaconJson)
                 }
 
+                // Collect SDK info
+                val sdkInfo = sdkInfoCollector.collectSdkInfo()
+
+                // Collect user device info
+                val userDeviceInfo = deviceInfoCollector.collectUserDeviceInfo(
+                    advertisingId,
+                    adTrackingEnabled,
+                    appStartTime
+                )
+
+                // Collect scan context (using first beacon as representative)
+                val scanContext = if (matchingBeacons.isNotEmpty()) {
+                    scanContextCollector.collectScanContext(
+                        matchingBeacons.first(),
+                        currentScanSessionId
+                    )
+                } else {
+                    JSONObject()
+                }
+
+                // Build the new payload structure
                 val jsonObject = JSONObject().apply {
-                    put("deviceType", "Android")
-                    put("clientToken", clientToken)
-                    put("sdkVersion", BuildConfig.SDK_VERSION)
-                    put("idfa", currentAdvertisingId ?: "N/A")
-                    put("eventType", eventType)
-                    put("appState", currentAppState)
                     put("beacons", beaconsArray)
+                    put("sdk", sdkInfo)
+                    put("userDevice", userDeviceInfo)
+                    put("scanContext", scanContext)
                 }
 
                 val url = URL(API_ENDPOINT_URL)
@@ -370,6 +396,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                 connection.apply {
                     requestMethod = "POST"
                     setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                    setRequestProperty("Authorization", "Bearer $clientToken")
                     doOutput = true
                     connectTimeout = 15000
                     readTimeout = 15000
@@ -424,20 +451,13 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                 }
                 connection.disconnect()
             } catch (e: Exception) {
-                // Todo add beacons com erro.
-                for (i in 0 until beaconsArray.length()) {
-                    if (syncFailedBeaconsArray.length() < sizeListBackupLostBeacons.size) {
-                        syncFailedBeaconsArray.put(beaconsArray.getJSONObject(i))
-                    }
-                }
-                log("List beacons backup size: ${syncFailedBeaconsArray.length()}")
                 Log.e(TAG, "Exception during API sync: ${e.message}")
 
                 // Notify sync listeners of exception
                 syncListeners.forEach {
                     it.onSyncError(
                         eventType,
-                        beaconsArray.length(),
+                        0,
                         null,
                         e.message ?: "Unknown error"
                     )
@@ -452,25 +472,36 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
      * The event is sent using the EVENT_FAILED type.
      */
     private fun syncFailedBeaconsArrayWithApi() {
-        val currentAdvertisingId = advertisingId
-        val currentAppState = getAppState()
-
         CoroutineScope(Dispatchers.IO).launch {
             try {
 
+                // Collect SDK info
+                val sdkInfo = sdkInfoCollector.collectSdkInfo()
+
+                // Collect user device info
+                val userDeviceInfo = deviceInfoCollector.collectUserDeviceInfo(
+                    advertisingId,
+                    adTrackingEnabled,
+                    appStartTime
+                )
+
+                // Build the new payload structure
                 val jsonObject = JSONObject().apply {
-                    put("deviceType", "Android")
-                    put("idfa", currentAdvertisingId ?: "N/A")
-                    put("eventType", EVENT_FAILED)
-                    put("appState", currentAppState)
                     put("beacons", syncFailedBeaconsArray)
+                    put("sdk", sdkInfo)
+                    put("userDevice", userDeviceInfo)
+                    put("scanContext", JSONObject()) // Empty scan context for failed beacons
                 }
+
+                // Log complete JSON payload for retry
+                log("API Retry Request Payload (failed beacons): ${jsonObject.toString(2)}")
 
                 val url = URL(API_ENDPOINT_URL)
                 val connection = url.openConnection() as HttpURLConnection
                 connection.apply {
                     requestMethod = "POST"
                     setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                    setRequestProperty("Authorization", "Bearer $clientToken")
                     doOutput = true
                     connectTimeout = 15000
                     readTimeout = 15000
