@@ -385,11 +385,15 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
 
                 // Build the new payload structure
                 val jsonObject = JSONObject().apply {
+                    put("clientToken", clientToken)
                     put("beacons", beaconsArray)
                     put("sdk", sdkInfo)
                     put("userDevice", userDeviceInfo)
                     put("scanContext", scanContext)
                 }
+
+                // Log complete JSON payload
+                log("API Request Payload: ${jsonObject.toString(2)}")
 
                 val url = URL(API_ENDPOINT_URL)
                 val connection = url.openConnection() as HttpURLConnection
@@ -487,6 +491,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
 
                 // Build the new payload structure
                 val jsonObject = JSONObject().apply {
+                    put("clientToken", clientToken)
                     put("beacons", syncFailedBeaconsArray)
                     put("sdk", sdkInfo)
                     put("userDevice", userDeviceInfo)

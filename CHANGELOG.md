@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2025-12-10
+
+### Added
+- **Client Token in Payload**: Added `clientToken` field to the API request payload for enhanced authentication
+- **Complete JSON Logging**: Added detailed logging of the complete JSON payload being sent to the API for better debugging and monitoring
+  - Logs show formatted JSON (indented) for both regular beacon sync and failed beacon retry attempts
+  - Helps developers verify the exact data being transmitted to the BeAround ingest endpoint
+
+### Changed
+- API payload now includes `clientToken` as a top-level field alongside `beacons`, `sdk`, `userDevice`, and `scanContext`
+
 ## [1.2.0] - 2025-02-08
 
 ### 🚀 Major Update - Enhanced Device Context & Telemetry
