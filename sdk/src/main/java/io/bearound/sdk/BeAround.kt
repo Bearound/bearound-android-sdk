@@ -359,6 +359,9 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                     val beaconJson = JSONObject().apply {
                         put("uuid", beacon.id1.toString().uppercase())
                         put("name", beaconName)
+                        put("rssi", beacon.rssi)
+                        put("txPower", beacon.txPower)
+                        put("approxDistanceMeters", scanContextCollector.calculateDistance(beacon.rssi, beacon.txPower))
                     }
                     beaconsArray.put(beaconJson)
                 }
@@ -373,12 +376,9 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                     appStartTime
                 )
 
-                // Collect scan context (using first beacon as representative)
+                // Collect scan context
                 val scanContext = if (matchingBeacons.isNotEmpty()) {
-                    scanContextCollector.collectScanContext(
-                        matchingBeacons.first(),
-                        currentScanSessionId
-                    )
+                    scanContextCollector.collectScanContext(currentScanSessionId)
                 } else {
                     JSONObject()
                 }
