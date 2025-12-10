@@ -359,6 +359,9 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                     val beaconJson = JSONObject().apply {
                         put("uuid", beacon.id1.toString().uppercase())
                         put("name", beaconName)
+                        put("rssi", beacon.rssi)
+                        put("txPower", beacon.txPower)
+                        put("approxDistanceMeters", scanContextCollector.calculateDistance(beacon.rssi, beacon.txPower))
                     }
                     beaconsArray.put(beaconJson)
                 }
@@ -373,23 +376,24 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                     appStartTime
                 )
 
-                // Collect scan context (using first beacon as representative)
+                // Collect scan context
                 val scanContext = if (matchingBeacons.isNotEmpty()) {
-                    scanContextCollector.collectScanContext(
-                        matchingBeacons.first(),
-                        currentScanSessionId
-                    )
+                    scanContextCollector.collectScanContext(currentScanSessionId)
                 } else {
                     JSONObject()
                 }
 
                 // Build the new payload structure
                 val jsonObject = JSONObject().apply {
+                    put("clientToken", clientToken)
                     put("beacons", beaconsArray)
                     put("sdk", sdkInfo)
                     put("userDevice", userDeviceInfo)
                     put("scanContext", scanContext)
                 }
+
+                // Log complete JSON payload
+                log("API Request Payload: ${jsonObject.toString(2)}")
 
                 val url = URL(API_ENDPOINT_URL)
                 val connection = url.openConnection() as HttpURLConnection
@@ -487,6 +491,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
 
                 // Build the new payload structure
                 val jsonObject = JSONObject().apply {
+                    put("clientToken", clientToken)
                     put("beacons", syncFailedBeaconsArray)
                     put("sdk", sdkInfo)
                     put("userDevice", userDeviceInfo)

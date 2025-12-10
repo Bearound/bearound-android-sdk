@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2025-12-10
+
+### Added
+- **Client Token in Payload**: Added `clientToken` field to the API request payload for enhanced authentication
+- **Complete JSON Logging**: Added detailed logging of the complete JSON payload being sent to the API for better debugging and monitoring
+  - Logs show formatted JSON (indented) for both regular beacon sync and failed beacon retry attempts
+  - Helps developers verify the exact data being transmitted to the BeAround ingest endpoint
+- **Beacon-Specific Signal Data**: Each beacon in the `beacons` array now includes its own signal information:
+  - `rssi` - Signal strength in dBm
+  - `txPower` - Transmission power in dBm
+  - `approxDistanceMeters` - Calculated distance in meters
+
+### Changed
+- **Payload Structure Optimization**: Reorganized payload structure for better data organization
+  - `clientToken` now at top-level
+  - `beacons` array now includes `rssi`, `txPower`, and `approxDistanceMeters` for each beacon
+  - `scanContext` simplified to only include `scanSessionId` and `detectedAt`
+  - Removed duplicate signal data from `scanContext` (now in individual beacons)
+- **Multi-Beacon Support**: When multiple beacons are detected, each one has its own signal strength and distance values
+
+### Fixed
+- Removed data duplication between `beacons` array and `scanContext`
+
 ## [1.2.0] - 2025-02-08
 
 ### 🚀 Major Update - Enhanced Device Context & Telemetry

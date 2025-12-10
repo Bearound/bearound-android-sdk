@@ -11,13 +11,11 @@ import kotlin.math.pow
 class ScanContextCollector {
 
     /**
-     * Collects scan context information for a beacon and returns it as a JSONObject.
+     * Collects scan context information and returns it as a JSONObject.
+     * Note: rssi, txPower, and approxDistanceMeters are now included in each beacon object.
      */
-    fun collectScanContext(beacon: Beacon, scanSessionId: String): JSONObject {
+    fun collectScanContext(scanSessionId: String): JSONObject {
         return JSONObject().apply {
-            put("rssi", beacon.rssi)
-            put("txPower", beacon.txPower)
-            put("approxDistanceMeters", calculateDistance(beacon.rssi, beacon.txPower))
             put("scanSessionId", scanSessionId)
             put("detectedAt", System.currentTimeMillis())
         }
@@ -27,7 +25,7 @@ class ScanContextCollector {
      * Calculates approximate distance in meters based on RSSI and TX power.
      * Uses the log-distance path loss model.
      */
-    private fun calculateDistance(rssi: Int, txPower: Int): Double {
+    fun calculateDistance(rssi: Int, txPower: Int): Double {
         if (txPower == 0) {
             return -1.0 // Unable to calculate
         }
