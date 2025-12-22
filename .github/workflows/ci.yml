@@ -1,0 +1,283 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'feature/**'
+      - 'fix/**'
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  validate:
+    name: Validate Code Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Validate Gradle wrapper
+        uses: gradle/wrapper-validation-action@v2
+
+      - name: Check code formatting
+        run: ./gradlew spotlessCheck || echo "⚠️ Code formatting issues found"
+        continue-on-error: true
+
+      - name: Run lint
+        run: ./gradlew :sdk:lint
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: sdk/build/reports/lint-results*.html
+          retention-days: 7
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run SDK unit tests
+        run: ./gradlew :sdk:test
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: sdk/build/reports/tests/
+          retention-days: 7
+
+  build:
+    name: Build SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [validate, test]
+
+    strategy:
+      matrix:
+        build-type: [debug, release]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build ${{ matrix.build-type }} AAR
+        run: ./gradlew :sdk:assemble${{ matrix.build-type == 'debug' && 'Debug' || 'Release' }}
+
+      - name: Verify AAR was created
+        run: |
+          BUILD_TYPE="${{ matrix.build-type }}"
+          AAR_FILE="sdk/build/outputs/aar/sdk-${BUILD_TYPE}.aar"
+          
+          if [ ! -f "$AAR_FILE" ]; then
+            echo "❌ ${BUILD_TYPE^} AAR not found at $AAR_FILE"
+            exit 1
+          fi
+          
+          echo "✅ ${BUILD_TYPE^} AAR created successfully"
+          ls -lh "$AAR_FILE"
+
+      - name: Upload AAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-aar-${{ matrix.build-type }}
+          path: sdk/build/outputs/aar/sdk-${{ matrix.build-type }}.aar
+          retention-days: 7
+
+  build-sample-app:
+    name: Build Sample App
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [build]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build sample app APK
+        run: ./gradlew :app:assembleDebug
+
+      - name: Verify APK was created
+        run: |
+          APK_FILE=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          
+          if [ -z "$APK_FILE" ]; then
+            echo "❌ Sample app APK not found"
+            exit 1
+          fi
+          
+          echo "✅ Sample app APK created successfully"
+          ls -lh "$APK_FILE"
+
+      - name: Upload sample APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sample-app-apk
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 7
+
+  jitpack-simulation:
+    name: JitPack Build Simulation
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [validate, test]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Simulate JitPack build
+        run: |
+          echo "🔨 Simulating JitPack build process..."
+          echo "This mimics what JitPack does when building the library"
+          
+          # JitPack runs these commands
+          ./gradlew clean
+          ./gradlew :sdk:assemble
+          ./gradlew :sdk:publishToMavenLocal
+          
+          echo "✅ JitPack simulation completed successfully"
+
+      - name: Verify Maven artifacts
+        run: |
+          echo "📦 Checking Maven local repository..."
+          
+          SDK_GROUP="com.github.Bearound"
+          SDK_ARTIFACT="bearound-android-sdk"
+          SDK_VERSION=$(grep SDK_VERSION gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          
+          MAVEN_PATH="$HOME/.m2/repository/com/github/Bearound/bearound-android-sdk/$SDK_VERSION"
+          
+          if [ ! -d "$MAVEN_PATH" ]; then
+            echo "❌ Maven artifacts not found at $MAVEN_PATH"
+            exit 1
+          fi
+          
+          echo "✅ Maven artifacts published successfully"
+          ls -lh "$MAVEN_PATH"
+
+  dependency-check:
+    name: Check Dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Check for dependency updates
+        run: ./gradlew dependencyUpdates || echo "⚠️ Dependency updates available"
+        continue-on-error: true
+
+      - name: Generate dependency tree
+        run: ./gradlew :sdk:dependencies > dependencies.txt
+
+      - name: Upload dependency report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-report
+          path: dependencies.txt
+          retention-days: 7
+
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [validate, test, build, build-sample-app, jitpack-simulation, dependency-check]
+    if: always()
+
+    steps:
+      - name: Check CI status
+        run: |
+          if [ "${{ needs.validate.result }}" != "success" ] || \
+             [ "${{ needs.test.result }}" != "success" ] || \
+             [ "${{ needs.build.result }}" != "success" ] || \
+             [ "${{ needs.build-sample-app.result }}" != "success" ] || \
+             [ "${{ needs.jitpack-simulation.result }}" != "success" ]; then
+            echo "❌ CI failed"
+            exit 1
+          fi
+          
+          echo "✅ All CI checks passed successfully!"
+          echo ""
+          echo "🎉 The code is ready for:"
+          echo "   - Merging to main branch"
+          echo "   - Creating a release tag"
+          echo "   - Publishing to JitPack"
+

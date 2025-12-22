@@ -1,0 +1,275 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  pr-info:
+    name: PR Information
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Analyze PR changes
+        id: changes
+        run: |
+          echo "files_changed=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | wc -l)" >> $GITHUB_OUTPUT
+          echo "commits=$(git rev-list --count origin/${{ github.base_ref }}...HEAD)" >> $GITHUB_OUTPUT
+          
+          # Check what areas were modified
+          SDK_MODIFIED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q "^sdk/" && echo "true" || echo "false")
+          APP_MODIFIED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q "^app/" && echo "true" || echo "false")
+          DOCS_MODIFIED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -qE "README|CHANGELOG" && echo "true" || echo "false")
+          
+          echo "sdk_modified=$SDK_MODIFIED" >> $GITHUB_OUTPUT
+          echo "app_modified=$APP_MODIFIED" >> $GITHUB_OUTPUT
+          echo "docs_modified=$DOCS_MODIFIED" >> $GITHUB_OUTPUT
+
+      - name: Comment PR summary
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('PR Analysis')
+            );
+            
+            const body = `## 🤖 PR Analysis
+            
+            ### Changes Overview
+            - **Files changed**: ${{ steps.changes.outputs.files_changed }}
+            - **Commits**: ${{ steps.changes.outputs.commits }}
+            
+            ### Modified Areas
+            - SDK Core: ${{ steps.changes.outputs.sdk_modified == 'true' && '✅' || '➖' }}
+            - Sample App: ${{ steps.changes.outputs.app_modified == 'true' && '✅' || '➖' }}
+            - Documentation: ${{ steps.changes.outputs.docs_modified == 'true' && '✅' || '➖' }}
+            
+            ### Status
+            🔄 Running automated checks...
+            
+            ---
+            *This comment will be updated with build results*`;
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+
+  version-check:
+    name: Version Check
+    runs-on: ubuntu-latest
+    if: github.base_ref == 'main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if version was bumped
+        id: version_check
+        run: |
+          # Get current version
+          CURRENT_VERSION=$(grep SDK_VERSION gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          
+          # Get version from base branch
+          git fetch origin ${{ github.base_ref }}
+          git checkout origin/${{ github.base_ref }} -- gradle.properties
+          BASE_VERSION=$(grep SDK_VERSION gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          
+          # Restore current version
+          git checkout HEAD -- gradle.properties
+          
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "base_version=$BASE_VERSION" >> $GITHUB_OUTPUT
+          
+          if [ "$CURRENT_VERSION" != "$BASE_VERSION" ]; then
+            echo "version_changed=true" >> $GITHUB_OUTPUT
+            echo "✅ Version changed: $BASE_VERSION → $CURRENT_VERSION"
+          else
+            echo "version_changed=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Version not changed: $CURRENT_VERSION"
+          fi
+
+      - name: Check CHANGELOG
+        if: steps.version_check.outputs.version_changed == 'true'
+        run: |
+          CURRENT_VERSION="${{ steps.version_check.outputs.current_version }}"
+          
+          if grep -q "## \[$CURRENT_VERSION\]" CHANGELOG.md; then
+            echo "✅ CHANGELOG.md updated for version $CURRENT_VERSION"
+          else
+            echo "❌ CHANGELOG.md not updated for version $CURRENT_VERSION"
+            echo ""
+            echo "Please add an entry in CHANGELOG.md for version $CURRENT_VERSION"
+            exit 1
+          fi
+
+      - name: Comment version status
+        if: steps.version_check.outputs.version_changed == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const body = `## 📦 Version Update Detected
+            
+            **Version**: \`${{ steps.version_check.outputs.base_version }}\` → \`${{ steps.version_check.outputs.current_version }}\`
+            
+            ✅ CHANGELOG.md has been updated
+            
+            After merging, create a release tag:
+            \`\`\`bash
+            git tag v${{ steps.version_check.outputs.current_version }}
+            git push origin v${{ steps.version_check.outputs.current_version }}
+            \`\`\``;
+            
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+  code-review-hints:
+    name: Code Review Hints
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for common issues
+        id: review_hints
+        run: |
+          HINTS=""
+          
+          # Check for TODO comments
+          if git diff origin/${{ github.base_ref }}...HEAD | grep -i "TODO"; then
+            HINTS="${HINTS}- ⚠️ TODO comments found in changes\n"
+          fi
+          
+          # Check for console.log or println
+          if git diff origin/${{ github.base_ref }}...HEAD | grep -E "(println|Log\.[diew])"; then
+            HINTS="${HINTS}- 💡 Debug logs detected - ensure they're controlled by debug flag\n"
+          fi
+          
+          # Check for hardcoded strings
+          if git diff origin/${{ github.base_ref }}...HEAD -- "*.kt" | grep -E "\"http"; then
+            HINTS="${HINTS}- 🔗 Hardcoded URLs detected - verify they're correct\n"
+          fi
+          
+          # Check for large files
+          LARGE_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | xargs du -h 2>/dev/null | awk '$1 ~ /[0-9]+M/ {print $2}')
+          if [ ! -z "$LARGE_FILES" ]; then
+            HINTS="${HINTS}- 📦 Large files added: $LARGE_FILES\n"
+          fi
+          
+          echo "hints<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$HINTS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Comment review hints
+        if: steps.review_hints.outputs.hints != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const hints = `${{ steps.review_hints.outputs.hints }}`;
+            
+            if (hints.trim()) {
+              const body = `## 🔍 Code Review Hints
+              
+            ${hints}
+            
+            *These are automated suggestions - manual review is still recommended*`;
+              
+              github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+
+  final-status:
+    name: Update PR Status
+    runs-on: ubuntu-latest
+    needs: [pr-info, version-check, code-review-hints]
+    if: always()
+
+    steps:
+      - name: Update PR comment with results
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('PR Analysis')
+            );
+            
+            const prInfo = '${{ needs.pr-info.result }}';
+            const versionCheck = '${{ needs.version-check.result }}';
+            const codeReview = '${{ needs.code-review-hints.result }}';
+            
+            const statusIcon = (status) => {
+              if (status === 'success') return '✅';
+              if (status === 'failure') return '❌';
+              if (status === 'skipped') return '⏭️';
+              return '⏳';
+            };
+            
+            const body = `## 🤖 PR Analysis - Updated
+            
+            ### Check Results
+            - PR Info: ${statusIcon(prInfo)} ${prInfo}
+            - Version Check: ${statusIcon(versionCheck)} ${versionCheck}
+            - Code Review: ${statusIcon(codeReview)} ${codeReview}
+            
+            ### Next Steps
+            ${versionCheck === 'success' ? '✅ All version checks passed' : '⚠️ Check version-related issues above'}
+            
+            ---
+            *Automated PR analysis completed*`;
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body
+              });
+            }
+

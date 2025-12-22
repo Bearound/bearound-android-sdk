@@ -1,5 +1,7 @@
 # 🐻 BeAround SDKs Documentation
 
+[![CI](https://github.com/Bearound/bearound-android-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/Bearound/bearound-android-sdk/actions/workflows/ci.yml)
+[![JitPack CI](https://github.com/Bearound/bearound-android-sdk/actions/workflows/jitpack-ci.yml/badge.svg)](https://github.com/Bearound/bearound-android-sdk/actions/workflows/jitpack-ci.yml)
 [![Release](https://github.com/Bearound/bearound-android-sdk/actions/workflows/release.yml/badge.svg)](https://github.com/Bearound/bearound-android-sdk/actions/workflows/release.yml)
 [![JitPack](https://jitpack.io/v/Bearound/bearound-android-sdk.svg)](https://jitpack.io/#Bearound/bearound-android-sdk)
 [![GitHub Release](https://img.shields.io/github/v/release/Bearound/bearound-android-sdk?label=Latest%20Release)](https://github.com/Bearound/bearound-android-sdk/releases)
