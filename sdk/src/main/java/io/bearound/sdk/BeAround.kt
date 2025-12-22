@@ -38,7 +38,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
     private var debug: Boolean = false
     private var clientToken: String = ""
     private var sdkInitialized = false
-    private var timeScanBeacons = TimeScanBeacons.TIME_20
+    private var timeScanBeacons = TimeScanBeacons.TIME_5
     private var sizeListBackupLostBeacons = SizeBackupLostBeacons.SIZE_40
     private var appStartTime: Long = 0L
     private var currentScanSessionId: String = ""
@@ -152,10 +152,14 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
      * **[setBackupSize]**: ⚠️ Must be called **before** [initialize] to set the backup list size for failed beacons.
      *
      * **[setSyncInterval]**: Can be called **before or after** [initialize] to set or change the scan interval dynamically.
-     * - Call before [initialize] to set the initial scan interval (default: 20 seconds)
+     * - Call before [initialize] to set the initial scan interval (default: 5 seconds)
      * - Call after [initialize] to change the scan interval at runtime
      *
-     * If not configured, the SDK uses default values: 20 seconds scan interval and 40 beacons backup size.
+     * **[getSyncInterval]**: Returns the current scan interval configuration.
+     *
+     * **[getBackupSize]**: Returns the current backup list size configuration.
+     *
+     * If not configured, the SDK uses default values: 5 seconds scan interval and 40 beacons backup size.
      */
 
     /**
@@ -224,6 +228,36 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
     @Deprecated("Use setSyncInterval instead", ReplaceWith("setSyncInterval(time)"))
     fun changeScanTimeBeacons(time: TimeScanBeacons) {
         setSyncInterval(time)
+    }
+
+    /**
+     * Gets the current scan interval configuration.
+     *
+     * @return The current [TimeScanBeacons] value representing the scan interval.
+     *
+     * Example:
+     * ```kotlin
+     * val currentInterval = beAround.getSyncInterval()
+     * Log.d("BeAround", "Current scan interval: ${currentInterval.seconds / 1000}s")
+     * ```
+     */
+    fun getSyncInterval(): TimeScanBeacons {
+        return timeScanBeacons
+    }
+
+    /**
+     * Gets the current backup size configuration.
+     *
+     * @return The current [SizeBackupLostBeacons] value representing the backup list size.
+     *
+     * Example:
+     * ```kotlin
+     * val currentBackupSize = beAround.getBackupSize()
+     * Log.d("BeAround", "Current backup size: ${currentBackupSize.size} beacons")
+     * ```
+     */
+    fun getBackupSize(): SizeBackupLostBeacons {
+        return sizeListBackupLostBeacons
     }
 
     /**

@@ -7,11 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.2] - 2025-12-22
+
+### Added
+- **Getter Methods for Configuration**: Added `getSyncInterval()` and `getBackupSize()` methods
+  - `getSyncInterval()` returns the current configured scan interval (`TimeScanBeacons`)
+  - `getBackupSize()` returns the current configured backup list size (`SizeBackupLostBeacons`)
+  - Allows developers to retrieve and verify current SDK configuration at runtime
+  - Useful for displaying current settings in UI or logging configuration state
+
+### Changed
+- **Default Scan Interval**: Changed default scan interval from 20 seconds to 5 seconds
+  - Provides faster beacon detection out of the box
+  - Improves user experience with more responsive beacon scanning
+  - Developers can still adjust to longer intervals if battery optimization is preferred
+  - Updated all documentation to reflect new default value
+
 ## [1.3.1] - 2025-12-22
 
 ### Added
 - **Configurable Scan Interval**: Expanded `TimeScanBeacons` enum to support scan intervals from 5 to 60 seconds
-  - `TIME_5` (5s), `TIME_10` (10s), `TIME_15` (15s), `TIME_20` (20s - default)
+  - `TIME_5` (5s - default in v1.3.2+), `TIME_10` (10s), `TIME_15` (15s), `TIME_20` (20s)
   - `TIME_25` (25s), `TIME_30` (30s), `TIME_35` (35s), `TIME_40` (40s)
   - `TIME_45` (45s), `TIME_50` (50s), `TIME_55` (55s), `TIME_60` (60s)
   - **NEW**: `setSyncInterval()` method for consistent API with iOS SDK

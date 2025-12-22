@@ -20,8 +20,13 @@ Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by
   - `RegionListener` - Beacon region entry/exit notifications
 - **⚙️ NEW: Configurable Scan Intervals** (v1.3.1)
   - Customizable beacon scan frequency from 5 to 60 seconds
+  - Default interval changed to 5 seconds for faster detection (v1.3.2)
   - Balance between battery life and detection speed
   - Configurable failed beacon backup list size
+- **🔍 NEW: Configuration Getters** (v1.3.2)
+  - `getSyncInterval()` - Retrieve current scan interval setting
+  - `getBackupSize()` - Retrieve current backup list size
+  - Verify and log SDK configuration at runtime
 - **🔍 Smart Beacon Filtering** (v1.3.1)
   - Automatically filters invalid beacons (RSSI = 0)
   - Improved data quality and reduced unnecessary API calls
@@ -83,7 +88,7 @@ dependencyResolutionManagement {
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:1.3.1'
+    implementation 'com.github.Bearound:bearound-android-sdk:1.3.2'
 }
 ```
 
@@ -197,10 +202,10 @@ class MainActivity : AppCompatActivity() {
 
 | Option | Interval | Use Case |
 |--------|----------|----------|
-| `TIME_5` | 5 seconds | High-frequency detection (⚡ higher battery usage) |
+| `TIME_5` | 5 seconds | ⭐ **Default** - Fast detection with responsive monitoring |
 | `TIME_10` | 10 seconds | Frequent updates with moderate battery impact |
 | `TIME_15` | 15 seconds | Balanced approach |
-| `TIME_20` | 20 seconds | ⭐ **Default** - Good balance between accuracy and battery |
+| `TIME_20` | 20 seconds | Good balance between accuracy and battery |
 | `TIME_25` | 25 seconds | Slightly relaxed monitoring |
 | `TIME_30` | 30 seconds | Less frequent updates |
 | `TIME_35` | 35 seconds | Power-saving mode |
@@ -233,6 +238,26 @@ beAround.setSyncInterval(BeAround.TimeScanBeacons.TIME_5)
 beAround.setBackupSize(BeAround.SizeBackupLostBeacons.SIZE_50)
 beAround.initialize(...)
 ```
+
+#### Getting Current Configuration (v1.3.2)
+
+You can retrieve the current SDK configuration at any time using getter methods:
+
+```kotlin
+// Get current scan interval
+val currentInterval = beAround.getSyncInterval()
+Log.d("BeAround", "Current scan interval: ${currentInterval.name} (${currentInterval.seconds / 1000}s)")
+
+// Get current backup size
+val currentBackupSize = beAround.getBackupSize()
+Log.d("BeAround", "Current backup size: ${currentBackupSize.name} (${currentBackupSize.size} beacons)")
+```
+
+**Use Cases:**
+- Display current settings in your app's UI
+- Log configuration state for debugging
+- Verify settings after dynamic changes
+- Restore previous configuration
 
 ---
 

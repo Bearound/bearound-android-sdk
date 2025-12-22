@@ -41,7 +41,7 @@ class MainActivity : AppCompatActivity(),
 
     private val dateFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
-    private var currentScanIntervalIndex = 3 // Default TIME_20
+    private var currentScanIntervalIndex = 0 // Default TIME_5
     private val scanIntervals = BeAround.TimeScanBeacons.values()
 
     companion object {
@@ -142,7 +142,12 @@ class MainActivity : AppCompatActivity(),
         beAround.addSyncListener(this)
         beAround.addRegionListener(this)
 
+        // Log current configuration using getters
+        val currentInterval = beAround.getSyncInterval()
+        val currentBackupSize = beAround.getBackupSize()
         addLog("SDK initialized successfully")
+        addLog("Current scan interval: ${currentInterval.name} (${currentInterval.seconds / 1000}s)")
+        addLog("Current backup size: ${currentBackupSize.name} (${currentBackupSize.size} beacons)")
     }
 
     private fun updateScanIntervalDisplay() {
