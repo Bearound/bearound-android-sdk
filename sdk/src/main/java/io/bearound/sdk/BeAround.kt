@@ -123,7 +123,14 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
         TIME_10(10000L),
         TIME_15(15000L),
         TIME_20(20000L),
-        TIME_25(25000L)
+        TIME_25(25000L),
+        TIME_30(30000L),
+        TIME_35(35000L),
+        TIME_40(40000L),
+        TIME_45(45000L),
+        TIME_50(50000L),
+        TIME_55(55000L),
+        TIME_60(60000L)
     }
 
     enum class SizeBackupLostBeacons(val size: Int) {
@@ -142,24 +149,44 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
     /**
      * ⚠️ These functions **must be called before** invoking [initialize] to ensure the SDK is properly configured.
      *
-     * Use `changeListSizeBackupLostBeacons` to set the size of the backup list for lost beacons,
-     * and `changeScanTimeBeacons` to define the scan interval between beacon detections.
+     * Use `setBackupSize` or `changeListSizeBackupLostBeacons` to set the size of the backup list for lost beacons,
+     * and `setSyncInterval` or `changeScanTimeBeacons` to define the scan interval between beacon detections.
      *
      * If not called prior to `initialize`, the SDK will use default values.
      */
 
     /**
      * Sets the size of the backup list for lost beacons.
+     * @param size The backup size configuration (5 to 50 beacons).
      */
-    public fun changeListSizeBackupLostBeacons(size: SizeBackupLostBeacons) {
+    fun setBackupSize(size: SizeBackupLostBeacons) {
         sizeListBackupLostBeacons = size
     }
 
     /**
-     * Sets the scan interval for beacon detection.
+     * Sets the size of the backup list for lost beacons.
+     * @deprecated Use [setBackupSize] instead for consistency with iOS SDK.
      */
-    public fun changeScamTimeBeacons(time: TimeScanBeacons) {
-        timeScanBeacons = time
+    @Deprecated("Use setBackupSize instead", ReplaceWith("setBackupSize(size)"))
+    fun changeListSizeBackupLostBeacons(size: SizeBackupLostBeacons) {
+        setBackupSize(size)
+    }
+
+    /**
+     * Sets the scan interval for beacon detection.
+     * @param interval The scan interval configuration (5 to 60 seconds).
+     */
+    fun setSyncInterval(interval: TimeScanBeacons) {
+        timeScanBeacons = interval
+    }
+
+    /**
+     * Sets the scan interval for beacon detection.
+     * @deprecated Use [setSyncInterval] instead for consistency with iOS SDK.
+     */
+    @Deprecated("Use setSyncInterval instead", ReplaceWith("setSyncInterval(time)"))
+    fun changeScanTimeBeacons(time: TimeScanBeacons) {
+        setSyncInterval(time)
     }
 
     /**
@@ -202,10 +229,10 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
             )
 
             beaconManager.setEnableScheduledScanJobs(false)
-            beaconManager.setRegionStatePersistenceEnabled(false)
-            beaconManager.setBackgroundScanPeriod(1100L)
-            beaconManager.setBackgroundBetweenScanPeriod(timeScanBeacons.seconds)
-            beaconManager.setForegroundBetweenScanPeriod(timeScanBeacons.seconds)
+            beaconManager.isRegionStatePersistenceEnabled = false
+            beaconManager.backgroundScanPeriod = 1100L
+            beaconManager.backgroundBetweenScanPeriod = timeScanBeacons.seconds
+            beaconManager.foregroundBetweenScanPeriod = timeScanBeacons.seconds
 
             beaconManager.addMonitorNotifier(this)
             beaconManager.startMonitoring(getRegion())
@@ -245,7 +272,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
             } catch (e: Exception) {
                 advertisingId = null
                 adTrackingEnabled = false
-                Log.e(TAG, "Failed to fetch Advertising ID: ${e.message}")
+                logError("Failed to fetch Advertising ID: ${e.message}")
             }
         }
     }
@@ -326,11 +353,11 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
             try {
 
                 val matchingBeacons = beacons.filter {
-                    it.id1.toString() == beaconUUID
+                    it.id1.toString() == beaconUUID && it.rssi != 0
                 }
 
                 if (matchingBeacons.isEmpty()) {
-                    log("No beacon with matching UUID found.")
+                    log("No beacon with matching UUID found or all beacons have RSSI = 0.")
                     return@launch
                 }
 
@@ -427,8 +454,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                         )
                     }
                 } else {
-                    Log.e(
-                        TAG,
+                    logError(
                         "Error call API. " +
                                 "Code: $responseCode, Message: ${connection.responseMessage}}"
                     )
@@ -455,7 +481,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                 }
                 connection.disconnect()
             } catch (e: Exception) {
-                Log.e(TAG, "Exception during API sync: ${e.message}")
+                logError("Exception during API sync: ${e.message}")
 
                 // Notify sync listeners of exception
                 syncListeners.forEach {
@@ -525,8 +551,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                                 " ${connection.responseMessage}"
                     )
                 } else {
-                    Log.e(
-                        TAG,
+                    logError(
                         "API sync failed. " +
                                 "Code: $responseCode, Message: ${connection.responseMessage}}"
                     )
@@ -539,7 +564,7 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
                 connection.disconnect()
             } catch (e: Exception) {
                 log("List beacons that failed to sync size: ${syncFailedBeaconsArray.length()}")
-                Log.e(TAG, "Exception during API sync: ${e.message}")
+                logError("Exception during API sync: ${e.message}")
             }
         }
     }
@@ -580,6 +605,17 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
         if (debug) Log.d(TAG, message)
 
         val logEntry = message
+        logListeners.forEach { it.onLogAdded(logEntry) }
+    }
+
+    /**
+     * Utility method for error logging.
+     * Respects the debug mode setting while ensuring critical errors are captured by listeners.
+     */
+    private fun logError(message: String) {
+        if (debug) Log.e(TAG, message)
+
+        val logEntry = "ERROR: $message"
         logListeners.forEach { it.onLogAdded(logEntry) }
     }
 

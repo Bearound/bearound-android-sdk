@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2025-12-22
+
+### Added
+- **Configurable Scan Interval**: Expanded `TimeScanBeacons` enum to support scan intervals from 5 to 60 seconds
+  - `TIME_5` (5s), `TIME_10` (10s), `TIME_15` (15s), `TIME_20` (20s - default)
+  - `TIME_25` (25s), `TIME_30` (30s), `TIME_35` (35s), `TIME_40` (40s)
+  - `TIME_45` (45s), `TIME_50` (50s), `TIME_55` (55s), `TIME_60` (60s)
+  - **NEW**: `setSyncInterval()` method for consistent API with iOS SDK
+  - **NEW**: `setBackupSize()` method for consistent API with iOS SDK
+  - Allows developers to balance between battery consumption and detection speed
+- **Dynamic Scan Interval Control**: Apps can now change scan interval at runtime (demonstrated in sample app)
+
+### Fixed
+- **Invalid Beacon Filter**: Beacons with RSSI = 0 are now properly filtered out and not sent to the API
+  - Prevents sending invalid or unreliable beacon detection data
+  - Improves data quality and reduces unnecessary API calls
+  - Log message updated to indicate when beacons are filtered due to RSSI = 0
+- **Debug Mode Logs**: All logs (including error logs) now properly respect the debug mode setting
+  - Error logs (`Log.e()`) now use `logError()` function that respects debug flag
+  - When `debug = false`, no logs will appear in Logcat (both info and error logs)
+  - Listeners still receive all log events regardless of debug mode
+
+### Changed
+- **Improved Logging**: Updated log messages to better indicate filtering reasons
+  - "No beacon with matching UUID found or all beacons have RSSI = 0" provides clearer feedback
+- **Log Architecture**: Created dedicated `logError()` function for error logging that respects debug mode
+- **API Consistency**: Aligned method naming with iOS SDK for better cross-platform development experience
+
+### Deprecated
+- `changeScamTimeBeacons()` - Use `setSyncInterval()` instead (typo in original method name)
+- `changeListSizeBackupLostBeacons()` - Use `setBackupSize()` instead (for consistency with iOS SDK)
+
 ## [1.2.1] - 2025-12-10
 
 ### Added

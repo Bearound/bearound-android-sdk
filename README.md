@@ -15,6 +15,13 @@ Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by
   - `BeaconListener` - Real-time beacon detection callbacks
   - `SyncListener` - API synchronization status monitoring
   - `RegionListener` - Beacon region entry/exit notifications
+- **⚙️ NEW: Configurable Scan Intervals** (v1.3.1)
+  - Customizable beacon scan frequency from 5 to 60 seconds
+  - Balance between battery life and detection speed
+  - Configurable failed beacon backup list size
+- **🔍 Smart Beacon Filtering** (v1.3.1)
+  - Automatically filters invalid beacons (RSSI = 0)
+  - Improved data quality and reduced unnecessary API calls
 - **Automatic API synchronization** for beacon enter/exit events
 - **Rich beacon data capture**:
   - Distance estimation and RSSI
@@ -24,6 +31,8 @@ Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by
   - Google Advertising ID
 - **Foreground service** support for background execution
 - **Built-in debug logging** with tag BeAroundSdk
+  - Debug mode controls all logs (info and error)
+  - Listeners receive all log events regardless of debug mode
 - **Privacy-first architecture** with encrypted API communication
 
 ---
@@ -71,7 +80,7 @@ dependencyResolutionManagement {
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:1.0.4'
+    implementation 'com.github.Bearound:bearound-android-sdk:1.3.1'
 }
 ```
 
@@ -103,6 +112,85 @@ You need to manually request permissions from the user, especially:
 - BLUETOOTH_SCAN (Android 12+)
 
 📌 Without these permissions, the SDK will not function properly and will not be able to detect beacons in the background.
+
+---
+
+## ⚙️ Configuration Options (v1.3.1)
+
+### 🕐 Configurable Scan Interval
+
+You can customize the beacon scan interval to balance between battery consumption and detection speed. The SDK supports intervals from **5 to 60 seconds**.
+
+⚠️ **Important**: Configuration methods **must be called before** `initialize()`.
+
+```kotlin
+import io.bearound.sdk.BeAround
+
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        
+        val beAround = BeAround.getInstance(this)
+        
+        // Configure scan interval (optional - default is 20 seconds)
+        beAround.setSyncInterval(BeAround.TimeScanBeacons.TIME_30)
+        
+        // Configure backup list size (optional - default is 40)
+        beAround.setBackupSize(BeAround.SizeBackupLostBeacons.SIZE_20)
+        
+        // NOW initialize the SDK
+        beAround.initialize(
+            iconNotification = R.drawable.ic_notification,
+            clientToken = "your-client-token",
+            debug = true
+        )
+    }
+}
+```
+
+**Alternative Methods (Deprecated):**
+- `changeScamTimeBeacons()` → Use `setSyncInterval()` instead
+- `changeListSizeBackupLostBeacons()` → Use `setBackupSize()` instead
+
+#### Available Scan Intervals
+
+| Option | Interval | Use Case |
+|--------|----------|----------|
+| `TIME_5` | 5 seconds | High-frequency detection (⚡ higher battery usage) |
+| `TIME_10` | 10 seconds | Frequent updates with moderate battery impact |
+| `TIME_15` | 15 seconds | Balanced approach |
+| `TIME_20` | 20 seconds | ⭐ **Default** - Good balance between accuracy and battery |
+| `TIME_25` | 25 seconds | Slightly relaxed monitoring |
+| `TIME_30` | 30 seconds | Less frequent updates |
+| `TIME_35` | 35 seconds | Power-saving mode |
+| `TIME_40` | 40 seconds | Extended battery life |
+| `TIME_45` | 45 seconds | Minimal battery impact |
+| `TIME_50` | 50 seconds | Very relaxed monitoring |
+| `TIME_55` | 55 seconds | Maximum battery savings |
+| `TIME_60` | 60 seconds | Minimal scan frequency |
+
+#### Backup List Size Options
+
+Control how many failed beacon detections are stored for retry:
+
+- `SIZE_5` to `SIZE_50` (default: `SIZE_40`)
+- Higher values = more failed beacons stored but increased memory usage
+
+**Example - Battery-Optimized Configuration:**
+```kotlin
+beAround.changeScamTimeBeacons(BeAround.TimeScanBeacons.TIME_45)
+beAround.changeListSizeBackupLostBeacons(BeAround.SizeBackupLostBeacons.SIZE_10)
+beAround.initialize(...)
+```
+
+**Example - High-Performance Configuration:**
+```kotlin
+beAround.changeScamTimeBeacons(BeAround.TimeScanBeacons.TIME_5)
+beAround.changeListSizeBackupLostBeacons(BeAround.SizeBackupLostBeacons.SIZE_50)
+beAround.initialize(...)
+```
+
+---
 
 ### 🎉 Event Listener System (v1.0.4)
 
