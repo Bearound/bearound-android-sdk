@@ -36,8 +36,13 @@ class MainActivity : AppCompatActivity(),
     private lateinit var beaconCountTextView: TextView
     private lateinit var beaconsTextView: TextView
     private lateinit var syncStatusTextView: TextView
+    private lateinit var scanIntervalButton: Button
+    private lateinit var scanIntervalTextView: TextView
 
     private val dateFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+
+    private var currentScanIntervalIndex = 3 // Default TIME_20
+    private val scanIntervals = BeAround.TimeScanBeacons.values()
 
     companion object {
         private const val LOCATION_PERMISSION_REQUEST_CODE = 1001
@@ -56,10 +61,24 @@ class MainActivity : AppCompatActivity(),
         beaconCountTextView = findViewById(R.id.beaconCountTextView)
         beaconsTextView = findViewById(R.id.beaconsTextView)
         syncStatusTextView = findViewById(R.id.syncStatusTextView)
+        scanIntervalButton = findViewById(R.id.scanIntervalButton)
+        scanIntervalTextView = findViewById(R.id.scanIntervalTextView)
+
+        // Update initial scan interval display
+        updateScanIntervalDisplay()
 
         clearLogsButton.setOnClickListener {
             logs.clear()
             logTextView.text = "Logs cleared"
+        }
+
+        scanIntervalButton.setOnClickListener {
+            currentScanIntervalIndex = (currentScanIntervalIndex + 1) % scanIntervals.size
+            val newInterval = scanIntervals[currentScanIntervalIndex]
+            beAround.setSyncInterval(newInterval)
+            updateScanIntervalDisplay()
+            addLog("Scan interval changed to ${newInterval.name} (${newInterval.seconds / 1000}s)")
+            Toast.makeText(this, "Scan interval: ${newInterval.seconds / 1000}s", Toast.LENGTH_SHORT).show()
         }
 
         // Verifica permissões
@@ -124,6 +143,11 @@ class MainActivity : AppCompatActivity(),
         beAround.addRegionListener(this)
 
         addLog("SDK initialized successfully")
+    }
+
+    private fun updateScanIntervalDisplay() {
+        val currentInterval = scanIntervals[currentScanIntervalIndex]
+        scanIntervalTextView.text = "Current: ${currentInterval.name}\n(${currentInterval.seconds / 1000}s)"
     }
 
     // Callback da permissão
