@@ -147,16 +147,22 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
     }
 
     /**
-     * ⚠️ These functions **must be called before** invoking [initialize] to ensure the SDK is properly configured.
+     * Configuration functions for the BeAround SDK.
      *
-     * Use `setBackupSize` or `changeListSizeBackupLostBeacons` to set the size of the backup list for lost beacons,
-     * and `setSyncInterval` or `changeScanTimeBeacons` to define the scan interval between beacon detections.
+     * **[setBackupSize]**: ⚠️ Must be called **before** [initialize] to set the backup list size for failed beacons.
      *
-     * If not called prior to `initialize`, the SDK will use default values.
+     * **[setSyncInterval]**: Can be called **before or after** [initialize] to set or change the scan interval dynamically.
+     * - Call before [initialize] to set the initial scan interval (default: 20 seconds)
+     * - Call after [initialize] to change the scan interval at runtime
+     *
+     * If not configured, the SDK uses default values: 20 seconds scan interval and 40 beacons backup size.
      */
 
     /**
      * Sets the size of the backup list for lost beacons.
+     *
+     * ⚠️ **Must be called before [initialize]**.
+     *
      * @param size The backup size configuration (5 to 50 beacons).
      */
     fun setBackupSize(size: SizeBackupLostBeacons) {
@@ -165,6 +171,9 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
 
     /**
      * Sets the size of the backup list for lost beacons.
+     *
+     * ⚠️ **Must be called before [initialize]**.
+     *
      * @deprecated Use [setBackupSize] instead for consistency with iOS SDK.
      */
     @Deprecated("Use setBackupSize instead", ReplaceWith("setBackupSize(size)"))
@@ -174,14 +183,42 @@ class BeAround private constructor(private val context: Context) : MonitorNotifi
 
     /**
      * Sets the scan interval for beacon detection.
+     *
+     * ✅ **Can be called before or after [initialize]** for dynamic configuration.
+     *
+     * When called after initialization, the new interval takes effect immediately,
+     * allowing you to adjust scanning frequency based on battery level, user preferences,
+     * or application state.
+     *
      * @param interval The scan interval configuration (5 to 60 seconds).
+     *
+     * Example - Set initial interval before initialization:
+     * ```kotlin
+     * beAround.setSyncInterval(BeAround.TimeScanBeacons.TIME_30)
+     * beAround.initialize(...)
+     * ```
+     *
+     * Example - Change interval dynamically at runtime:
+     * ```kotlin
+     * // Later in your code, after initialization
+     * beAround.setSyncInterval(BeAround.TimeScanBeacons.TIME_10) // Increase scan frequency
+     * ```
      */
     fun setSyncInterval(interval: TimeScanBeacons) {
         timeScanBeacons = interval
+        // If already initialized, update the beacon manager scan periods
+        if (sdkInitialized) {
+            beaconManager.backgroundBetweenScanPeriod = interval.seconds
+            beaconManager.foregroundBetweenScanPeriod = interval.seconds
+            log("Scan interval updated to ${interval.name} (${interval.seconds / 1000}s)")
+        }
     }
 
     /**
      * Sets the scan interval for beacon detection.
+     *
+     * ✅ **Can be called before or after [initialize]** for dynamic configuration.
+     *
      * @deprecated Use [setSyncInterval] instead for consistency with iOS SDK.
      */
     @Deprecated("Use setSyncInterval instead", ReplaceWith("setSyncInterval(time)"))

@@ -17,7 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **NEW**: `setSyncInterval()` method for consistent API with iOS SDK
   - **NEW**: `setBackupSize()` method for consistent API with iOS SDK
   - Allows developers to balance between battery consumption and detection speed
-- **Dynamic Scan Interval Control**: Apps can now change scan interval at runtime (demonstrated in sample app)
+- **Dynamic Scan Interval Control**: `setSyncInterval()` can now be called at runtime to change scan frequency dynamically
+  - Can be called before `initialize()` to set initial interval
+  - Can be called after `initialize()` to adjust scanning based on battery level, user preferences, or app state
+  - Changes take effect immediately on the beacon manager
+  - Demonstrated in sample app with interactive scan interval control
+  - Note: `setBackupSize()` must still be called before `initialize()`
 
 ### Fixed
 - **Invalid Beacon Filter**: Beacons with RSSI = 0 are now properly filtered out and not sent to the API
