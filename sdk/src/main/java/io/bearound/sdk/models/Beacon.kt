@@ -1,0 +1,37 @@
+package io.bearound.sdk.models
+
+import java.util.Date
+import java.util.UUID
+
+/**
+ * Represents a detected beacon with its properties
+ */
+data class Beacon(
+    val uuid: UUID,
+    val major: Int,
+    val minor: Int,
+    val rssi: Int,
+    val proximity: Proximity,
+    val accuracy: Double,
+    val timestamp: Date = Date(),
+    val metadata: BeaconMetadata? = null,
+    val txPower: Int? = null
+) {
+    enum class Proximity {
+        IMMEDIATE,
+        NEAR,
+        FAR,
+        UNKNOWN;
+
+        fun toApiString(): String = when (this) {
+            IMMEDIATE -> "immediate"
+            NEAR -> "near"
+            FAR -> "far"
+            UNKNOWN -> "unknown"
+        }
+    }
+
+    val identifier: String
+        get() = "$major.$minor"
+}
+

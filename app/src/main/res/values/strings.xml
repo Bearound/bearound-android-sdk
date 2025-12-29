@@ -1,30 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">BeAroundSDK</string>
-    <string name="notification_channel_name">Notificações de Beacon</string>
-    <string name="notification_channel_description">Canal para notificações relacionadas a beacons.</string>
-    <string name="request_permission">Solicitar Permissões</string>
-    <string name="status_text">Status:</string>
-    <string name="uuid_text">UUID:</string>
-    <string name="major_text">Major:</string>
-    <string name="minor_text">Minor:</string>
-    <string name="advertising_id_text">Advertising ID (AAID):</string>
-    <string name="api_sync_status_text">Sincronização API:</string>
-    <string name="not_available_placeholder">N/A</string>
-    <string name="notification_enter_title">Beacon Detectado</string>
-    <string name="notification_enter_body">Você entrou na região do beacon: %1$s</string>
-    <string name="notification_exit_title">Beacon Perdido</string>
-    <string name="notification_exit_body">Você saiu da região do beacon: %1$s</string>
-    <string name="api_sync_success">Sincronizado com API</string>
-    <string name="api_sync_failure">Falha ao sincronizar com API</string>
-    <string name="api_sync_failure_config">Falha: API não configurada</string>
-    <string name="api_sync_inprogress">Sincronizando com API...</string>
-    <string name="permissions_granted">Permissões concedidas. Procurando beacons...</string>
-    <string name="permissions_needed_message">Permissões de Localização e Bluetooth Scan são necessárias. Clique no botão para conceder.</string>
-    <string name="background_location_denied_message">Permissão de Localização em Background é recomendada para monitoramento contínuo.</string>
-    <string name="beacon_detected_status">Beacon detectado!</string>
-    <string name="looking_for_beacons_status">Procurando beacons...</string>
-    <string name="exited_beacon_region_status">Saiu da região do beacon: %1$s</string>
-    <string name="entered_beacon_region_status">Entrou na região do beacon: %1$s</string>
-    <string name="foreground_service_title">Monitoramento de Beacons</string>
-    <string name="foreground_service_message">Execução contínua em segundo plano</string>
+    <string name="app_name">BeAroundScan</string>
 </resources>
