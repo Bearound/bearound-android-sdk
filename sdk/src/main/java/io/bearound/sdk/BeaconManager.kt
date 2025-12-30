@@ -230,12 +230,9 @@ class BeaconManager(private val context: Context) {
         stopWatchdog()
         stopRangingRefreshTimer()
 
-        beaconLock.withLock {
-            detectedBeacons.clear()
-            beaconLastSeen.clear()
-        }
-
-        onBeaconsUpdated?.invoke(emptyList())
+        // DON'T clear beacons here - they need to be available for sync
+        // Beacons will be cleared by BeAroundSDK after successful sync
+        // Only notify UI that scanning stopped, but keep detected beacons
     }
 
     private fun startMonitoring() {

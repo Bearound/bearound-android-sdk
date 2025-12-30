@@ -1,17 +1,29 @@
 # BeAround Android SDK
 
+[![JitPack](https://jitpack.io/v/Bearound/bearound-android-sdk.svg)](https://jitpack.io/#Bearound/bearound-android-sdk)
+[![API](https://img.shields.io/badge/API-23%2B-brightgreen.svg?style=flat)](https://android-arsenal.com/api?level=23)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by BeAround.
+
+## Version 2.0.0
+
+🎉 **Major Release**: Complete SDK rewrite with improved architecture, better performance, and enhanced reliability.
+
+> ⚠️ **Breaking Changes**: Version 2.0.0 is not backward compatible with 1.x. See [Migration Guide](#migration-from-1x) below.
 
 ## Features
 
 - ✅ Native Android Bluetooth LE beacon scanning (no external dependencies)
 - ✅ Background and foreground beacon detection
-- ✅ Automatic beacon metadata collection via BLE
+- ✅ Automatic beacon metadata collection via BLE (battery, firmware, temperature)
 - ✅ Periodic and continuous scanning modes
 - ✅ Comprehensive device information collection
 - ✅ Secure storage for device identifiers
-- ✅ Exponential backoff retry logic
+- ✅ Exponential backoff retry logic with circuit breaker
 - ✅ Battery-optimized scanning strategies
+- ✅ Thread-safe beacon caching and sync
+- ✅ Real-time UI updates via delegate pattern
 
 ## Architecture
 
@@ -26,19 +38,41 @@ This SDK follows the same architecture as the iOS version:
 
 ## Installation
 
-### Gradle (GitHub Packages)
+### JitPack
 
-Add to your `build.gradle`:
+1. Add JitPack repository to your root `build.gradle`:
+
+```gradle
+allprojects {
+    repositories {
+        ...
+        maven { url 'https://jitpack.io' }
+    }
+}
+```
+
+Or if using `settings.gradle` (newer projects):
+
+```gradle
+dependencyResolutionManagement {
+    repositories {
+        ...
+        maven { url 'https://jitpack.io' }
+    }
+}
+```
+
+2. Add the dependency:
 
 ```gradle
 dependencies {
-    implementation 'io.bearound:bearound-android-sdk:1.0.0'
+    implementation 'com.github.Bearound:bearound-android-sdk:2.0.0'
 }
 ```
 
 ## Requirements
 
-- Android API 21+ (Android 5.0 Lollipop)
+- Android API 23+ (Android 6.0 Marshmallow)
 - Kotlin 1.8+
 - Bluetooth LE support
 - Location permissions
@@ -49,6 +83,25 @@ Add these permissions to your `AndroidManifest.xml`:
 
 ```xml
 <!-- Bluetooth (Android 11 and below) -->
+<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+
+<!-- Bluetooth (Android 12+) -->
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+<!-- Location -->
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+<!-- Internet -->
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+<!-- Notifications (Android 13+) -->
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+```
 <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
 <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
 
@@ -323,6 +376,87 @@ The SDK automatically handles background scanning:
 - Consider using a foreground service for critical background scanning
 - Monitor battery usage and adjust sync intervals accordingly
 
+## Migration from 1.x
+
+Version 2.0.0 introduces breaking changes. Follow these steps to migrate:
+
+### 1. Update Dependencies
+
+```gradle
+// OLD (v1.x)
+implementation 'com.github.Bearound:bearound-android-sdk:1.3.2'
+
+// NEW (v2.0)
+implementation 'com.github.Bearound:bearound-android-sdk:2.0.0'
+```
+
+### 2. Update AndroidManifest.xml
+
+Add the missing `ACCESS_NETWORK_STATE` permission:
+
+```xml
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+```
+
+### 3. Update Initialization Code
+
+```kotlin
+// OLD (v1.x)
+val beAround = BeAround.getInstance(context)
+beAround.initialize(
+    iconNotification = R.drawable.ic_notification,
+    clientToken = "your-token",
+    debug = true
+)
+
+// NEW (v2.0)
+val sdk = BeAroundSDK.getInstance(context)
+sdk.delegate = this // implement BeAroundSDKDelegate
+sdk.configure(
+    appId = "your-app-id",
+    syncInterval = 30000L,
+    enableBluetoothScanning = true,
+    enablePeriodicScanning = true
+)
+sdk.startScanning()
+```
+
+### 4. Replace Listeners with Delegate
+
+```kotlin
+// OLD (v1.x)
+beAround.addBeaconListener(object : BeaconListener {
+    override fun onBeaconsDetected(beacons: List<BeaconData>) { }
+})
+
+// NEW (v2.0)
+class MainActivity : AppCompatActivity(), BeAroundSDKDelegate {
+    override fun didUpdateBeacons(beacons: List<Beacon>) { }
+    override fun didUpdateSyncStatus(secondsUntilSync: Int, isScanning: Boolean) { }
+    override fun didFailWithError(error: Throwable) { }
+}
+```
+
+### 5. Update Beacon Data Access
+
+The `Beacon` model has changed:
+
+```kotlin
+// OLD (v1.x)
+beacon.uuid
+beacon.major
+beacon.minor
+beacon.distance
+
+// NEW (v2.0)
+beacon.uuid
+beacon.major
+beacon.minor
+beacon.accuracy  // replaces distance
+beacon.proximity // IMMEDIATE, NEAR, FAR, UNKNOWN
+beacon.metadata  // new: battery, firmware, temperature
+```
+
 ## Troubleshooting
 
 ### Beacons not detected
@@ -331,6 +465,13 @@ The SDK automatically handles background scanning:
 2. Check that Bluetooth is enabled
 3. Verify location services are enabled
 4. Ensure the beacon UUID matches: `E25B8D3C-947A-452F-A13F-589CB706D2E5`
+
+### Beacons detected but not syncing to API
+
+1. Check logcat for `BeAroundSDK-APIClient` logs
+2. Verify `ACCESS_NETWORK_STATE` permission is granted
+3. Ensure internet connectivity
+4. Check API base URL configuration
 
 ### High battery usage
 
@@ -344,17 +485,29 @@ The SDK automatically handles background scanning:
 2. Check that the app is not in battery optimization/doze mode
 3. Consider implementing a foreground service
 
+### App crashes with SecurityException
+
+- Ensure `ACCESS_NETWORK_STATE` permission is in AndroidManifest.xml
+- This was a known issue in pre-2.0.0 versions
+
 ## Changelog
 
-### Version 1.0.0
+See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 
-- Complete rewrite following iOS SDK architecture
-- Native Android Bluetooth LE APIs (removed AltBeacon dependency)
-- Improved background scanning reliability
-- Enhanced device information collection
-- Secure storage for device identifiers
-- Better battery optimization
-- Comprehensive error handling and retry logic
+### Version 2.0.0 (2025-12-30)
+
+- 🚀 Complete SDK rewrite with new architecture
+- ✨ Native Android Bluetooth LE (no external dependencies)
+- 🔧 Fixed beacon sync race condition
+- 🔧 Fixed missing `ACCESS_NETWORK_STATE` permission
+- 🔧 Fixed UI not updating with beacon data
+- 📱 New Jetpack Compose sample app
+- ⚠️ Breaking changes - not compatible with v1.x
+
+### Version 1.3.2 (Previous)
+
+- Legacy version with AltBeacon library
+- See old documentation for v1.x usage
 
 ## License
 

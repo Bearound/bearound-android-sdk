@@ -377,14 +377,21 @@ class BeAroundSDK private constructor() {
         syncRunnable = object : Runnable {
             override fun run() {
                 nextSyncTime = System.currentTimeMillis() + syncInterval
+
+                // Sync beacons first
                 syncBeacons()
                 
                 if (config.enablePeriodicScanning && !isInBackground) {
                     val scanDuration = config.scanDuration
                     val delayUntilNextRanging = syncInterval - scanDuration
                     
-                    beaconManager.stopRanging()
-                    
+                    // Stop ranging after a short delay to allow sync to complete
+                    handler.postDelayed({
+                        beaconManager.stopRanging()
+                        // Clear UI display after sync completes
+                        delegate?.didUpdateBeacons(emptyList())
+                    }, 100) // Small delay to ensure sync captures the beacons
+
                     handler.postDelayed({
                         Log.d(TAG, "Starting ranging ${scanDuration}ms before next sync")
                         beaconManager.startRanging()
