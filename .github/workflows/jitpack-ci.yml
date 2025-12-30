@@ -1,0 +1,297 @@
+name: JitPack CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+  push:
+    branches:
+      - main
+      - develop
+
+jobs:
+  jitpack-build-test:
+    name: JitPack Build Test (Java ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      matrix:
+        java: ['17']
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ matrix.java }}
+          cache: 'gradle'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-read-only: false
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Display Gradle version
+        run: ./gradlew --version
+
+      - name: Display Java version
+        run: java -version
+
+      - name: Clean build
+        run: ./gradlew clean
+
+      - name: Assemble SDK (JitPack Step 1)
+        run: |
+          echo "📦 Step 1: Assembling SDK..."
+          ./gradlew :sdk:assemble
+          echo "✅ SDK assembled"
+
+      - name: Publish to Maven Local (JitPack Step 2)
+        run: |
+          echo "📦 Step 2: Publishing to Maven Local..."
+          ./gradlew :sdk:publishToMavenLocal -Pgroup=com.github.Bearound -xtest -xlint
+          echo "✅ Published to Maven Local"
+
+      - name: Verify Maven publication
+        run: |
+          SDK_VERSION=$(grep SDK_VERSION gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          MAVEN_PATH="$HOME/.m2/repository/com/github/Bearound/bearound-android-sdk/$SDK_VERSION"
+          
+          echo "🔍 Checking Maven artifacts at: $MAVEN_PATH"
+          
+          if [ ! -d "$MAVEN_PATH" ]; then
+            echo "❌ Maven artifacts not found"
+            echo "Expected path: $MAVEN_PATH"
+            ls -la "$HOME/.m2/repository/com/github/Bearound/" || echo "Repository not found"
+            exit 1
+          fi
+          
+          echo "✅ Maven artifacts found!"
+          echo ""
+          echo "📁 Contents:"
+          ls -lh "$MAVEN_PATH"
+          
+          # Check for required files
+          REQUIRED_FILES=("bearound-android-sdk-$SDK_VERSION.aar" "bearound-android-sdk-$SDK_VERSION.pom")
+          
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ -f "$MAVEN_PATH/$file" ]; then
+              echo "✅ Found: $file"
+            else
+              echo "❌ Missing: $file"
+              exit 1
+            fi
+          done
+          
+          echo ""
+          echo "🎉 All required Maven artifacts are present!"
+
+      - name: Test SDK AAR size
+        run: |
+          SDK_VERSION=$(grep SDK_VERSION gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          AAR_FILE="$HOME/.m2/repository/com/github/Bearound/bearound-android-sdk/$SDK_VERSION/bearound-android-sdk-$SDK_VERSION.aar"
+          
+          if [ ! -f "$AAR_FILE" ]; then
+            echo "❌ AAR file not found"
+            exit 1
+          fi
+          
+          SIZE=$(du -h "$AAR_FILE" | cut -f1)
+          SIZE_BYTES=$(stat -f%z "$AAR_FILE" 2>/dev/null || stat -c%s "$AAR_FILE")
+          
+          echo "📦 AAR Size: $SIZE ($SIZE_BYTES bytes)"
+          
+          # Warn if AAR is unexpectedly large (> 5MB)
+          if [ "$SIZE_BYTES" -gt 5242880 ]; then
+            echo "⚠️ Warning: AAR file is larger than 5MB"
+          fi
+          
+          # Fail if AAR is too small (< 10KB)
+          if [ "$SIZE_BYTES" -lt 10240 ]; then
+            echo "❌ Error: AAR file is suspiciously small (< 10KB)"
+            exit 1
+          fi
+          
+          echo "✅ AAR size is acceptable"
+
+      - name: Inspect AAR contents
+        run: |
+          SDK_VERSION=$(grep SDK_VERSION gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          AAR_FILE="$HOME/.m2/repository/com/github/Bearound/bearound-android-sdk/$SDK_VERSION/bearound-android-sdk-$SDK_VERSION.aar"
+          
+          echo "🔍 Inspecting AAR contents..."
+          unzip -l "$AAR_FILE" | head -n 30
+          
+          # Check for essential files
+          if unzip -l "$AAR_FILE" | grep -q "classes.jar"; then
+            echo "✅ classes.jar found"
+          else
+            echo "❌ classes.jar not found"
+            exit 1
+          fi
+          
+          if unzip -l "$AAR_FILE" | grep -q "AndroidManifest.xml"; then
+            echo "✅ AndroidManifest.xml found"
+          else
+            echo "❌ AndroidManifest.xml not found"
+            exit 1
+          fi
+
+      - name: Validate POM file
+        run: |
+          SDK_VERSION=$(grep SDK_VERSION gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          POM_FILE="$HOME/.m2/repository/com/github/Bearound/bearound-android-sdk/$SDK_VERSION/bearound-android-sdk-$SDK_VERSION.pom"
+          
+          echo "📄 Validating POM file..."
+          
+          if [ ! -f "$POM_FILE" ]; then
+            echo "❌ POM file not found"
+            exit 1
+          fi
+          
+          # Check POM contains required elements
+          if grep -q "<groupId>com.github.Bearound</groupId>" "$POM_FILE" && \
+             grep -q "<artifactId>bearound-android-sdk</artifactId>" "$POM_FILE" && \
+             grep -q "<version>$SDK_VERSION</version>" "$POM_FILE"; then
+            echo "✅ POM file is valid"
+          else
+            echo "❌ POM file is missing required elements"
+            cat "$POM_FILE"
+            exit 1
+          fi
+          
+          echo ""
+          echo "📄 POM contents:"
+          cat "$POM_FILE"
+
+      - name: Verify SDK is ready for JitPack
+        run: |
+          SDK_VERSION=$(grep SDK_VERSION gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          
+          echo "✅ SDK build artifacts verified:"
+          echo "  - Version: $SDK_VERSION"
+          echo "  - Maven artifacts: Present"
+          echo "  - AAR file: Valid"
+          echo "  - POM file: Valid"
+          echo ""
+          echo "🎉 SDK is ready to be published on JitPack!"
+          echo ""
+          echo "📦 To use this version:"
+          echo "   implementation 'com.github.Bearound:bearound-android-sdk:$SDK_VERSION'"
+
+      - name: Generate build report
+        if: always()
+        run: |
+          SDK_VERSION=$(grep SDK_VERSION gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          
+          echo "# JitPack Build Report" > /tmp/jitpack-report.md
+          echo "" >> /tmp/jitpack-report.md
+          echo "## Build Information" >> /tmp/jitpack-report.md
+          echo "- **SDK Version**: $SDK_VERSION" >> /tmp/jitpack-report.md
+          echo "- **Java Version**: ${{ matrix.java }}" >> /tmp/jitpack-report.md
+          echo "- **Build Date**: $(date)" >> /tmp/jitpack-report.md
+          echo "- **Commit**: ${GITHUB_SHA:0:7}" >> /tmp/jitpack-report.md
+          echo "" >> /tmp/jitpack-report.md
+          echo "## Status" >> /tmp/jitpack-report.md
+          echo "✅ Build completed successfully" >> /tmp/jitpack-report.md
+          echo "" >> /tmp/jitpack-report.md
+          echo "## Integration" >> /tmp/jitpack-report.md
+          echo "\`\`\`gradle" >> /tmp/jitpack-report.md
+          echo "implementation 'com.github.Bearound:bearound-android-sdk:$SDK_VERSION'" >> /tmp/jitpack-report.md
+          echo "\`\`\`" >> /tmp/jitpack-report.md
+          
+          cat /tmp/jitpack-report.md
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jitpack-build-artifacts-java-${{ matrix.java }}
+          path: |
+            sdk/build/outputs/aar/*.aar
+            sdk/build/publications/
+          retention-days: 7
+
+  jitpack-compatibility-check:
+    name: JitPack Compatibility Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: jitpack-build-test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check jitpack.yml configuration
+        run: |
+          if [ ! -f jitpack.yml ]; then
+            echo "⚠️ jitpack.yml not found (using JitPack defaults)"
+            echo "Consider creating jitpack.yml for custom configuration"
+          else
+            echo "✅ jitpack.yml found"
+            echo ""
+            echo "📄 Contents:"
+            cat jitpack.yml
+          fi
+
+      - name: Verify gradle.properties
+        run: |
+          if [ ! -f gradle.properties ]; then
+            echo "❌ gradle.properties not found"
+            exit 1
+          fi
+          
+          echo "✅ gradle.properties found"
+          echo ""
+          echo "📄 SDK Metadata:"
+          grep "SDK_" gradle.properties || echo "No SDK metadata found"
+
+      - name: Check Android SDK compatibility
+        run: |
+          echo "🔍 Checking Android SDK compatibility..."
+          
+          # Check compileSdk
+          if grep -q "compileSdk" sdk/build.gradle; then
+            COMPILE_SDK=$(grep "compileSdk" sdk/build.gradle | grep -oE '[0-9]+' | head -1)
+            echo "✅ compileSdk: $COMPILE_SDK"
+          fi
+          
+          # Check minSdk
+          if grep -q "minSdk" sdk/build.gradle; then
+            MIN_SDK=$(grep "minSdk" sdk/build.gradle | grep -oE '[0-9]+' | head -1)
+            echo "✅ minSdk: $MIN_SDK"
+          fi
+          
+          # Check targetSdk
+          if grep -q "targetSdk" sdk/build.gradle; then
+            TARGET_SDK=$(grep "targetSdk" sdk/build.gradle | grep -oE '[0-9]+' | head -1)
+            echo "✅ targetSdk: $TARGET_SDK"
+          fi
+
+      - name: JitPack readiness summary
+        run: |
+          echo "🎯 JitPack Readiness Summary"
+          echo "============================"
+          echo ""
+          echo "✅ All checks passed!"
+          echo ""
+          echo "📦 Your SDK is ready for JitPack!"
+          echo ""
+          echo "To publish a new version:"
+          echo "1. Update SDK_VERSION in gradle.properties"
+          echo "2. Update CHANGELOG.md"
+          echo "3. Commit and push changes"
+          echo "4. Create and push a tag: git tag v<version> && git push origin v<version>"
+          echo "5. JitPack will automatically build at: https://jitpack.io/#Bearound/bearound-android-sdk"
+

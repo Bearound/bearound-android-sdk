@@ -15,7 +15,7 @@ android {
     }
 
     defaultConfig {
-        minSdk 21
+        minSdk 23
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles "consumer-rules.pro"
 
@@ -121,8 +121,14 @@ dependencies {
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
 
-    api 'org.altbeacon:android-beacon-library:2.21.1'
+    // Removed AltBeacon - using native Android Bluetooth LE APIs
+    // api 'org.altbeacon:android-beacon-library:2.21.1'
+    
+    // Core dependencies
     implementation 'com.google.android.gms:play-services-ads-identifier:18.2.0'
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
     implementation 'androidx.lifecycle:lifecycle-process:2.9.1'
+    
+    // Security for encrypted storage (similar to iOS Keychain)
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
 }

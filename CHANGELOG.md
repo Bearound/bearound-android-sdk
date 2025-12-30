@@ -7,6 +7,235 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2025-12-30
+
+### 🚀 Major Rewrite - Complete SDK Architecture Overhaul
+
+This is a **major breaking release** with a complete rewrite of the BeAround Android SDK. The entire architecture has been redesigned to match the iOS SDK implementation, providing better performance, reliability, and cross-platform consistency.
+
+#### ⚠️ BREAKING CHANGES
+
+**Complete API Change:**
+- **Old API** (`BeAround` singleton) has been replaced with **`BeAroundSDK`**
+- All class names, method signatures, and package structure have changed
+- This version is **NOT backward compatible** with v1.x
+- See Migration Guide below for upgrading from v1.x
+
+#### 🎯 New Architecture
+
+**Core Components:**
+- **`BeAroundSDK`** - Main singleton class (replaces `BeAround`)
+- **`BeaconManager`** - Native Android Bluetooth LE scanning (no external dependencies)
+- **`BluetoothManager`** - BLE metadata collection (battery, firmware, temperature)
+- **`APIClient`** - HTTP communication with BeAround backend
+- **`DeviceInfoCollector`** - Comprehensive device telemetry
+- **`SecureStorage`** - Encrypted storage for sensitive data (Android Keychain equivalent)
+- **`DeviceIdentifier`** - Persistent device ID generation
+
+#### 🆕 New Features
+
+**Beacon Detection:**
+- Native Android Bluetooth LE implementation (no AltBeacon library dependency)
+- Foreground and background scanning support
+- Periodic scanning mode (battery-optimized)
+- Continuous scanning mode
+- Automatic beacon metadata collection via BLE connection
+- iBeacon-specific filtering and parsing
+- Beacon proximity calculation (IMMEDIATE, NEAR, FAR, UNKNOWN)
+
+**Metadata Collection:**
+- Battery level (0-100%)
+- Firmware version
+- TX Power (dBm)
+- Movement counter
+- Temperature (Celsius)
+- RSSI from BLE connection
+- Connectable status
+
+**Device Information:**
+- Persistent device identifier (UUID)
+- Device manufacturer, model, OS version
+- Battery level and charging status
+- Network type (WiFi/Cellular) and connectivity details
+- Location permissions status
+- Bluetooth state
+- App foreground/background state
+- Screen dimensions and RAM info
+- Cold start detection
+
+**API Integration:**
+- RESTful HTTP client with JSON payloads
+- Exponential backoff retry logic
+- Failed batch queuing and retry
+- Comprehensive request/response logging
+- Circuit breaker pattern for API failures
+
+**Configuration:**
+- Configurable sync intervals
+- Enable/disable Bluetooth metadata scanning
+- Enable/disable periodic scanning
+- Custom API base URL
+- User properties (internal ID, email, name, custom fields)
+
+#### 🔧 Technical Improvements
+
+**Performance:**
+- No external beacon library dependencies (reduced APK size)
+- Optimized memory usage with beacon caching
+- Thread-safe operations with Mutex locks
+- Coroutine-based async operations
+- Efficient background scanning strategies
+
+**Reliability:**
+- Proper lifecycle management
+- Automatic cleanup on app destroy
+- Bluetooth state monitoring
+- Permission handling
+- Error recovery mechanisms
+- Watchdog timers for scan health
+
+**Security:**
+- Encrypted SharedPreferences for sensitive data
+- Secure device ID storage
+- API authentication support
+
+**Code Quality:**
+- 100% Kotlin implementation
+- Comprehensive logging with DEBUG tags
+- Null-safety throughout
+- Proper resource management
+- Memory leak prevention
+
+#### 📦 New Dependencies
+
+```gradle
+dependencies {
+    // Kotlin
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    
+    // AndroidX
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.lifecycle:lifecycle-process:2.7.0'
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+}
+```
+
+#### 🐛 Critical Fixes
+
+**Permission Issues:**
+- **Fixed**: Added missing `ACCESS_NETWORK_STATE` permission (was causing SecurityException crash)
+- **Fixed**: Proper permission checks before network operations
+
+**Beacon Sync Race Condition:**
+- **Fixed**: Beacons were being cleared before sync could collect them
+- **Solution**: Delayed beacon clearing until after sync completes
+- **Impact**: Beacons now reliably sync to API on every interval
+
+**UI Update Issues:**
+- **Fixed**: UI not updating when beacons detected
+- **Solution**: Proper delegate callback flow from BeaconManager → BeAroundSDK → App
+- **Impact**: Real-time beacon updates now work correctly
+
+#### 📱 New Sample App
+
+The example app has been completely rewritten to demonstrate the new SDK:
+- Jetpack Compose UI (modern Android UI framework)
+- Real-time beacon list with RSSI and proximity
+- Sync countdown timer
+- Comprehensive logging panel
+- Permission request flow
+- Material Design 3 theming
+
+#### 🔄 Migration Guide
+
+**From v1.x to v2.0:**
+
+**1. Update Dependencies:**
+```gradle
+// OLD (v1.x)
+implementation 'com.github.Bearound:bearound-android-sdk:1.3.2'
+
+// NEW (v2.0)
+implementation 'com.github.Bearound:bearound-android-sdk:2.0.0'
+```
+
+**2. Update Initialization:**
+```kotlin
+// OLD (v1.x)
+val beAround = BeAround.getInstance(context)
+beAround.initialize(
+    iconNotification = R.drawable.ic_notification,
+    clientToken = "your-token",
+    debug = true
+)
+
+// NEW (v2.0)
+val sdk = BeAroundSDK.getInstance(context)
+sdk.delegate = this // implement BeAroundSDKDelegate
+sdk.configure(
+    appId = "your-app-id",
+    syncInterval = 30000L, // milliseconds
+    enableBluetoothScanning = true,
+    enablePeriodicScanning = true
+)
+sdk.startScanning()
+```
+
+**3. Implement New Delegate:**
+```kotlin
+class MainActivity : AppCompatActivity(), BeAroundSDKDelegate {
+    
+    override fun didUpdateBeacons(beacons: List<Beacon>) {
+        // Handle beacon updates
+        beacons.forEach { beacon ->
+            Log.d("Beacon", "${beacon.identifier}: rssi=${beacon.rssi}, proximity=${beacon.proximity}")
+        }
+    }
+    
+    override fun didUpdateSyncStatus(secondsUntilSync: Int, isScanning: Boolean) {
+        // Update UI with sync countdown
+    }
+    
+    override fun didFailWithError(error: Throwable) {
+        // Handle errors
+    }
+}
+```
+
+**4. Update Permissions (AndroidManifest.xml):**
+```xml
+<!-- NEW - Add this permission -->
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+<!-- Already required (no change) -->
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.INTERNET" />
+```
+
+**5. Removed Features:**
+- Listener interfaces (BeaconListener, SyncListener, RegionListener) - replaced with single BeAroundSDKDelegate
+- Notification management - now handled by app
+- Event type system - simplified to delegate callbacks
+- Backup list configuration - replaced with internal retry logic
+
+#### 📚 Documentation
+
+All documentation has been updated:
+- New README.md with v2.0 examples
+- Updated architecture diagrams
+- Comprehensive code documentation
+- Sample app with working examples
+
+#### 🔗 Resources
+
+- **GitHub**: https://github.com/Bearound/bearound-android-sdk
+- **JitPack**: https://jitpack.io/#Bearound/bearound-android-sdk/2.0.0
+- **Documentation**: See README.md in repository
+
+---
+
 ## [1.3.2] - 2025-12-22
 
 ### Added
