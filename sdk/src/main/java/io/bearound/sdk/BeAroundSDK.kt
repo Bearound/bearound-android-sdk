@@ -20,7 +20,6 @@ import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.UserProperties
 import io.bearound.sdk.network.APIClient
-import io.bearound.sdk.utilities.DeviceIdentifier
 import io.bearound.sdk.utilities.DeviceInfoCollector
 import io.bearound.sdk.utilities.SecureStorage
 import kotlinx.coroutines.CoroutineScope

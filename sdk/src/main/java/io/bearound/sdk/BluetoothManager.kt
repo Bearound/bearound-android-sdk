@@ -6,7 +6,6 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager as AndroidBluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -17,6 +16,7 @@ import androidx.core.content.ContextCompat
 import io.bearound.sdk.interfaces.BluetoothManagerDelegate
 import io.bearound.sdk.models.BeaconMetadata
 import java.util.UUID
+import androidx.core.util.isEmpty
 
 /**
  * Manages Bluetooth LE scanning for beacon metadata
@@ -118,7 +118,7 @@ class BluetoothManager(private val context: Context) {
 
         // Parse iBeacon data from manufacturer data
         val manufacturerData = scanRecord.manufacturerSpecificData
-        if (manufacturerData.size() == 0) return
+        if (manufacturerData.isEmpty()) return
 
         // Apple's manufacturer ID is 0x004C
         val appleData = manufacturerData.get(0x004C) ?: return
@@ -190,7 +190,7 @@ class BluetoothManager(private val context: Context) {
                 rssiFromBLE = rssi,
                 isConnectable = isConnectable
             )
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             Log.w(TAG, "Failed to parse beacon metadata from name: $name")
             return null
         }

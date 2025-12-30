@@ -55,9 +55,9 @@ class APIClient(private val configuration: SDKConfiguration) {
                 // Send request
                 Log.d(TAG, "========================================")
                 Log.d(TAG, "INGEST API CALL")
-                Log.d(TAG, "URL: ${url}")
+                Log.d(TAG, "URL: $url")
                 Log.d(TAG, "Sending ${beacons.size} beacon(s)")
-                Log.d(TAG, "Payload: ${payload.toString()}")
+                Log.d(TAG, "Payload: $payload")
                 Log.d(TAG, "========================================")
 
                 OutputStreamWriter(connection.outputStream).use { writer ->

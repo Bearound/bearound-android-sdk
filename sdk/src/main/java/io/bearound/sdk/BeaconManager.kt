@@ -2,17 +2,13 @@ package io.bearound.sdk
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.PendingIntent
 import android.bluetooth.le.*
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
-import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
 import io.bearound.sdk.models.Beacon
