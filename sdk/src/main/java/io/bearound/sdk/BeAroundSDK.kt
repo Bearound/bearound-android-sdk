@@ -258,6 +258,10 @@ class BeAroundSDK private constructor() {
         enableBluetoothScanning: Boolean = false,
         enablePeriodicScanning: Boolean = true
     ) {
+        if(businessToken.trim().isEmpty()){
+            throw IllegalArgumentException("Business token cannot be empty")
+        }
+
         val appId = context.packageName
 
         val config = SDKConfiguration(
