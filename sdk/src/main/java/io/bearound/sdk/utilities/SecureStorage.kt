@@ -1,5 +1,6 @@
 package io.bearound.sdk.utilities
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
@@ -36,6 +37,7 @@ object SecureStorage {
         }
     }
 
+    @SuppressLint("UseKtx")
     fun save(key: String, value: String): Boolean {
         return try {
             encryptedPrefs?.edit()?.putString(key, value)?.apply()
@@ -55,6 +57,7 @@ object SecureStorage {
         }
     }
 
+    @SuppressLint("UseKtx")
     fun delete(key: String): Boolean {
         return try {
             encryptedPrefs?.edit()?.remove(key)?.apply()

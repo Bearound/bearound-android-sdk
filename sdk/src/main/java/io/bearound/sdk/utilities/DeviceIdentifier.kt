@@ -16,7 +16,7 @@ object DeviceIdentifier {
     private const val STORAGE_KEY = "io.bearound.sdk.deviceId"
     private var cachedDeviceId: String? = null
 
-    fun getDeviceId(context: Context): String {
+    fun getDeviceId(): String {
         cachedDeviceId?.let { return it }
 
         // Try to get from secure storage first
@@ -56,6 +56,7 @@ object DeviceIdentifier {
             val adInfo = AdvertisingIdClient.getAdvertisingIdInfo(context)
             !adInfo.isLimitAdTrackingEnabled
         } catch (e: Exception) {
+            Log.w(TAG, "isAdTrackingEnabled: ${e.message}")
             false
         }
     }

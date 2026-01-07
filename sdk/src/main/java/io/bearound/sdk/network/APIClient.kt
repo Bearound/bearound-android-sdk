@@ -45,6 +45,7 @@ class APIClient(private val configuration: SDKConfiguration) {
                 
                 connection.requestMethod = "POST"
                 connection.setRequestProperty("Content-Type", "application/json")
+                connection.setRequestProperty("Authorization", configuration.businessToken)
                 connection.connectTimeout = CONNECT_TIMEOUT
                 connection.readTimeout = READ_TIMEOUT
                 connection.doOutput = true

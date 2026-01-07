@@ -17,6 +17,8 @@ import java.util.UUID
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.math.pow
+import androidx.core.util.size
+import androidx.core.util.isEmpty
 
 /**
  * Manages beacon scanning using Android's Bluetooth LE APIs
@@ -262,9 +264,9 @@ class BeaconManager(private val context: Context) {
 
         // Parse iBeacon data from manufacturer data
         val manufacturerData = scanRecord.manufacturerSpecificData
-        Log.d(TAG, "Manufacturer data size: ${manufacturerData.size()}")
+        Log.d(TAG, "Manufacturer data size: ${manufacturerData.size}")
 
-        if (manufacturerData.size() == 0) {
+        if (manufacturerData.isEmpty()) {
             Log.d(TAG, "No manufacturer data found, skipping")
             Log.d(TAG, "========================================")
             return
@@ -275,7 +277,7 @@ class BeaconManager(private val context: Context) {
         if (appleData == null) {
             Log.d(TAG, "No Apple manufacturer data (0x004C) found")
             Log.d(TAG, "Available manufacturer IDs:")
-            for (i in 0 until manufacturerData.size()) {
+            for (i in 0 until manufacturerData.size) {
                 val key = manufacturerData.keyAt(i)
                 Log.d(TAG, "  - 0x${key.toString(16).uppercase()}")
             }

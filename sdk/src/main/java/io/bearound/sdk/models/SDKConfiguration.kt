@@ -7,6 +7,7 @@ import kotlin.math.min
  * Configuration for the BeAround SDK
  */
 data class SDKConfiguration(
+    val businessToken: String,
     val appId: String,
     val syncInterval: Long,
     val enableBluetoothScanning: Boolean = false,

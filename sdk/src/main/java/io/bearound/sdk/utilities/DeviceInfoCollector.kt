@@ -43,7 +43,7 @@ class DeviceInfoCollector(
         val deviceLocation = location?.let { createDeviceLocation(it) }
 
         return UserDevice(
-            deviceId = DeviceIdentifier.getDeviceId(context),
+            deviceId = DeviceIdentifier.getDeviceId(),
             manufacturer = Build.MANUFACTURER,
             model = Build.MODEL,
             osVersion = Build.VERSION.RELEASE,
@@ -218,7 +218,7 @@ class DeviceInfoCollector(
         return null // Simplified for now
     }
 
-    private fun isConnectionMetered(): Boolean? {
+    private fun isConnectionMetered(): Boolean {
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         return connectivityManager.isActiveNetworkMetered
     }
@@ -275,8 +275,13 @@ class DeviceInfoCollector(
 
     @SuppressLint("HardwareIds")
     private fun getDeviceName(): String {
-        return Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)
-            ?: "${Build.MANUFACTURER} ${Build.MODEL}"
+        val fallback = "${Build.MANUFACTURER} ${Build.MODEL}"
+        
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
+            Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME) ?: fallback
+        } else {
+            fallback
+        }
     }
 
     @SuppressLint("MissingPermission")

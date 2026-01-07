@@ -1,4 +1,4 @@
-# BeAround Android SDK
+# 🐻 BeAround Android SDK
 
 [![JitPack](https://jitpack.io/v/Bearound/bearound-android-sdk.svg)](https://jitpack.io/#Bearound/bearound-android-sdk)
 [![API](https://img.shields.io/badge/API-23%2B-brightgreen.svg?style=flat)](https://android-arsenal.com/api?level=23)
@@ -6,11 +6,9 @@
 
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by BeAround.
 
-## Version 2.0.0
+## Version 2.0.1
 
-🎉 **Major Release**: Complete SDK rewrite with improved architecture, better performance, and enhanced reliability.
-
-> ⚠️ **Breaking Changes**: Version 2.0.0 is not backward compatible with 1.x. See [Migration Guide](#migration-from-1x) below.
+Latest version with authentication improvements. Complete SDK rewrite with improved architecture, better performance, and enhanced reliability.
 
 ## Features
 
@@ -66,7 +64,7 @@ dependencyResolutionManagement {
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:2.0.0'
+    implementation 'com.github.Bearound:bearound-android-sdk:2.0.1'
 }
 ```
 
@@ -143,11 +141,12 @@ class MainActivity : AppCompatActivity(), BeAroundSDKDelegate {
         
         // Configure SDK
         sdk.configure(
-            appId = "your-app-id",
+            businessToken = "your-business-token",
             syncInterval = 30000L, // 30 seconds
             enableBluetoothScanning = true,
             enablePeriodicScanning = true
         )
+        // Note: appId is automatically extracted from context.packageName
     }
     
     // Implement delegate methods
@@ -232,9 +231,10 @@ Controls how often beacons are sent to the server:
 
 ```kotlin
 sdk.configure(
-    appId = "your-app-id",
+    businessToken = "your-business-token",
     syncInterval = 30000L // 5-60 seconds (5000-60000ms)
 )
+// Note: appId is automatically extracted from your app's package name
 ```
 
 ### Periodic Scanning
@@ -243,10 +243,11 @@ When enabled, the SDK scans for beacons periodically instead of continuously:
 
 ```kotlin
 sdk.configure(
-    appId = "your-app-id",
+    businessToken = "your-business-token",
     syncInterval = 30000L,
     enablePeriodicScanning = true // Default: true
 )
+// Note: appId automatically extracted from packageName
 ```
 
 - **Foreground**: Scans for `scanDuration` (1/3 of sync interval) before each sync
@@ -258,10 +259,11 @@ Enable BLE scanning to collect additional beacon metadata (battery, temperature,
 
 ```kotlin
 sdk.configure(
-    appId = "your-app-id",
+    businessToken = "your-business-token",
     syncInterval = 30000L,
     enableBluetoothScanning = true // Default: false
 )
+// Note: appId automatically extracted from packageName
 ```
 
 ## API Reference
@@ -276,11 +278,12 @@ val sdk = BeAroundSDK.getInstance(context)
 
 // Configure SDK
 sdk.configure(
-    appId: String,
+    businessToken: String,
     syncInterval: Long,
     enableBluetoothScanning: Boolean = false,
     enablePeriodicScanning: Boolean = true
 )
+// Note: appId is automatically extracted from context.packageName
 
 // Control scanning
 sdk.startScanning()
@@ -378,7 +381,7 @@ The SDK automatically handles background scanning:
 
 ## Migration from 1.x
 
-Version 2.0.0 introduces breaking changes. Follow these steps to migrate:
+Version 2.0.x introduces breaking changes. Follow these steps to migrate:
 
 ### 1. Update Dependencies
 
@@ -386,8 +389,8 @@ Version 2.0.0 introduces breaking changes. Follow these steps to migrate:
 // OLD (v1.x)
 implementation 'com.github.Bearound:bearound-android-sdk:1.3.2'
 
-// NEW (v2.0)
-implementation 'com.github.Bearound:bearound-android-sdk:2.0.0'
+// NEW (v2.0+)
+implementation 'com.github.Bearound:bearound-android-sdk:2.0.1'
 ```
 
 ### 2. Update AndroidManifest.xml
@@ -413,11 +416,12 @@ beAround.initialize(
 val sdk = BeAroundSDK.getInstance(context)
 sdk.delegate = this // implement BeAroundSDKDelegate
 sdk.configure(
-    appId = "your-app-id",
+    businessToken = "your-business-token",
     syncInterval = 30000L,
     enableBluetoothScanning = true,
     enablePeriodicScanning = true
 )
+// Note: appId is now automatically extracted from context.packageName
 sdk.startScanning()
 ```
 
@@ -488,11 +492,17 @@ beacon.metadata  // new: battery, firmware, temperature
 ### App crashes with SecurityException
 
 - Ensure `ACCESS_NETWORK_STATE` permission is in AndroidManifest.xml
-- This was a known issue in pre-2.0.0 versions
+- This was a known issue in pre-2.0 versions
 
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
+
+### Version 2.0.1 (2026-01-07)
+
+- ⚠️ **Breaking Change**: `configure()` now requires `businessToken` instead of `appId`
+- ✨ `appId` automatically extracted from `context.packageName`
+- 🔒 Authorization header now sends business token directly (without Bearer prefix)
 
 ### Version 2.0.0 (2025-12-30)
 

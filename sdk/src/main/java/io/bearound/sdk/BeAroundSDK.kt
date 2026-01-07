@@ -1,6 +1,7 @@
 package io.bearound.sdk
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Application
 import android.content.Context
@@ -29,6 +30,7 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import kotlin.math.pow
 
 /**
  * Main SDK class - Singleton pattern
@@ -38,6 +40,7 @@ class BeAroundSDK private constructor() {
     companion object {
         private const val TAG = "BeAroundSDK"
         
+        @SuppressLint("StaticFieldLeak")
         @Volatile
         private var instance: BeAroundSDK? = null
 
@@ -250,12 +253,15 @@ class BeAroundSDK private constructor() {
     }
 
     fun configure(
-        appId: String,
+        businessToken: String,
         syncInterval: Long,
         enableBluetoothScanning: Boolean = false,
         enablePeriodicScanning: Boolean = true
     ) {
+        val appId = context.packageName
+
         val config = SDKConfiguration(
+            businessToken = businessToken,
             appId = appId,
             syncInterval = syncInterval,
             enableBluetoothScanning = enableBluetoothScanning,
@@ -572,7 +578,7 @@ class BeAroundSDK private constructor() {
         val timeSinceFailure = System.currentTimeMillis() - lastFailure
 
         val backoffDelay = minOf(
-            5000L * Math.pow(2.0, minOf(consecutiveFailures - 1, 3).toDouble()).toLong(),
+            5000L * 2.0.pow(minOf(consecutiveFailures - 1, 3).toDouble()).toLong(),
             60000L
         )
 

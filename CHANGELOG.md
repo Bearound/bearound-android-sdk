@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-01-07
+
+### ⚠️ Breaking Changes
+
+**Authentication Update**: SDK now requires business token instead of appId for authentication.
+
+### Changed
+
+- **Configuration**: `configure()` now requires `businessToken` parameter (replaces `appId` parameter)
+- **Auto-detection**: `appId` automatically extracted from `context.packageName`
+- **Authorization**: Business token sent in `Authorization` header for all API requests (without "Bearer" prefix)
+
+### Migration
+
+**Before (v2.0.0):**
+```kotlin
+sdk.configure(
+    appId = "com.example.app",
+    syncInterval = 30000L
+)
+```
+
+**After (v2.0.1):**
+```kotlin
+sdk.configure(
+    businessToken = "your-business-token-here",
+    syncInterval = 30000L
+)
+// Note: appId is now automatically extracted from context.packageName
+```
+
+---
+
 ## [2.0.0] - 2025-12-30
 
 ### 🚀 Major Rewrite - Complete SDK Architecture Overhaul

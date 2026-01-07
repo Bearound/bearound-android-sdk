@@ -2,7 +2,6 @@ package io.bearound.scan
 
 import android.Manifest
 import android.app.Application
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.pm.PackageManager
@@ -65,9 +64,8 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     }
 
     private fun configureSDK(syncInterval: Int) {
-        val appId = getApplication<Application>().packageName
         sdk.configure(
-            appId = appId,
+            businessToken = "your-business-token-here",
             syncInterval = syncInterval * 1000L,
             enableBluetoothScanning = true,
             enablePeriodicScanning = true
