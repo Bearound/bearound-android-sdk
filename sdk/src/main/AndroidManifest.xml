@@ -30,7 +30,8 @@
         <!-- BroadcastReceiver for Android 14+ Bluetooth Scan Broadcast -->
         <receiver 
             android:name="io.bearound.sdk.background.BluetoothScanReceiver"
-            android:exported="false">
+            android:exported="false"
+            tools:targetApi="34">
             <intent-filter>
                 <action android:name="io.bearound.sdk.ACTION_BLUETOOTH_SCAN" />
             </intent-filter>
