@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Auto-detection**: `appId` automatically extracted from `context.packageName`
 - **Authorization**: Business token sent in `Authorization` header for all API requests (without "Bearer" prefix)
 
+### Fixed
+
+- **Beacon Scanning**: Fixed issue where scanning would restart after `stopScanning()` was called
+  - Added guard clause in `startRanging()` to check `isScanning` state
+  - Prevents delayed callbacks from restarting scanning after user stops it
+
 ### Migration
 
 **Before (v2.0.0):**

@@ -164,6 +164,11 @@ class BeaconManager(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun startRanging() {
+        if (!isScanning) {
+            Log.d(TAG, "Ignoring startRanging - not scanning")
+            return
+        }
+        
         if (isRanging) {
             Log.d(TAG, "Already ranging")
             return
