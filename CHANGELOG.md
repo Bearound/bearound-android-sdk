@@ -7,7 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [Unreleased] - 2.0.2
+
+### Added
+
+- **Background Scanning** 🆕 - Beacon detection when app is closed
+  - Automatically enabled when SDK is configured
+  - Real-time detection without notification
+  - Works even after app is killed or device reboot
+  - Zero notification intrusion
+  - Very battery efficient
+- **Configuration Persistence**: SDK configuration saved to SharedPreferences
+  - Automatically restored when app wakes up in background
+  - Enables background scanning without re-configuration
+
+### Changed
+
+- **Background scanning auto-enabled**: No need to call `enableBackgroundScanning()` manually
+- **Real-time beacon detection**: Optimized for immediate beacon detection in background
+
+### Fixed
+
+- **Beacon Scanning**: Fixed issue where scanning would restart after `stopScanning()` was called
+  - Added guard clause in `startRanging()` to check `isScanning` state
+  - Prevents delayed callbacks from restarting scanning after user stops it
+- **"Scanning Too Frequently" Error**: Fixed background scanning throttling
+  - Process ScanResults from Intent directly instead of starting new scan
+  - Prevents Android throttling when app wakes up via system broadcast
+
+### Notes
+
+- Background scanning tested and working reliably
+- Configuration persists across app restarts and device reboots
+
+---
+
 ## [2.0.1] - 2026-01-07
+
+### ⚠️ Breaking Changes
+
+**Authentication Update**: SDK now requires business token instead of appId for authentication.
+
+### Added
+
+- **Background Scanning** 🆕 - Beacon detection when app is closed
+  - `enableBackgroundScanning()` - Enable background scanning (automatically called by configure)
+  - `disableBackgroundScanning()` - Disable background scanning
+  - Real-time detection without notification
+  - Works even after app is killed or device reboot
+  - Zero notification intrusion
+  - Very battery efficient
 
 ### ⚠️ Breaking Changes
 
@@ -18,12 +67,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Configuration**: `configure()` now requires `businessToken` parameter (replaces `appId` parameter)
 - **Auto-detection**: `appId` automatically extracted from `context.packageName`
 - **Authorization**: Business token sent in `Authorization` header for all API requests (without "Bearer" prefix)
-
-### Fixed
-
-- **Beacon Scanning**: Fixed issue where scanning would restart after `stopScanning()` was called
-  - Added guard clause in `startRanging()` to check `isScanning` state
-  - Prevents delayed callbacks from restarting scanning after user stops it
 
 ### Migration
 
@@ -288,7 +331,6 @@ All documentation has been updated:
 - **Default Scan Interval**: Changed default scan interval from 20 seconds to 5 seconds
   - Provides faster beacon detection out of the box
   - Improves user experience with more responsive beacon scanning
-  - Developers can still adjust to longer intervals if battery optimization is preferred
   - Updated all documentation to reflect new default value
 
 ## [1.3.1] - 2025-12-22

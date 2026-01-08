@@ -26,4 +26,15 @@
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
+    <application>
+        <!-- BroadcastReceiver for Android 14+ Bluetooth Scan Broadcast -->
+        <receiver 
+            android:name="io.bearound.sdk.background.BluetoothScanReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="io.bearound.sdk.ACTION_BLUETOOTH_SCAN" />
+            </intent-filter>
+        </receiver>
+    </application>
+
 </manifest>

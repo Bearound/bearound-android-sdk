@@ -6,9 +6,9 @@
 
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by BeAround.
 
-## Version 2.0.1
+## Version 2.0.2
 
-Latest version with authentication improvements. Complete SDK rewrite with improved architecture, better performance, and enhanced reliability.
+Latest version with background scanning support. Complete SDK rewrite with improved architecture, better performance, and enhanced reliability.
 
 ## Features
 
@@ -22,6 +22,7 @@ Latest version with authentication improvements. Complete SDK rewrite with impro
 - ✅ Battery-optimized scanning strategies
 - ✅ Thread-safe beacon caching and sync
 - ✅ Real-time UI updates via delegate pattern
+- ✅ **Background scanning when app is closed** (no notification required)
 
 ## Architecture
 
@@ -64,7 +65,7 @@ dependencyResolutionManagement {
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:2.0.1'
+    implementation 'com.github.Bearound:bearound-android-sdk:v2.0.2'
 }
 ```
 
@@ -223,6 +224,72 @@ val userProps = UserProperties(
 sdk.setUserProperties(userProps)
 ```
 
+### 5. Background Scanning 🆕
+
+**Background scanning is automatically enabled** when you call `configure()`. The SDK will continue detecting beacons even when the app is closed.
+
+**Optional:** You can manually control it:
+
+```kotlin
+// Disable background scanning
+sdk.disableBackgroundScanning()
+
+// Re-enable background scanning
+sdk.enableBackgroundScanning()
+```
+
+**Complete Example:**
+
+```kotlin
+class MainActivity : AppCompatActivity(), BeAroundSDKDelegate {
+    
+    private lateinit var sdk: BeAroundSDK
+    
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        
+        // Get SDK instance
+        sdk = BeAroundSDK.getInstance(this)
+        sdk.delegate = this
+        
+        // Configure SDK
+        sdk.configure(
+            businessToken = "your-business-token",
+            syncInterval = 30000L,
+            enableBluetoothScanning = true,
+            enablePeriodicScanning = true
+        )
+        
+        // Start foreground scanning
+        sdk.startScanning()
+        
+        // Background scanning is automatically enabled!
+    }
+    
+    override fun didUpdateBeacons(beacons: List<Beacon>) {
+        Log.d("BeAround", "Detected ${beacons.size} beacons")
+    }
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        // Note: Background scanning continues even after app is closed
+        // Call disableBackgroundScanning() if you want to stop it
+    }
+}
+```
+
+**How it works:**
+- System automatically wakes up the app when iBeacon is detected
+- No notification required
+- Real-time detection
+- No foreground service required
+
+**Important Notes:**
+- Background scanning requires `ACCESS_BACKGROUND_LOCATION` permission
+- WorkManager minimum interval is 15 minutes (Android limitation)
+- Android may delay scans in battery saver mode
+- Background scanning continues even after device reboot
+
 ## Configuration Options
 
 ### Sync Interval
@@ -367,17 +434,44 @@ data class UserProperties(
 
 ## Background Scanning
 
-The SDK automatically handles background scanning:
+The SDK offers multiple background scanning modes:
 
-1. **Foreground**: Uses periodic or continuous scanning based on configuration
-2. **Background**: Automatically switches to continuous scanning for better beacon detection
-3. **Battery Optimization**: Implements watchdog timers and periodic restarts to prevent Android throttling
+### 1. Standard Background (App in Memory)
+
+When the app is in background but not killed:
+- **Foreground**: Uses periodic or continuous scanning based on configuration
+- **Background**: Automatically switches to continuous scanning for better beacon detection
+- Implements watchdog timers and periodic restarts to prevent Android throttling
+
+### 2. Advanced Background (App Closed) 🆕
+
+Enable beacon detection even when the app is fully closed:
+
+```kotlin
+sdk.enableBackgroundScanning(scanIntervalMinutes = 15)
+```
+
+**Features:**
+- ✅ **Real-time detection** - System wakes app when beacon is detected
+- ✅ **Zero notifications** - No foreground service required
+- ✅ **Very battery efficient** - System manages scanning
+- ✅ **Survives app kill** - Continues working after force-stop
+- ✅ **Survives reboot** - Automatically resumes after device restart
+
+**Requirements:**
+- `ACCESS_BACKGROUND_LOCATION` permission must be granted
+- SDK must be configured before enabling background scanning
+
+**Limitations:**
+- System may delay scans in extreme battery saver mode
 
 ### Best Practices
 
 - Request `ACCESS_BACKGROUND_LOCATION` permission for background operation
-- Consider using a foreground service for critical background scanning
+- Call `enableBackgroundScanning()` after SDK configuration
+- Adjust `scanIntervalMinutes` based on use case (15-60 minutes recommended)
 - Monitor battery usage and adjust sync intervals accordingly
+- Inform users about background location usage in your privacy policy
 
 ## Migration from 1.x
 
@@ -390,7 +484,7 @@ Version 2.0.x introduces breaking changes. Follow these steps to migrate:
 implementation 'com.github.Bearound:bearound-android-sdk:1.3.2'
 
 // NEW (v2.0+)
-implementation 'com.github.Bearound:bearound-android-sdk:2.0.1'
+implementation 'com.github.Bearound:bearound-android-sdk:v2.0.2'
 ```
 
 ### 2. Update AndroidManifest.xml
@@ -486,8 +580,6 @@ beacon.metadata  // new: battery, firmware, temperature
 ### No beacons in background
 
 1. Ensure `ACCESS_BACKGROUND_LOCATION` permission is granted
-2. Check that the app is not in battery optimization/doze mode
-3. Consider implementing a foreground service
 
 ### App crashes with SecurityException
 
@@ -497,6 +589,15 @@ beacon.metadata  // new: battery, firmware, temperature
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
+
+### Version 2.0.2 (2026-01-08)
+
+- 🆕 **Background Scanning**: Beacon detection when app is closed
+  - Real-time detection with no notification required
+  - Very battery efficient
+  - Automatically enabled when SDK is configured
+- 🐛 Fixed scanning restart bug after `stopScanning()` is called
+- 🐛 Fixed "scanning too frequently" error in background mode
 
 ### Version 2.0.1 (2026-01-07)
 
