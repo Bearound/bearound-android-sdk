@@ -3,6 +3,7 @@ package io.bearound.sdk
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.le.*
+import android.bluetooth.le.ScanCallback.*
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
@@ -71,20 +72,15 @@ class BeaconManager(private val context: Context) {
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            Log.d(TAG, "onScanResult called (callbackType: $callbackType)")
             processScanResult(result)
         }
 
         override fun onBatchScanResults(results: List<ScanResult>) {
-            Log.d(TAG, "onBatchScanResults called with ${results.size} result(s)")
             results.forEach { processScanResult(it) }
         }
 
         override fun onScanFailed(errorCode: Int) {
-            Log.e(TAG, "========================================")
-            Log.e(TAG, "SCAN FAILED!")
-            Log.e(TAG, "Error code: $errorCode")
-            Log.e(TAG, "========================================")
+            Log.e(TAG, "Scan failed with error code: $errorCode")
             val error = Exception("Beacon scan failed with error code: $errorCode")
             onError?.invoke(error)
         }
@@ -92,13 +88,21 @@ class BeaconManager(private val context: Context) {
 
     fun setForegroundState(inForeground: Boolean) {
         isInForeground = inForeground
-        Log.d(TAG, "App ${if (inForeground) "entered foreground" else "entered background"}")
         
         if (!inForeground && isScanning) {
             startRangingRefreshTimer()
         } else if (inForeground) {
             stopRangingRefreshTimer()
         }
+    }
+
+    /**
+     * Process scan result from external source (e.g. Bluetooth Scan Broadcast)
+     * Public method to allow processing without starting another scan
+     */
+    fun processExternalScanResult(result: ScanResult) {
+        Log.d(TAG, "Processing external scan result from Bluetooth Broadcast")
+        processScanResult(result)
     }
 
     @SuppressLint("MissingPermission")
@@ -164,35 +168,21 @@ class BeaconManager(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun startRanging() {
-        if (isRanging) {
-            Log.d(TAG, "Already ranging")
-            return
-        }
+        if (!isScanning) return
+        if (isRanging) return
 
-        Log.d(TAG, "========================================")
-        Log.d(TAG, "STARTING RANGING")
-        Log.d(TAG, "isInForeground: $isInForeground")
-        Log.d(TAG, "Target UUID: $BEACON_UUID")
-        Log.d(TAG, "========================================")
-
-        // iBeacons don't advertise service UUIDs, they use manufacturer data
-        // Apple manufacturer ID is 0x004C
         val filters = listOf(
             ScanFilter.Builder()
                 .setManufacturerData(
-                    0x004C, // Apple manufacturer ID
-                    byteArrayOf(0x02, 0x15), // iBeacon identifier
-                    byteArrayOf(0xFF.toByte(), 0xFF.toByte()) // Mask to match first 2 bytes
+                    0x004C,
+                    byteArrayOf(0x02, 0x15),
+                    byteArrayOf(0xFF.toByte(), 0xFF.toByte())
                 )
                 .build()
         )
 
         val scanMode = if (isInForeground) ScanSettings.SCAN_MODE_LOW_LATENCY
                        else ScanSettings.SCAN_MODE_LOW_POWER
-
-        Log.d(TAG, "Scan mode: ${if (isInForeground) "LOW_LATENCY" else "LOW_POWER"}")
-        Log.d(TAG, "Filters: ${filters.size} filter(s) - Using manufacturer data filter for iBeacon")
-        Log.d(TAG, "Filter: Manufacturer ID 0x004C (Apple), iBeacon prefix 0x02 0x15")
 
         val settings = ScanSettings.Builder()
             .setScanMode(scanMode)
@@ -203,16 +193,12 @@ class BeaconManager(private val context: Context) {
             bluetoothLeScanner?.startScan(filters, settings, scanCallback)
             isRanging = true
             startWatchdog()
-            
-            Log.d(TAG, "Ranging started successfully")
 
             if (!isInForeground) {
                 startRangingRefreshTimer()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "========================================")
             Log.e(TAG, "Failed to start ranging: ${e.message}")
-            Log.e(TAG, "========================================")
             onError?.invoke(e)
         }
     }
@@ -220,114 +206,42 @@ class BeaconManager(private val context: Context) {
     @SuppressLint("MissingPermission")
     fun stopRanging() {
         if (!isRanging) return
+        if (!isInForeground) return
 
-        if (!isInForeground) {
-            Log.d(TAG, "Ignoring stopRanging in background to maintain continuous operation")
-            return
-        }
-
-        Log.d(TAG, "Stopping ranging (monitoring continues)")
         bluetoothLeScanner?.stopScan(scanCallback)
         isRanging = false
         stopWatchdog()
         stopRangingRefreshTimer()
-
-        // DON'T clear beacons here - they need to be available for sync
-        // Beacons will be cleared by BeAroundSDK after successful sync
-        // Only notify UI that scanning stopped, but keep detected beacons
     }
 
     private fun startMonitoring() {
-        // On Android, we start ranging immediately since there's no separate monitoring phase
         if (!enablePeriodicScanning) {
             startRanging()
             if (!isInForeground) {
                 startRangingRefreshTimer()
             }
-        } else {
-            Log.d(TAG, "Periodic scanning enabled - ranging will be controlled by sync timer")
         }
     }
 
     private fun processScanResult(result: ScanResult) {
-        Log.d(TAG, "========================================")
-        Log.d(TAG, "processScanResult called")
-
-        val scanRecord = result.scanRecord
-        if (scanRecord == null) {
-            Log.d(TAG, "scanRecord is null, skipping")
-            Log.d(TAG, "========================================")
-            return
-        }
-
-        Log.d(TAG, "scanRecord found, checking manufacturer data")
-
-        // Parse iBeacon data from manufacturer data
+        val scanRecord = result.scanRecord ?: return
         val manufacturerData = scanRecord.manufacturerSpecificData
-        Log.d(TAG, "Manufacturer data size: ${manufacturerData.size}")
+        if (manufacturerData.isEmpty()) return
 
-        if (manufacturerData.isEmpty()) {
-            Log.d(TAG, "No manufacturer data found, skipping")
-            Log.d(TAG, "========================================")
-            return
-        }
+        val appleData = manufacturerData.get(0x004C) ?: return
+        if (appleData.size < 23) return
 
-        // Apple's manufacturer ID is 0x004C
-        val appleData = manufacturerData.get(0x004C)
-        if (appleData == null) {
-            Log.d(TAG, "No Apple manufacturer data (0x004C) found")
-            Log.d(TAG, "Available manufacturer IDs:")
-            for (i in 0 until manufacturerData.size) {
-                val key = manufacturerData.keyAt(i)
-                Log.d(TAG, "  - 0x${key.toString(16).uppercase()}")
-            }
-            Log.d(TAG, "========================================")
-            return
-        }
+        if (appleData[0] != 0x02.toByte() || appleData[1] != 0x15.toByte()) return
 
-        Log.d(TAG, "Apple data found, size: ${appleData.size}")
-
-        if (appleData.size < 23) {
-            Log.d(TAG, "Apple data too short (< 23 bytes), skipping")
-            Log.d(TAG, "========================================")
-            return
-        }
-
-        // Verify iBeacon identifier
-        val byte0 = appleData[0]
-        val byte1 = appleData[1]
-        Log.d(TAG, "iBeacon identifier bytes: 0x${byte0.toString(16).uppercase()} 0x${byte1.toString(16).uppercase()}")
-
-        if (byte0 != 0x02.toByte() || byte1 != 0x15.toByte()) {
-            Log.d(TAG, "Not an iBeacon (expected 0x02 0x15), skipping")
-            Log.d(TAG, "========================================")
-            return
-        }
-
-        // Parse UUID
         val uuidBytes = appleData.copyOfRange(2, 18)
         val uuid = bytesToUUID(uuidBytes)
-        Log.d(TAG, "Parsed UUID: $uuid")
-        Log.d(TAG, "Expected UUID: $BEACON_UUID")
+        if (uuid != BEACON_UUID) return
 
-        if (uuid != BEACON_UUID) {
-            Log.d(TAG, "UUID mismatch, skipping")
-            Log.d(TAG, "========================================")
-            return
-        }
-
-        // Parse major and minor
         val major = ((appleData[18].toInt() and 0xFF) shl 8) or (appleData[19].toInt() and 0xFF)
         val minor = ((appleData[20].toInt() and 0xFF) shl 8) or (appleData[21].toInt() and 0xFF)
         val txPower = appleData[22].toInt()
         val rssi = result.rssi
 
-        Log.d(TAG, "✅ iBeacon detected!")
-        Log.d(TAG, "Major: $major, Minor: $minor")
-        Log.d(TAG, "RSSI: $rssi, TxPower: $txPower")
-        Log.d(TAG, "========================================")
-
-        // Calculate accuracy and proximity
         val accuracy = calculateAccuracy(txPower, rssi)
         val proximity = calculateProximity(accuracy)
 
@@ -357,30 +271,14 @@ class BeaconManager(private val context: Context) {
             beaconLastSeen[identifier] = System.currentTimeMillis()
         }
 
-        // Clean up expired beacons
         cleanupExpiredBeacons()
 
-        // Notify with current beacons
         val currentBeacons = beaconLock.withLock {
             detectedBeacons.values.toList()
         }
         
-        Log.d(TAG, "========================================")
-        Log.d(TAG, "BEACON MANAGER - processBeacon")
-        Log.d(TAG, "Beacon detected: ${beacon.identifier}, rssi=${beacon.rssi}, proximity=${beacon.proximity}")
-        Log.d(TAG, "Total beacons in cache: ${currentBeacons.size}")
-
         if (currentBeacons.isNotEmpty()) {
-            Log.d(TAG, "Calling onBeaconsUpdated callback with ${currentBeacons.size} beacon(s)")
-            currentBeacons.forEach { b ->
-                Log.d(TAG, "  - ${b.identifier}: rssi=${b.rssi}, proximity=${b.proximity}")
-            }
-            Log.d(TAG, "onBeaconsUpdated callback: ${onBeaconsUpdated != null}")
-            Log.d(TAG, "========================================")
             onBeaconsUpdated?.invoke(currentBeacons)
-        } else {
-            Log.d(TAG, "No beacons to report (list is empty)")
-            Log.d(TAG, "========================================")
         }
 
         startWatchdog()
@@ -463,18 +361,15 @@ class BeaconManager(private val context: Context) {
         if (lastUpdate != null) {
             val timeSinceLastUpdate = System.currentTimeMillis() - lastUpdate
             if (timeSinceLastUpdate > WATCHDOG_INTERVAL) {
-                Log.w(TAG, "Ranging stuck detected: No beacon updates for ${timeSinceLastUpdate}ms")
                 restartRanging()
             }
         } else if (isRanging) {
-            Log.w(TAG, "Ranging stuck detected: Active but no updates ever received")
             restartRanging()
         }
     }
 
     private fun refreshRanging() {
         if (isScanning && isRanging && !isInForeground) {
-            Log.d(TAG, "Background refresh: restarting ranging to prevent throttling...")
             restartRanging()
         }
     }
@@ -492,7 +387,6 @@ class BeaconManager(private val context: Context) {
             }
 
             if (timeSinceLastRestart < 60000L && rangingRestartCount >= MAX_RESTARTS_PER_MINUTE) {
-                Log.w(TAG, "Too many restarts ($rangingRestartCount in last minute), applying backoff")
                 rangingRestartCount = 0
                 lastRangingRestartTime = now
                 return
@@ -507,7 +401,6 @@ class BeaconManager(private val context: Context) {
         }
 
         val backoffDelay = minOf(500L * rangingRestartCount, 5000L)
-        Log.d(TAG, "Restarting ranging in ${backoffDelay}ms (restart #$rangingRestartCount)")
 
         handler.postDelayed({
             startRanging()

@@ -19,14 +19,12 @@ object DeviceIdentifier {
     fun getDeviceId(): String {
         cachedDeviceId?.let { return it }
 
-        // Try to get from secure storage first
         SecureStorage.retrieve(STORAGE_KEY)?.let {
             Log.d(TAG, "Using stored UUID as device ID")
             cachedDeviceId = it
             return it
         }
 
-        // Generate and store new UUID
         val uuid = UUID.randomUUID().toString()
         SecureStorage.save(STORAGE_KEY, uuid)
         Log.d(TAG, "Generated new UUID as device ID")
