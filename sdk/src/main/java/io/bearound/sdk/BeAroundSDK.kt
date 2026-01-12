@@ -17,8 +17,11 @@ import androidx.core.content.ContextCompat
 import io.bearound.sdk.background.BackgroundScanManager
 import io.bearound.sdk.interfaces.BeAroundSDKDelegate
 import io.bearound.sdk.interfaces.BluetoothManagerDelegate
+import io.bearound.sdk.models.BackgroundScanInterval
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.BeaconMetadata
+import io.bearound.sdk.models.ForegroundScanInterval
+import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.UserProperties
@@ -85,7 +88,6 @@ class BeAroundSDK private constructor() {
     private val failedBatches = mutableListOf<List<Beacon>>()
     private var consecutiveFailures = 0
     private var lastFailureTime: Long? = null
-    private val maxFailedBatches = 10
 
     private var isInBackground = false
     private val isColdStart = true
@@ -95,10 +97,15 @@ class BeAroundSDK private constructor() {
         get() = ::beaconManager.isInitialized && beaconManager.isScanning
 
     val currentSyncInterval: Long?
-        get() = configuration?.validatedSyncInterval
+        get() = configuration?.syncInterval(isInBackground = isInBackground)
+
 
     val currentScanDuration: Long?
-        get() = configuration?.scanDuration
+        get() {
+            val config = configuration ?: return null
+            val interval = config.syncInterval(isInBackground = isInBackground)
+            return config.scanDuration(interval)
+        }
 
     val isPeriodicScanningEnabled: Boolean
         get() = configuration?.enablePeriodicScanning ?: false
@@ -252,7 +259,9 @@ class BeAroundSDK private constructor() {
 
     fun configure(
         businessToken: String,
-        syncInterval: Long,
+        foregroundScanInterval: ForegroundScanInterval = ForegroundScanInterval.SECONDS_15,
+        backgroundScanInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_60,
+        maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
         enableBluetoothScanning: Boolean = false,
         enablePeriodicScanning: Boolean = true
     ) {
@@ -265,7 +274,9 @@ class BeAroundSDK private constructor() {
         val config = SDKConfiguration(
             businessToken = businessToken,
             appId = appId,
-            syncInterval = syncInterval,
+            foregroundScanInterval = foregroundScanInterval,
+            backgroundScanInterval = backgroundScanInterval,
+            maxQueuedPayloads = maxQueuedPayloads,
             enableBluetoothScanning = enableBluetoothScanning,
             enablePeriodicScanning = enablePeriodicScanning
         )
@@ -441,7 +452,8 @@ class BeAroundSDK private constructor() {
         stopSyncTimer()
         startCountdownTimer()
 
-        val syncInterval = config.validatedSyncInterval
+        val syncInterval = config.syncInterval(isInBackground = isInBackground)
+        val scanDuration = config.scanDuration(syncInterval)
         
         syncRunnable = object : Runnable {
             override fun run() {
@@ -449,7 +461,6 @@ class BeAroundSDK private constructor() {
                 syncBeacons()
                 
                 if (config.enablePeriodicScanning && !isInBackground) {
-                    val scanDuration = config.scanDuration
                     val delayUntilNextRanging = syncInterval - scanDuration
 
                     handler.postDelayed({
@@ -467,7 +478,6 @@ class BeAroundSDK private constructor() {
         }
 
         if (config.enablePeriodicScanning && !isInBackground) {
-            val scanDuration = config.scanDuration
             val delayUntilFirstRanging = syncInterval - scanDuration
             nextSyncTime = System.currentTimeMillis() + syncInterval
             
@@ -583,7 +593,9 @@ class BeAroundSDK private constructor() {
             consecutiveFailures++
             lastFailureTime = System.currentTimeMillis()
 
-            if (failedBatches.size < maxFailedBatches) {
+            val maxQueueSize = configuration?.maxQueuedPayloads?.value ?: 100
+
+            if (failedBatches.size < maxQueueSize) {
                 failedBatches.add(beacons)
             } else {
                 failedBatches.removeAt(0)

@@ -13,7 +13,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.bearound.sdk.BeAroundSDK
 import io.bearound.sdk.interfaces.BeAroundSDKDelegate
+import io.bearound.sdk.models.BackgroundScanInterval
 import io.bearound.sdk.models.Beacon
+import io.bearound.sdk.models.ForegroundScanInterval
+import io.bearound.sdk.models.MaxQueuedPayloads
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,6 +52,12 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     private var wasInBeaconRegion = false
     private var scanStartTime: Date? = null
 
+    val foregroundInterval = ForegroundScanInterval.SECONDS_15
+    val backgroundInterval = BackgroundScanInterval.SECONDS_60
+    val queueSize = MaxQueuedPayloads.MEDIUM
+    val enableBluetoothScanning = true
+    val enablePeriodicScanning = true
+
     init {
         sdk.delegate = this
         
@@ -57,18 +66,24 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         checkNotificationStatus()
         
         // Configure SDK
-        configureSDK(_state.value.currentSyncInterval)
+        configureSDK()
         
         // Auto-start scanning
         startScanning()
     }
 
-    private fun configureSDK(syncInterval: Int) {
+    private fun configureSDK(
+        foregroundScanInterval: ForegroundScanInterval = foregroundInterval,
+        backgroundScanInterval: BackgroundScanInterval = backgroundInterval,
+        maxQueuedPayloads: MaxQueuedPayloads = queueSize
+    ) {
         sdk.configure(
             businessToken = "your-business-token-here",
-            syncInterval = syncInterval * 1000L,
-            enableBluetoothScanning = true,
-            enablePeriodicScanning = true
+            foregroundScanInterval = foregroundScanInterval,
+            backgroundScanInterval = backgroundScanInterval,
+            maxQueuedPayloads = maxQueuedPayloads,
+            enableBluetoothScanning = enableBluetoothScanning,
+            enablePeriodicScanning = enablePeriodicScanning
         )
     }
 
@@ -103,13 +118,8 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         )
     }
 
-    fun changeSyncInterval(seconds: Int) {
-        configureSDK(seconds)
-        _state.value = _state.value.copy(
-            currentSyncInterval = seconds,
-            statusMessage = "Intervalo: ${seconds}s"
-        )
-    }
+    val currentDisplayInterval: Int
+        get() = (sdk.currentSyncInterval ?: 0L).toInt()
 
     fun changeSortOption(option: BeaconSortOption) {
         _state.value = _state.value.copy(sortOption = option)
@@ -129,11 +139,9 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         }
 
     val scanMode: String
-        get() = if (sdk.isPeriodicScanningEnabled) {
-            if (pauseDuration > 0) "Periódico" else "Contínuo"
-        } else {
-            "Contínuo"
-        }
+        get() = if (enablePeriodicScanning && pauseDuration > 0) {
+            "Periódico (economiza bateria)"
+        } else "Contínuo"
 
     // BeAroundSDKDelegate methods
     override fun didUpdateBeacons(beacons: List<Beacon>) {

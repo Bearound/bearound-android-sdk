@@ -2,6 +2,9 @@ package io.bearound.sdk.utilities
 
 import android.content.Context
 import android.content.SharedPreferences
+import io.bearound.sdk.models.BackgroundScanInterval
+import io.bearound.sdk.models.ForegroundScanInterval
+import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.SDKConfiguration
 
 /**
@@ -10,7 +13,9 @@ import io.bearound.sdk.models.SDKConfiguration
 object SDKConfigStorage {
     private const val PREFS_NAME = "bearound_sdk_config"
     private const val KEY_BUSINESS_TOKEN = "business_token"
-    private const val KEY_SYNC_INTERVAL = "sync_interval"
+    private const val KEY_FOREGROUND_SCAN_INTERVAL = "foregroundScan_interval"
+    private const val KEY_BACKGROUND_SCAN_INTERVAL = "backgroundScan_interval"
+    private const val KEY_MAX_QUEUED_PAYLOADS = "max_queued_payloads"
     private const val KEY_ENABLE_BLUETOOTH = "enable_bluetooth"
     private const val KEY_ENABLE_PERIODIC = "enable_periodic"
     private const val KEY_IS_CONFIGURED = "is_configured"
@@ -22,7 +27,9 @@ object SDKConfigStorage {
     fun saveConfiguration(context: Context, config: SDKConfiguration) {
         getPrefs(context).edit().apply {
             putString(KEY_BUSINESS_TOKEN, config.businessToken)
-            putLong(KEY_SYNC_INTERVAL, config.syncInterval)
+            putString(KEY_FOREGROUND_SCAN_INTERVAL, config.foregroundScanInterval.name)
+            putString(KEY_BACKGROUND_SCAN_INTERVAL, config.backgroundScanInterval.name)
+            putInt(KEY_MAX_QUEUED_PAYLOADS, config.maxQueuedPayloads.value)
             putBoolean(KEY_ENABLE_BLUETOOTH, config.enableBluetoothScanning)
             putBoolean(KEY_ENABLE_PERIODIC, config.enablePeriodicScanning)
             putBoolean(KEY_IS_CONFIGURED, true)
@@ -40,12 +47,16 @@ object SDKConfigStorage {
         
         val businessToken = prefs.getString(KEY_BUSINESS_TOKEN, null) ?: return null
         val appId = context.packageName
-        val syncInterval = prefs.getLong(KEY_SYNC_INTERVAL, 30000L)
-        
+        val foregroundScanIntervalName = prefs.getString(KEY_FOREGROUND_SCAN_INTERVAL, null)
+        val backgroundScanIntervalName = prefs.getString(KEY_BACKGROUND_SCAN_INTERVAL, null)
+        val maxQueuedPayloadsValue = prefs.getInt(KEY_MAX_QUEUED_PAYLOADS, MaxQueuedPayloads.MEDIUM.value)
+
         return SDKConfiguration(
             businessToken = businessToken,
             appId = appId,
-            syncInterval = syncInterval,
+            foregroundScanInterval = ForegroundScanInterval.fromName(foregroundScanIntervalName),
+            backgroundScanInterval = BackgroundScanInterval.fromName(backgroundScanIntervalName),
+            maxQueuedPayloads = MaxQueuedPayloads.fromValue(maxQueuedPayloadsValue),
             enableBluetoothScanning = prefs.getBoolean(KEY_ENABLE_BLUETOOTH, false),
             enablePeriodicScanning = prefs.getBoolean(KEY_ENABLE_PERIODIC, true)
         )
