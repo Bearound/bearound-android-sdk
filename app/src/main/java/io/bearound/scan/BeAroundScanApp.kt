@@ -26,6 +26,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.bearound.sdk.models.Beacon
+import io.bearound.sdk.models.BackgroundScanInterval
+import io.bearound.sdk.models.ForegroundScanInterval
+import io.bearound.sdk.models.MaxQueuedPayloads
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -124,7 +127,9 @@ fun BeAroundScanApp(viewModel: BeaconViewModel = viewModel()) {
                             }
                         }
                     },
-                    onSyncIntervalChange = { viewModel.changeSyncInterval(it) },
+                    onConfigurationChange = { fg, bg, queue, bluetooth, periodic ->
+                        viewModel.updateConfiguration(fg, bg, queue, bluetooth, periodic)
+                    },
                     onSortOptionChange = { viewModel.changeSortOption(it) }
                 )
             }
@@ -253,13 +258,32 @@ fun ScanInfoCard(state: BeAroundScanState, viewModel: BeaconViewModel) {
                 fontWeight = FontWeight.Bold
             )
 
+            InfoRow(label = "Estado do app:", value = if (state.isInBackground) "Background" else "Foreground")
             InfoRow(label = "Modo:", value = viewModel.scanMode)
-            InfoRow(label = "Intervalo de sync:", value = "${state.currentSyncInterval}s")
+            InfoRow(
+                label = "Intervalo ativo:",
+                value = "${state.currentSyncInterval}s (${if (state.isInBackground) "BG" else "FG"})",
+                valueColor = MaterialTheme.colorScheme.primary
+            )
             InfoRow(label = "Duração do scan:", value = "${viewModel.scanDuration}s")
 
             if (viewModel.pauseDuration > 0) {
                 InfoRow(label = "Tempo de pausa:", value = "${viewModel.pauseDuration}s")
             }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            
+            InfoRow(label = "FG Interval:", value = "${state.foregroundInterval.milliseconds / 1000}s")
+            InfoRow(label = "BG Interval:", value = "${state.backgroundInterval.milliseconds / 1000}s")
+            InfoRow(label = "Fila de retry:", value = "${state.maxQueuedPayloads.value} batches")
+            InfoRow(
+                label = "Bluetooth Metadata:",
+                value = if (state.enableBluetoothScanning) "Ligado" else "Desligado"
+            )
+            InfoRow(
+                label = "Scan Periódico:",
+                value = if (state.enablePeriodicScanning) "Ligado" else "Desligado"
+            )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
@@ -328,7 +352,7 @@ fun InfoRow(label: String, value: String, valueColor: Color = MaterialTheme.colo
 fun ControlsCard(
     state: BeAroundScanState,
     onStartStop: () -> Unit,
-    onSyncIntervalChange: (Int) -> Unit,
+    onConfigurationChange: (ForegroundScanInterval, BackgroundScanInterval, MaxQueuedPayloads, Boolean, Boolean) -> Unit,
     onSortOptionChange: (BeaconSortOption) -> Unit
 ) {
     Card(
@@ -356,27 +380,32 @@ fun ControlsCard(
                 )
             }
 
-            // Sync Interval Selector
+            // Foreground Interval Selector
+            Text(
+                text = "Configuração de Intervalos",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Intervalo:",
+                    text = "Foreground:",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 var expanded by remember { mutableStateOf(false) }
-                val intervals = listOf(5, 10, 15, 20, 30, 60)
 
                 ExposedDropdownMenuBox(
                     expanded = expanded,
                     onExpandedChange = { expanded = !expanded }
                 ) {
                     OutlinedTextField(
-                        value = "${state.currentSyncInterval}s",
+                        value = "${state.foregroundInterval.milliseconds / 1000}s",
                         onValueChange = {},
                         readOnly = true,
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
@@ -390,11 +419,11 @@ fun ControlsCard(
                         expanded = expanded,
                         onDismissRequest = { expanded = false }
                     ) {
-                        intervals.forEach { interval ->
+                        ForegroundScanInterval.entries.forEach { interval ->
                             DropdownMenuItem(
-                                text = { Text("${interval}s") },
+                                text = { Text("${interval.milliseconds / 1000}s") },
                                 onClick = {
-                                    onSyncIntervalChange(interval)
+                                    onConfigurationChange(interval, state.backgroundInterval, state.maxQueuedPayloads, state.enableBluetoothScanning, state.enablePeriodicScanning)
                                     expanded = false
                                 }
                             )
@@ -402,6 +431,175 @@ fun ControlsCard(
                     }
                 }
             }
+            
+            // Background Interval Selector
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Background:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                var expanded by remember { mutableStateOf(false) }
+
+                ExposedDropdownMenuBox(
+                    expanded = expanded,
+                    onExpandedChange = { expanded = !expanded }
+                ) {
+                    OutlinedTextField(
+                        value = "${state.backgroundInterval.milliseconds / 1000}s",
+                        onValueChange = {},
+                        readOnly = true,
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                        modifier = Modifier
+                            .menuAnchor()
+                            .width(100.dp),
+                        textStyle = MaterialTheme.typography.bodyMedium
+                    )
+
+                    ExposedDropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false }
+                    ) {
+                        BackgroundScanInterval.entries.forEach { interval ->
+                            DropdownMenuItem(
+                                text = { Text("${interval.milliseconds / 1000}s") },
+                                onClick = {
+                                    onConfigurationChange(state.foregroundInterval, interval, state.maxQueuedPayloads, state.enableBluetoothScanning, state.enablePeriodicScanning)
+                                    expanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+            
+            // Max Queued Payloads Selector
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Fila de retry:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                var expanded by remember { mutableStateOf(false) }
+
+                ExposedDropdownMenuBox(
+                    expanded = expanded,
+                    onExpandedChange = { expanded = !expanded }
+                ) {
+                    OutlinedTextField(
+                        value = when(state.maxQueuedPayloads) {
+                            MaxQueuedPayloads.SMALL -> "Small (50)"
+                            MaxQueuedPayloads.MEDIUM -> "Medium (100)"
+                            MaxQueuedPayloads.LARGE -> "Large (200)"
+                            MaxQueuedPayloads.XLARGE -> "XLarge (500)"
+                        },
+                        onValueChange = {},
+                        readOnly = true,
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                        modifier = Modifier
+                            .menuAnchor()
+                            .width(150.dp),
+                        textStyle = MaterialTheme.typography.bodyMedium
+                    )
+
+                    ExposedDropdownMenu(
+                        expanded = expanded,
+                        onDismissRequest = { expanded = false }
+                    ) {
+                        MaxQueuedPayloads.entries.forEach { size ->
+                            val label = when(size) {
+                                MaxQueuedPayloads.SMALL -> "Small (50)"
+                                MaxQueuedPayloads.MEDIUM -> "Medium (100)"
+                                MaxQueuedPayloads.LARGE -> "Large (200)"
+                                MaxQueuedPayloads.XLARGE -> "XLarge (500)"
+                            }
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = {
+                                    onConfigurationChange(state.foregroundInterval, state.backgroundInterval, size, state.enableBluetoothScanning, state.enablePeriodicScanning)
+                                    expanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+            
+            // Bluetooth Scanning Switch
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Bluetooth Metadata",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = "Coleta bateria, firmware e temperatura",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = state.enableBluetoothScanning,
+                    onCheckedChange = { enabled ->
+                        onConfigurationChange(
+                            state.foregroundInterval,
+                            state.backgroundInterval,
+                            state.maxQueuedPayloads,
+                            enabled,
+                            state.enablePeriodicScanning
+                        )
+                    }
+                )
+            }
+            
+            // Periodic Scanning Switch
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Scan Periódico",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = "Melhora consumo de bateria",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = state.enablePeriodicScanning,
+                    onCheckedChange = { enabled ->
+                        onConfigurationChange(
+                            state.foregroundInterval,
+                            state.backgroundInterval,
+                            state.maxQueuedPayloads,
+                            state.enableBluetoothScanning,
+                            enabled
+                        )
+                    }
+                )
+            }
+            
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
             // Sort Option Selector
             Row(
