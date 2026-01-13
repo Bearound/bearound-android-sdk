@@ -14,6 +14,9 @@ import androidx.lifecycle.viewModelScope
 import io.bearound.sdk.BeAroundSDK
 import io.bearound.sdk.interfaces.BeAroundSDKDelegate
 import io.bearound.sdk.models.Beacon
+import io.bearound.sdk.models.BackgroundScanInterval
+import io.bearound.sdk.models.ForegroundScanInterval
+import io.bearound.sdk.models.MaxQueuedPayloads
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,7 +36,13 @@ data class BeAroundScanState(
     val bluetoothStatus: String = "Verificando...",
     val notificationStatus: String = "Verificando...",
     val lastScanTime: Date? = null,
-    val currentSyncInterval: Int = 10,
+    val currentSyncInterval: Int = 15,
+    val foregroundInterval: ForegroundScanInterval = ForegroundScanInterval.SECONDS_15,
+    val backgroundInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_30,
+    val maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
+    val enableBluetoothScanning: Boolean = false,
+    val enablePeriodicScanning: Boolean = true,
+    val isInBackground: Boolean = false,
     val sortOption: BeaconSortOption = BeaconSortOption.PROXIMITY,
     val secondsUntilNextSync: Int = 0,
     val isRanging: Boolean = false
@@ -57,18 +66,32 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         checkNotificationStatus()
         
         // Configure SDK
-        configureSDK(_state.value.currentSyncInterval)
+        configureSDK(
+            _state.value.foregroundInterval,
+            _state.value.backgroundInterval,
+            _state.value.maxQueuedPayloads,
+            _state.value.enableBluetoothScanning,
+            _state.value.enablePeriodicScanning
+        )
         
         // Auto-start scanning
         startScanning()
     }
 
-    private fun configureSDK(syncInterval: Int) {
+    private fun configureSDK(
+        foreground: ForegroundScanInterval,
+        background: BackgroundScanInterval,
+        maxQueued: MaxQueuedPayloads,
+        enableBluetooth: Boolean,
+        enablePeriodic: Boolean
+    ) {
         sdk.configure(
             businessToken = "your-business-token-here",
-            syncInterval = syncInterval * 1000L,
-            enableBluetoothScanning = true,
-            enablePeriodicScanning = true
+            foregroundScanInterval = foreground,
+            backgroundScanInterval = background,
+            maxQueuedPayloads = maxQueued,
+            enableBluetoothScanning = enableBluetooth,
+            enablePeriodicScanning = enablePeriodic
         )
     }
 
@@ -103,11 +126,22 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         )
     }
 
-    fun changeSyncInterval(seconds: Int) {
-        configureSDK(seconds)
+    fun updateConfiguration(
+        foreground: ForegroundScanInterval,
+        background: BackgroundScanInterval,
+        maxQueued: MaxQueuedPayloads,
+        enableBluetooth: Boolean,
+        enablePeriodic: Boolean
+    ) {
+        configureSDK(foreground, background, maxQueued, enableBluetooth, enablePeriodic)
         _state.value = _state.value.copy(
-            currentSyncInterval = seconds,
-            statusMessage = "Intervalo: ${seconds}s"
+            foregroundInterval = foreground,
+            backgroundInterval = background,
+            maxQueuedPayloads = maxQueued,
+            enableBluetoothScanning = enableBluetooth,
+            enablePeriodicScanning = enablePeriodic,
+            currentSyncInterval = (sdk.currentSyncInterval ?: 0L).toInt() / 1000,
+            statusMessage = "Configuração atualizada"
         )
     }
 
@@ -209,7 +243,17 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         viewModelScope.launch {
             _state.value = _state.value.copy(
                 secondsUntilNextSync = secondsUntilNextSync,
-                isRanging = isRanging
+                isRanging = isRanging,
+                currentSyncInterval = (sdk.currentSyncInterval ?: 0L).toInt() / 1000
+            )
+        }
+    }
+    
+    override fun didChangeAppState(isInBackground: Boolean) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                isInBackground = isInBackground,
+                currentSyncInterval = (sdk.currentSyncInterval ?: 0L).toInt() / 1000
             )
         }
     }
