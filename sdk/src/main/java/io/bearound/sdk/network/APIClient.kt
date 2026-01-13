@@ -54,12 +54,7 @@ class APIClient(private val configuration: SDKConfiguration) {
                 val payload = buildPayload(beacons, sdkInfo, userDevice, userProperties)
                 
                 // Send request
-                Log.d(TAG, "========================================")
-                Log.d(TAG, "INGEST API CALL")
-                Log.d(TAG, "URL: $url")
-                Log.d(TAG, "Sending ${beacons.size} beacon(s)")
-                Log.d(TAG, "Payload: $payload")
-                Log.d(TAG, "========================================")
+                Log.d(TAG, "Sending ${beacons.size} beacon(s) to $url")
 
                 OutputStreamWriter(connection.outputStream).use { writer ->
                     writer.write(payload.toString())
@@ -75,12 +70,7 @@ class APIClient(private val configuration: SDKConfiguration) {
                     } catch (e: Exception) {
                         ""
                     }
-                    Log.d(TAG, "========================================")
-                    Log.d(TAG, "INGEST API RESPONSE - SUCCESS")
-                    Log.d(TAG, "HTTP Status: $responseCode")
-                    Log.d(TAG, "Response Body: $responseBody")
                     Log.d(TAG, "Successfully sent ${beacons.size} beacon(s)")
-                    Log.d(TAG, "========================================")
                     onComplete(Result.success(Unit))
                 } else {
                     val errorMessage = try {
@@ -88,11 +78,7 @@ class APIClient(private val configuration: SDKConfiguration) {
                     } catch (e: Exception) {
                         "HTTP error $responseCode"
                     }
-                    Log.e(TAG, "========================================")
-                    Log.e(TAG, "INGEST API RESPONSE - ERROR")
-                    Log.e(TAG, "HTTP Status: $responseCode")
-                    Log.e(TAG, "Error Message: $errorMessage")
-                    Log.e(TAG, "========================================")
+                    Log.e(TAG, "API error: HTTP $responseCode - $errorMessage")
                     onComplete(Result.failure(Exception("HTTP error: $responseCode")))
                 }
 

@@ -6,9 +6,9 @@
 
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by BeAround.
 
-## Version 2.0.2
+## Version 2.1.0
 
-Latest version with background scanning support. Complete SDK rewrite with improved architecture, better performance, and enhanced reliability.
+Latest version with configurable scan intervals and enhanced control. Separate foreground/background scan intervals, configurable retry queue, and improved lifecycle detection using ProcessLifecycleOwner.
 
 ## Features
 
@@ -65,7 +65,7 @@ dependencyResolutionManagement {
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:v2.0.2'
+    implementation 'com.github.Bearound:bearound-android-sdk:v2.1.0'
 }
 ```
 
@@ -143,7 +143,9 @@ class MainActivity : AppCompatActivity(), BeAroundSDKDelegate {
         // Configure SDK
         sdk.configure(
             businessToken = "your-business-token",
-            syncInterval = 30000L, // 30 seconds
+            foregroundScanInterval = ForegroundScanInterval.SECONDS_15, // Default: 15s
+            backgroundScanInterval = BackgroundScanInterval.SECONDS_30, // Default: 30s
+            maxQueuedPayloads = MaxQueuedPayloads.MEDIUM, // Default: 100 payloads
             enableBluetoothScanning = true,
             enablePeriodicScanning = true
         )
@@ -255,7 +257,9 @@ class MainActivity : AppCompatActivity(), BeAroundSDKDelegate {
         // Configure SDK
         sdk.configure(
             businessToken = "your-business-token",
-            syncInterval = 30000L,
+            foregroundScanInterval = ForegroundScanInterval.SECONDS_15,
+            backgroundScanInterval = BackgroundScanInterval.SECONDS_30,
+            maxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
             enableBluetoothScanning = true,
             enablePeriodicScanning = true
         )
@@ -292,17 +296,40 @@ class MainActivity : AppCompatActivity(), BeAroundSDKDelegate {
 
 ## Configuration Options
 
-### Sync Interval
+### Scan Intervals
 
-Controls how often beacons are sent to the server:
+Configure separate scan intervals for foreground and background:
 
 ```kotlin
 sdk.configure(
     businessToken = "your-business-token",
-    syncInterval = 30000L // 5-60 seconds (5000-60000ms)
+    foregroundScanInterval = ForegroundScanInterval.SECONDS_15, // 5-60s options
+    backgroundScanInterval = BackgroundScanInterval.SECONDS_30  // 15-120s options
 )
-// Note: appId is automatically extracted from your app's package name
 ```
+
+**Available Foreground Intervals:**
+- `SECONDS_5` to `SECONDS_60` (5s increments)
+
+**Available Background Intervals:**
+- `SECONDS_15`, `SECONDS_30`, `SECONDS_60`, `SECONDS_90`, `SECONDS_120`
+
+### Retry Queue Size
+
+Configure how many failed batches to queue before discarding:
+
+```kotlin
+sdk.configure(
+    businessToken = "your-business-token",
+    maxQueuedPayloads = MaxQueuedPayloads.MEDIUM // Default: 100
+)
+```
+
+**Available Sizes:**
+- `SMALL` (50 payloads)
+- `MEDIUM` (100 payloads) - Default
+- `LARGE` (200 payloads)
+- `XLARGE` (500 payloads)
 
 ### Periodic Scanning
 
@@ -311,14 +338,12 @@ When enabled, the SDK scans for beacons periodically instead of continuously:
 ```kotlin
 sdk.configure(
     businessToken = "your-business-token",
-    syncInterval = 30000L,
     enablePeriodicScanning = true // Default: true
 )
-// Note: appId automatically extracted from packageName
 ```
 
-- **Foreground**: Scans for `scanDuration` (1/3 of sync interval) before each sync
-- **Background**: Switches to continuous scanning automatically
+- **Foreground**: Scans for 100ms before each sync interval
+- **Background**: Scans for 100ms before each sync interval
 
 ### Bluetooth Metadata Scanning
 
@@ -327,10 +352,8 @@ Enable BLE scanning to collect additional beacon metadata (battery, temperature,
 ```kotlin
 sdk.configure(
     businessToken = "your-business-token",
-    syncInterval = 30000L,
     enableBluetoothScanning = true // Default: false
 )
-// Note: appId automatically extracted from packageName
 ```
 
 ## API Reference
@@ -346,11 +369,12 @@ val sdk = BeAroundSDK.getInstance(context)
 // Configure SDK
 sdk.configure(
     businessToken: String,
-    syncInterval: Long,
+    foregroundScanInterval: ForegroundScanInterval = ForegroundScanInterval.SECONDS_15,
+    backgroundScanInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_30,
+    maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
     enableBluetoothScanning: Boolean = false,
     enablePeriodicScanning: Boolean = true
 )
-// Note: appId is automatically extracted from context.packageName
 
 // Control scanning
 sdk.startScanning()
@@ -367,6 +391,7 @@ sdk.setBluetoothScanning(enabled: Boolean)
 val isScanning: Boolean = sdk.isScanning
 val syncInterval: Long? = sdk.currentSyncInterval
 val scanDuration: Long? = sdk.currentScanDuration
+val isPeriodicScanningEnabled: Boolean = sdk.isPeriodicScanningEnabled
 ```
 
 ### BeAroundSDKDelegate
@@ -483,8 +508,8 @@ Version 2.0.x introduces breaking changes. Follow these steps to migrate:
 // OLD (v1.x)
 implementation 'com.github.Bearound:bearound-android-sdk:1.3.2'
 
-// NEW (v2.0+)
-implementation 'com.github.Bearound:bearound-android-sdk:v2.0.2'
+// NEW (v2.1+)
+implementation 'com.github.Bearound:bearound-android-sdk:v2.1.0'
 ```
 
 ### 2. Update AndroidManifest.xml
@@ -506,16 +531,17 @@ beAround.initialize(
     debug = true
 )
 
-// NEW (v2.0)
+// NEW (v2.1)
 val sdk = BeAroundSDK.getInstance(context)
 sdk.delegate = this // implement BeAroundSDKDelegate
 sdk.configure(
     businessToken = "your-business-token",
-    syncInterval = 30000L,
+    foregroundScanInterval = ForegroundScanInterval.SECONDS_15,
+    backgroundScanInterval = BackgroundScanInterval.SECONDS_30,
+    maxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
     enableBluetoothScanning = true,
     enablePeriodicScanning = true
 )
-// Note: appId is now automatically extracted from context.packageName
 sdk.startScanning()
 ```
 
@@ -573,13 +599,16 @@ beacon.metadata  // new: battery, firmware, temperature
 
 ### High battery usage
 
-1. Increase `syncInterval` (e.g., 60000ms)
-2. Enable `enablePeriodicScanning = true`
+1. Increase scan intervals:
+   - `foregroundScanInterval = ForegroundScanInterval.SECONDS_30`
+   - `backgroundScanInterval = BackgroundScanInterval.SECONDS_60` or higher
+2. Enable `enablePeriodicScanning = true` (enabled by default)
 3. Disable `enableBluetoothScanning` if metadata is not needed
 
 ### No beacons in background
 
 1. Ensure `ACCESS_BACKGROUND_LOCATION` permission is granted
+2. For better results, ask users to disable battery optimization for your app in device settings
 
 ### App crashes with SecurityException
 
@@ -589,6 +618,20 @@ beacon.metadata  // new: battery, firmware, temperature
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
+
+### Version 2.1.0 (2026-01-13)
+
+- 🆕 **Configurable Scan Intervals**: Separate foreground/background intervals
+  - `ForegroundScanInterval`: 5-60 seconds (5s increments)
+  - `BackgroundScanInterval`: 15-120 seconds
+- 🆕 **Configurable Retry Queue**: Control failed payload queue size
+  - Small (50), Medium (100), Large (200), XLarge (500)
+- 🔧 **Improved Lifecycle Detection**: Using `ProcessLifecycleOwner` for better reliability
+  - Better compatibility with Samsung OneUI and other Android skins
+- 🐛 **Bug Fixes**:
+  - Fixed background/foreground state detection on various Android versions
+  - Fixed Bluetooth Scan Broadcast activation timing
+  - Improved periodic scanning reliability in background
 
 ### Version 2.0.2 (2026-01-08)
 

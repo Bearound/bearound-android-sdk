@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-01-13
+
+### ⚠️ Breaking Changes
+
+**Configurable Scan Intervals**: SDK now supports separate foreground and background scan intervals with configurable retry queue.
+
+### Added
+
+- **Configurable Scan Intervals**: New enums for fine-grained control over scan behavior
+  - `ForegroundScanInterval`: Configure foreground scan intervals from 5 to 60 seconds (in 5-second increments)
+  - `BackgroundScanInterval`: Configure background scan intervals (15s, 30s, 60s, 90s, or 120s)
+  - Default: 15 seconds for foreground, 30 seconds for background
+  
+- **Configurable Retry Queue**: New `MaxQueuedPayloads` enum to control retry queue size
+  - `.SMALL` (50 failed batches)
+  - `.MEDIUM` (100 failed batches) - default
+  - `.LARGE` (200 failed batches)
+  - `.XLARGE` (500 failed batches)
+  - Replaces fixed limit of 10 with configurable options
+  - Each batch can contain multiple beacons from a single sync
+
+- **App State Delegate**: New `didChangeAppState(isInBackground: Boolean)` callback in `BeAroundSDKDelegate`
+  - Notifies when app transitions between foreground and background
+
+### Changed
+
+- **Configuration API**: `configure()` method now accepts enum parameters instead of `Long` milliseconds
+  - `foregroundScanInterval: ForegroundScanInterval = ForegroundScanInterval.SECONDS_15`
+  - `backgroundScanInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_30`
+  - `maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM`
+  - Old `syncInterval` parameter removed in favor of separate foreground/background intervals
+
+- **Dynamic Interval Switching**: SDK now automatically switches between foreground and background intervals based on app state
+  - Optimizes battery usage in background
+  - Provides faster updates in foreground
+
+- **Improved Resilience**: Increased default retry queue from 10 to 100 failed batches
+
+- **SDKConfiguration**: Updated to use enums with new methods:
+  - `syncInterval(isInBackground: Boolean): Long` - Get interval based on app state
+  - `scanDuration(isInBackground: Boolean): Long` - Get scan duration based on app state
+  - Legacy properties deprecated but still available for compatibility
+
+- **SDKConfigStorage**: Updated to persist enum values as numbers with automatic migration from old format
+
+### Migration
+
+**Before (v2.0.2):**
+```kotlin
+sdk.configure(
+    businessToken = "your-business-token-here",
+    syncInterval = 30000L  // 30 seconds in milliseconds
+)
+```
+
+**After (v2.1.0):**
+```kotlin
+// Using defaults (recommended)
+sdk.configure(
+    businessToken = "your-business-token-here"
+    // FG: 15s, BG: 30s, Queue: 100
+)
+
+// Custom configuration
+sdk.configure(
+    businessToken = "your-business-token-here",
+    foregroundScanInterval = ForegroundScanInterval.SECONDS_30,
+    backgroundScanInterval = BackgroundScanInterval.SECONDS_90,
+    maxQueuedPayloads = MaxQueuedPayloads.LARGE
+)
+```
+
+### Technical Details
+
+- Scan duration formula unchanged: `scanDuration = max(5s, min(syncInterval / 3, 10s))`
+- Backoff retry logic unchanged: exponential backoff with max 60s delay
+- All existing scanning and sync behaviors preserved
+- Type-safe enum-based configuration for better developer experience
+- Automatic configuration migration from v2.0.x format
+
+### Compatibility
+
+- Configuration from v2.0.x is automatically migrated to v2.1.0 format
+- Old `syncInterval` value is used as `foregroundScanInterval` during migration
+- Background interval defaults to 30s for migrated configurations
+
+---
+
 ## [2.0.2] - 2026-01-08
 
 ### Added

@@ -25,5 +25,11 @@ interface BeAroundSDKDelegate {
      * Called periodically to update sync status
      */
     fun didUpdateSyncStatus(secondsUntilNextSync: Int, isRanging: Boolean) {}
+    
+    /**
+     * Called when app state changes between foreground and background
+     * @param isInBackground true if app entered background, false if entered foreground
+     */
+    fun didChangeAppState(isInBackground: Boolean) {}
 }
 

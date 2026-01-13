@@ -2,23 +2,26 @@ package io.bearound.sdk
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.Activity
-import android.app.Application
 import android.bluetooth.le.ScanResult
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import io.bearound.sdk.background.BackgroundScanManager
 import io.bearound.sdk.interfaces.BeAroundSDKDelegate
 import io.bearound.sdk.interfaces.BluetoothManagerDelegate
+import io.bearound.sdk.models.BackgroundScanInterval
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.BeaconMetadata
+import io.bearound.sdk.models.ForegroundScanInterval
+import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.UserProperties
@@ -55,6 +58,7 @@ class BeAroundSDK private constructor() {
                 }
             }
         }
+        
     }
 
     var delegate: BeAroundSDKDelegate? = null
@@ -85,20 +89,18 @@ class BeAroundSDK private constructor() {
     private val failedBatches = mutableListOf<List<Beacon>>()
     private var consecutiveFailures = 0
     private var lastFailureTime: Long? = null
-    private val maxFailedBatches = 10
 
     private var isInBackground = false
     private val isColdStart = true
-    private var activityCount = 0
 
     val isScanning: Boolean
         get() = ::beaconManager.isInitialized && beaconManager.isScanning
 
     val currentSyncInterval: Long?
-        get() = configuration?.validatedSyncInterval
+        get() = configuration?.syncInterval(isInBackground)
 
     val currentScanDuration: Long?
-        get() = configuration?.scanDuration
+        get() = configuration?.scanDuration(isInBackground)
 
     val isPeriodicScanningEnabled: Boolean
         get() = configuration?.enablePeriodicScanning ?: false
@@ -197,62 +199,63 @@ class BeAroundSDK private constructor() {
     }
 
     private fun setupLifecycleObserver() {
-        if (context is Application) {
-            (context as Application).registerActivityLifecycleCallbacks(
-                object : Application.ActivityLifecycleCallbacks {
-                    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
-                    override fun onActivityStarted(activity: Activity) {
-                        activityCount++
-                        if (activityCount == 1) {
-                            onAppForegrounded()
-                        }
-                    }
+        // Usar ProcessLifecycleOwner - mais confiável que ActivityLifecycleCallbacks
+        // Funciona melhor com Samsung OneUI e outras skins Android
+        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) {
+                // App veio para foreground
+                onAppForegrounded()
+            }
 
-                    override fun onActivityResumed(activity: Activity) {}
-                    override fun onActivityPaused(activity: Activity) {}
-                    override fun onActivityStopped(activity: Activity) {
-                        activityCount--
-                        if (activityCount == 0) {
-                            onAppBackgrounded()
-                        }
-                    }
-
-                    override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
-                    override fun onActivityDestroyed(activity: Activity) {}
-                }
-            )
-        }
+            override fun onStop(owner: LifecycleOwner) {
+                // App foi para background
+                onAppBackgrounded()
+            }
+        })
     }
 
     private fun onAppForegrounded() {
         isInBackground = false
+        Log.d(TAG, "App foregrounded")
+        
+        // Desabilitar Bluetooth Scan Broadcast quando em foreground
+        // Ranging normal cuida da detecção
+        backgroundScanManager.disableBackgroundScanning()
+        
         beaconManager.setForegroundState(true)
         
         configuration?.let { config ->
             beaconManager.enablePeriodicScanning = config.enablePeriodicScanning
             if (isScanning) {
-                startSyncTimer()
+                restartSyncTimer()
             }
         }
+        
+        delegate?.didChangeAppState(isInBackground = false)
     }
 
     private fun onAppBackgrounded() {
         isInBackground = true
+        Log.d(TAG, "App backgrounded")
+        
         beaconManager.setForegroundState(false)
         
-        configuration?.let { config ->
-            if (config.enablePeriodicScanning) {
-                beaconManager.enablePeriodicScanning = false
-                if (isScanning) {
-                    beaconManager.startRanging()
-                }
-            }
+        // Habilitar Bluetooth Scan Broadcast para detecção quando app totalmente fechado
+        // (Apenas Android 14+)
+        backgroundScanManager.enableBackgroundScanning()
+        
+        if (isScanning) {
+            restartSyncTimer()
         }
+        
+        delegate?.didChangeAppState(isInBackground = true)
     }
 
     fun configure(
         businessToken: String,
-        syncInterval: Long,
+        foregroundScanInterval: ForegroundScanInterval = ForegroundScanInterval.SECONDS_15,
+        backgroundScanInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_30,
+        maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
         enableBluetoothScanning: Boolean = false,
         enablePeriodicScanning: Boolean = true
     ) {
@@ -265,7 +268,9 @@ class BeAroundSDK private constructor() {
         val config = SDKConfiguration(
             businessToken = businessToken,
             appId = appId,
-            syncInterval = syncInterval,
+            foregroundScanInterval = foregroundScanInterval,
+            backgroundScanInterval = backgroundScanInterval,
+            maxQueuedPayloads = maxQueuedPayloads,
             enableBluetoothScanning = enableBluetoothScanning,
             enablePeriodicScanning = enablePeriodicScanning
         )
@@ -282,7 +287,6 @@ class BeAroundSDK private constructor() {
         sdkInfo = SDKInfo(appId = appId, build = buildNumber)
         
         SDKConfigStorage.saveConfiguration(context, config)
-        backgroundScanManager.enableBackgroundScanning()
 
         if (isScanning) {
             startSyncTimer()
@@ -331,6 +335,7 @@ class BeAroundSDK private constructor() {
     fun stopScanning() {
         beaconManager.stopScanning()
         bluetoothManager.stopScanning()
+        backgroundScanManager.disableBackgroundScanning()
         stopSyncTimer()
 
         syncBeacons()
@@ -381,11 +386,32 @@ class BeAroundSDK private constructor() {
         
         val isAppInForeground = isAppInForeground()
         
+        Log.d(TAG, "Processing ${scanResults.size} broadcast results (app in foreground: $isAppInForeground)")
+        
+        // Se app está em foreground, ignora broadcast - ranging normal cuida disso
+        if (isAppInForeground) {
+            Log.d(TAG, "Ignoring broadcast results - app in foreground (using regular ranging)")
+            return
+        }
+        
+        val beaconsBeforeBroadcast = beaconLock.withLock { collectedBeacons.size }
+        
+        // Apenas processa se app está em background/fechado
         scanResults.forEach { result ->
             beaconManager.processExternalScanResult(result)
         }
         
-        syncBeacons(forceBackground = !isAppInForeground)
+        val beaconsAfterBroadcast = beaconLock.withLock { collectedBeacons.size }
+        val timerIsActive = (syncRunnable != null)
+        
+        // Se timer não está ativo E temos beacons, fazer sync imediatamente
+        // Caso contrário, deixa o timer periódico cuidar do sync
+        if (!timerIsActive && beaconsAfterBroadcast > 0) {
+            Log.d(TAG, "Broadcast detected beacons but no timer active - syncing immediately")
+            syncBeacons(forceBackground = true)
+        } else {
+            Log.d(TAG, "Beacons collected from broadcast - will sync on next timer cycle")
+        }
     }
     
     private fun isAppInForeground(): Boolean {
@@ -438,20 +464,27 @@ class BeAroundSDK private constructor() {
     private fun startSyncTimer() {
         val config = configuration ?: return
         
+        Log.d(TAG, "=== START SYNC TIMER ===")
+        Log.d(TAG, "isInBackground: $isInBackground")
+        Log.d(TAG, "Periodic enabled: ${config.enablePeriodicScanning}")
+        
         stopSyncTimer()
         startCountdownTimer()
 
-        val syncInterval = config.validatedSyncInterval
+        val syncInterval = config.syncInterval(isInBackground)
+        Log.d(TAG, "Sync interval to use: ${syncInterval}ms (${syncInterval/1000}s)")
         
         syncRunnable = object : Runnable {
             override fun run() {
-                nextSyncTime = System.currentTimeMillis() + syncInterval
+                val currentInterval = config.syncInterval(isInBackground)
+                nextSyncTime = System.currentTimeMillis() + currentInterval
                 syncBeacons()
                 
-                if (config.enablePeriodicScanning && !isInBackground) {
-                    val scanDuration = config.scanDuration
-                    val delayUntilNextRanging = syncInterval - scanDuration
-
+                // Periodic scanning funciona tanto em foreground quanto background
+                if (config.enablePeriodicScanning) {
+                    val scanDuration = config.scanDuration(isInBackground)
+                    val delayUntilNextRanging = currentInterval - scanDuration
+                    
                     handler.postDelayed({
                         beaconManager.stopRanging()
                         delegate?.didUpdateBeacons(emptyList())
@@ -462,12 +495,12 @@ class BeAroundSDK private constructor() {
                     }, delayUntilNextRanging)
                 }
                 
-                handler.postDelayed(this, syncInterval)
+                handler.postDelayed(this, currentInterval)
             }
         }
 
-        if (config.enablePeriodicScanning && !isInBackground) {
-            val scanDuration = config.scanDuration
+        if (config.enablePeriodicScanning) {
+            val scanDuration = config.scanDuration(isInBackground)
             val delayUntilFirstRanging = syncInterval - scanDuration
             nextSyncTime = System.currentTimeMillis() + syncInterval
             
@@ -479,6 +512,12 @@ class BeAroundSDK private constructor() {
         } else {
             nextSyncTime = System.currentTimeMillis() + syncInterval
             handler.postDelayed(syncRunnable!!, syncInterval)
+        }
+    }
+    
+    private fun restartSyncTimer() {
+        if (isScanning) {
+            startSyncTimer()
         }
     }
 
@@ -583,7 +622,7 @@ class BeAroundSDK private constructor() {
             consecutiveFailures++
             lastFailureTime = System.currentTimeMillis()
 
-            if (failedBatches.size < maxFailedBatches) {
+            if (failedBatches.size < (configuration?.maxQueuedPayloads?.value ?: 100)) {
                 failedBatches.add(beacons)
             } else {
                 failedBatches.removeAt(0)
