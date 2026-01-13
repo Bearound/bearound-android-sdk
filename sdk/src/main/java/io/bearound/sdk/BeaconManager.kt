@@ -207,14 +207,11 @@ class BeaconManager(private val context: Context) {
     fun stopRanging() {
         Log.d(TAG, "stopRanging() called - isRanging: $isRanging, isInForeground: $isInForeground")
         if (!isRanging) return
-        
-        // Guard removido - permite parar ranging em background para periodic scanning
+
         bluetoothLeScanner?.stopScan(scanCallback)
         isRanging = false
         stopWatchdog()
         
-        // Só para refresh timer se estiver em foreground
-        // Em background, o refresh timer deve continuar para manter o ranging saudável
         if (isInForeground) {
             stopRangingRefreshTimer()
         }

@@ -342,8 +342,10 @@ sdk.configure(
 )
 ```
 
-- **Foreground**: Scans for 100ms before each sync interval
-- **Background**: Scans for 100ms before each sync interval
+When enabled, the SDK performs short scan bursts before each sync:
+- **Scan duration**: 1/3 of the sync interval (minimum 5 seconds, maximum 10 seconds)
+- **Foreground** (15s interval): Scans for 5 seconds, then waits 10 seconds
+- **Background** (30s interval): Scans for 10 seconds, then waits 20 seconds
 
 ### Bluetooth Metadata Scanning
 
