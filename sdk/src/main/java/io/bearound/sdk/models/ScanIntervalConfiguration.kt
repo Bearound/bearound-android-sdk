@@ -1,7 +1,5 @@
 package io.bearound.sdk.models
 
-import io.bearound.sdk.models.BackgroundScanInterval.SECONDS_60
-
 /**
  * Foreground scan interval configuration
  * Controls how frequently the SDK scans for beacons when the app is in foreground

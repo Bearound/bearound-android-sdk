@@ -29,9 +29,9 @@ data class SDKConfiguration(
 
     fun syncInterval(isInBackground: Boolean): Long {
         return if (isInBackground) {
-            backgroundScanInterval.timeIntervalSeconds
+            backgroundScanInterval.timeIntervalSeconds * 1000L
         } else {
-            foregroundScanInterval.timeIntervalSeconds
+            foregroundScanInterval.timeIntervalSeconds * 1000L
         }
     }
 }
