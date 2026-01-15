@@ -649,7 +649,7 @@ Due to Android system restrictions and manufacturer-specific behaviors, the foll
 | App in foreground | ✅ Yes |
 | App in background (in memory) | ✅ Yes |
 | App closed (Android 14+) | ✅ Yes |
-| App closed (Android ≤13) | ❌ No |
+| App closed (Android <= 13) | ❌ No |
 | Battery saver / hibernation enabled | ⚠️ Limited |
 
 ## Changelog
