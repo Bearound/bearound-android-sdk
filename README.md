@@ -645,7 +645,7 @@ Due to Android system restrictions and manufacturer-specific behaviors, the foll
 ### Summary
 
 | Scenario | Supported |
-|-------|----------|
+|--------|---------|
 | App in foreground | ✅ Yes |
 | App in background (in memory) | ✅ Yes |
 | App closed (Android 14+) | ✅ Yes |
