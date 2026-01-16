@@ -617,6 +617,41 @@ beacon.metadata  // new: battery, firmware, temperature
 - Ensure `ACCESS_NETWORK_STATE` permission is in AndroidManifest.xml
 - This was a known issue in pre-2.0 versions
 
+## ⚠️ Technical Pending Issues
+
+Due to Android system restrictions and manufacturer-specific behaviors, the following limitations currently apply:
+
+### 1. Background scanning with app fully closed (Android version)
+
+- **Background beacon scanning when the app is fully closed is supported only on Android 14 (API 34) and above.**
+- On Android versions **below 14**, the system does not reliably wake the app for BLE beacon detection without a foreground service or notification.
+- This is a platform-level limitation imposed by Android background execution policies.
+
+**Impact:** Devices running Android 13 or lower may not detect beacons when the app is fully closed.
+
+---
+
+### 2. Battery Saver / Power Optimization modes
+
+- When **Battery Saver**, **Power Saving**, or manufacturer-specific optimization modes are enabled (e.g. Samsung, Xiaomi, Oppo),
+  the system may place the app into a **hibernation / deep sleep state** when the device is locked.
+- In this state, **BLE scanning is automatically interrupted by the system**, even if background scanning is enabled.
+- This behavior is **outside the SDK’s control** and varies by device manufacturer and OS version.
+
+**Impact:** Beacon scanning may stop when the device screen is locked with battery optimization enabled.
+
+---
+
+### Summary
+
+| Scenario | Supported |
+|--------|---------|
+| App in foreground | ✅ Yes |
+| App in background (in memory) | ✅ Yes |
+| App closed (Android 14+) | ✅ Yes |
+| App closed (Android <= 13) | ❌ No |
+| Battery saver / hibernation enabled | ⚠️ Limited |
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
