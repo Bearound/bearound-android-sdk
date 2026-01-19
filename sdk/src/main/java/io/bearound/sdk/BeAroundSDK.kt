@@ -15,8 +15,9 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import io.bearound.sdk.background.BackgroundScanManager
-import io.bearound.sdk.interfaces.BeAroundSDKDelegate
-import io.bearound.sdk.interfaces.BluetoothManagerDelegate
+import io.bearound.sdk.background.BackgroundScheduler
+import io.bearound.sdk.interfaces.BeAroundSDKListener
+import io.bearound.sdk.interfaces.BluetoothManagerListener
 import io.bearound.sdk.models.BackgroundScanInterval
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.BeaconMetadata
@@ -27,6 +28,7 @@ import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.UserProperties
 import io.bearound.sdk.network.APIClient
 import io.bearound.sdk.utilities.DeviceInfoCollector
+import io.bearound.sdk.utilities.OfflineBatchStorage
 import io.bearound.sdk.utilities.SDKConfigStorage
 import io.bearound.sdk.utilities.SecureStorage
 import kotlinx.coroutines.CoroutineScope
@@ -61,7 +63,7 @@ class BeAroundSDK private constructor() {
         
     }
 
-    var delegate: BeAroundSDKDelegate? = null
+    var listener: BeAroundSDKListener? = null
 
     private lateinit var context: Context
     private var configuration: SDKConfiguration? = null
@@ -72,6 +74,7 @@ class BeAroundSDK private constructor() {
     private lateinit var beaconManager: BeaconManager
     private lateinit var bluetoothManager: BluetoothManager
     private lateinit var backgroundScanManager: BackgroundScanManager
+    private lateinit var backgroundScheduler: BackgroundScheduler
     private var apiClient: APIClient? = null
 
     private val metadataCache = mutableMapOf<String, BeaconMetadata>()
@@ -86,7 +89,7 @@ class BeAroundSDK private constructor() {
     private var nextSyncTime: Long? = null
 
     private var isSyncing = false
-    private val failedBatches = mutableListOf<List<Beacon>>()
+    private lateinit var offlineBatchStorage: OfflineBatchStorage
     private var consecutiveFailures = 0
     private var lastFailureTime: Long? = null
 
@@ -103,7 +106,7 @@ class BeAroundSDK private constructor() {
         get() = configuration?.scanDuration(isInBackground)
 
     val isPeriodicScanningEnabled: Boolean
-        get() = configuration?.enablePeriodicScanning ?: false
+        get() = !isInBackground  // Periodic in foreground, continuous in background
 
     val isConfigured: Boolean
         get() = configuration != null && apiClient != null
@@ -123,6 +126,9 @@ class BeAroundSDK private constructor() {
                 1
             }
             sdkInfo = SDKInfo(appId = savedConfig.appId, build = buildNumber)
+            
+            // Update offline batch storage max count
+            offlineBatchStorage.maxBatchCount = savedConfig.maxQueuedPayloads.value
         } else {
             Log.w(TAG, "Failed to restore configuration")
         }
@@ -137,6 +143,8 @@ class BeAroundSDK private constructor() {
         beaconManager = BeaconManager(context)
         bluetoothManager = BluetoothManager(context)
         backgroundScanManager = BackgroundScanManager(context)
+        backgroundScheduler = BackgroundScheduler.getInstance(context)
+        offlineBatchStorage = OfflineBatchStorage(context)
 
         setupCallbacks()
         setupLifecycleObserver()
@@ -159,23 +167,29 @@ class BeAroundSDK private constructor() {
                 }
             }
 
-            delegate?.didUpdateBeacons(enrichedBeacons)
+            // Notify listener of beacon update
+            listener?.onBeaconsUpdated(enrichedBeacons)
+            
+            // Notify if beacons detected in background
+            if (isInBackground && enrichedBeacons.isNotEmpty()) {
+                listener?.onBeaconDetectedInBackground(enrichedBeacons.size)
+            }
         }
 
         beaconManager.onError = { error ->
-            delegate?.didFailWithError(error)
+            listener?.onError(error)
         }
 
         beaconManager.onScanningStateChanged = { isScanning ->
-            delegate?.didChangeScanning(isScanning)
+            listener?.onScanningStateChanged(isScanning)
         }
 
         beaconManager.onBackgroundRangingComplete = {
             syncBeacons()
         }
 
-        bluetoothManager.delegate = object : BluetoothManagerDelegate {
-            override fun didDiscoverBeacon(
+        bluetoothManager.listener = object : BluetoothManagerListener {
+            override fun onBeaconDiscovered(
                 uuid: UUID,
                 major: Int,
                 minor: Int,
@@ -184,14 +198,14 @@ class BeAroundSDK private constructor() {
                 metadata: BeaconMetadata?,
                 isConnectable: Boolean
             ) {
-                if (configuration?.enableBluetoothScanning != true) return
+                // Bluetooth scanning is always enabled in v2.2.0+
                 metadata?.let {
                     metadataCache["$major.$minor"] = it
                 }
             }
 
-            override fun didUpdateBluetoothState(isPoweredOn: Boolean) {
-                if (!isPoweredOn && configuration?.enableBluetoothScanning == true) {
+            override fun onBluetoothStateChanged(isPoweredOn: Boolean) {
+                if (!isPoweredOn) {
                     Log.w(TAG, "Bluetooth is off")
                 }
             }
@@ -217,15 +231,13 @@ class BeAroundSDK private constructor() {
         backgroundScanManager.disableBackgroundScanning()
         
         beaconManager.setForegroundState(true)
+        // Periodic scanning in foreground is automatic (controlled by sync timer)
         
-        configuration?.let { config ->
-            beaconManager.enablePeriodicScanning = config.enablePeriodicScanning
-            if (isScanning) {
-                restartSyncTimer()
-            }
+        if (isScanning) {
+            restartSyncTimer()
         }
         
-        delegate?.didChangeAppState(isInBackground = false)
+        listener?.onAppStateChanged(isInBackground = false)
     }
 
     private fun onAppBackgrounded() {
@@ -234,21 +246,20 @@ class BeAroundSDK private constructor() {
         
         beaconManager.setForegroundState(false)
         backgroundScanManager.enableBackgroundScanning()
+        // Continuous scanning in background is automatic (BeaconManager handles it)
         
         if (isScanning) {
             restartSyncTimer()
         }
         
-        delegate?.didChangeAppState(isInBackground = true)
+        listener?.onAppStateChanged(isInBackground = true)
     }
 
     fun configure(
         businessToken: String,
         foregroundScanInterval: ForegroundScanInterval = ForegroundScanInterval.SECONDS_15,
         backgroundScanInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_30,
-        maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
-        enableBluetoothScanning: Boolean = false,
-        enablePeriodicScanning: Boolean = true
+        maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM
     ) {
         if(businessToken.trim().isEmpty()){
             throw IllegalArgumentException("Business token cannot be empty")
@@ -261,9 +272,7 @@ class BeAroundSDK private constructor() {
             appId = appId,
             foregroundScanInterval = foregroundScanInterval,
             backgroundScanInterval = backgroundScanInterval,
-            maxQueuedPayloads = maxQueuedPayloads,
-            enableBluetoothScanning = enableBluetoothScanning,
-            enablePeriodicScanning = enablePeriodicScanning
+            maxQueuedPayloads = maxQueuedPayloads
         )
         
         configuration = config
@@ -276,6 +285,9 @@ class BeAroundSDK private constructor() {
         }
 
         sdkInfo = SDKInfo(appId = appId, build = buildNumber)
+        
+        // Update offline batch storage max count
+        offlineBatchStorage.maxBatchCount = config.maxQueuedPayloads.value
         
         SDKConfigStorage.saveConfiguration(context, config)
 
@@ -292,42 +304,37 @@ class BeAroundSDK private constructor() {
         userProperties = null
     }
 
-    fun setBluetoothScanning(enabled: Boolean) {
-        configuration = configuration?.copy(enableBluetoothScanning = enabled)
-
-        if (enabled && isScanning) {
-            bluetoothManager.startScanning()
-        } else if (!enabled) {
-            bluetoothManager.stopScanning()
-            metadataCache.clear()
-        }
-    }
-
-    val isBluetoothScanningEnabled: Boolean
-        get() = configuration?.enableBluetoothScanning ?: false
-
     fun startScanning() {
         val config = configuration
         if (config == null) {
             val error = Exception("SDK not configured. Call configure() first.")
-            delegate?.didFailWithError(error)
+            listener?.onError(error)
             return
         }
 
-        beaconManager.enablePeriodicScanning = config.enablePeriodicScanning
+        // Scanning mode is automatic based on app state (foreground/background)
         beaconManager.startScanning()
         startSyncTimer()
+        
+        // Enable background mechanisms (WorkManager + AlarmManager)
+        backgroundScheduler.enableAll()
+        
+        // Persist scanning state for recovery after kill/reboot
+        SDKConfigStorage.saveScanningEnabled(context, true)
 
-        if (config.enableBluetoothScanning) {
-            bluetoothManager.startScanning()
-        }
+        // Bluetooth metadata scanning: always attempt to start
+        bluetoothManager.startScanning()
     }
 
     fun stopScanning() {
         beaconManager.stopScanning()
         bluetoothManager.stopScanning()
         backgroundScanManager.disableBackgroundScanning()
+        backgroundScheduler.disableAll()
         stopSyncTimer()
+        
+        // Persist scanning state
+        SDKConfigStorage.saveScanningEnabled(context, false)
 
         syncBeacons()
     }
@@ -354,10 +361,8 @@ class BeAroundSDK private constructor() {
         beaconManager.startScanning()
         beaconManager.startRanging()
         
-        val config = configuration
-        if (config?.enableBluetoothScanning == true) {
-            bluetoothManager.startScanning()
-        }
+        // Always attempt Bluetooth scanning
+        bluetoothManager.startScanning()
     }
 
     internal fun stopQuickScan() {
@@ -453,7 +458,7 @@ class BeAroundSDK private constructor() {
         
         Log.d(TAG, "=== START SYNC TIMER ===")
         Log.d(TAG, "isInBackground: $isInBackground")
-        Log.d(TAG, "Periodic enabled: ${config.enablePeriodicScanning}")
+        Log.d(TAG, "Scanning mode: ${if (isInBackground) "continuous" else "periodic"}")
         
         stopSyncTimer()
         startCountdownTimer()
@@ -467,26 +472,28 @@ class BeAroundSDK private constructor() {
                 nextSyncTime = System.currentTimeMillis() + currentInterval
                 syncBeacons()
                 
-                // Periodic scanning works both in foreground and background
-                if (config.enablePeriodicScanning) {
+                // Periodic scanning in foreground only
+                if (!isInBackground) {
                     val scanDuration = config.scanDuration(isInBackground)
                     val delayUntilNextRanging = currentInterval - scanDuration
                     
                     handler.postDelayed({
                         beaconManager.stopRanging()
-                        delegate?.didUpdateBeacons(emptyList())
+                        listener?.onBeaconsUpdated(emptyList())
                     }, 100)
 
                     handler.postDelayed({
                         beaconManager.startRanging()
                     }, delayUntilNextRanging)
                 }
+                // In background: continuous scanning (no stop/start cycle)
                 
                 handler.postDelayed(this, currentInterval)
             }
         }
 
-        if (config.enablePeriodicScanning) {
+        if (!isInBackground) {
+            // Foreground: periodic scanning
             val scanDuration = config.scanDuration(isInBackground)
             val delayUntilFirstRanging = syncInterval - scanDuration
             nextSyncTime = System.currentTimeMillis() + syncInterval
@@ -497,6 +504,7 @@ class BeAroundSDK private constructor() {
             
             handler.postDelayed(syncRunnable!!, syncInterval)
         } else {
+            // Background: continuous scanning (just schedule the sync timer)
             nextSyncTime = System.currentTimeMillis() + syncInterval
             handler.postDelayed(syncRunnable!!, syncInterval)
         }
@@ -533,12 +541,12 @@ class BeAroundSDK private constructor() {
 
     private fun updateCountdown() {
         val nextSync = nextSyncTime ?: run {
-            delegate?.didUpdateSyncStatus(0, beaconManager.isScanning)
+            listener?.onSyncStatusUpdated(0, beaconManager.isScanning)
             return
         }
 
         val secondsRemaining = maxOf(0, ((nextSync - System.currentTimeMillis()) / 1000).toInt())
-        delegate?.didUpdateSyncStatus(secondsRemaining, beaconManager.isScanning)
+        listener?.onSyncStatusUpdated(secondsRemaining, beaconManager.isScanning)
     }
 
     private fun syncBeacons(forceBackground: Boolean = false) {
@@ -555,25 +563,54 @@ class BeAroundSDK private constructor() {
 
             val shouldRetryFailed = shouldRetryFailedBatches()
 
-            val beaconsToSend = beaconLock.withLock {
-                when {
-                    shouldRetryFailed && failedBatches.isNotEmpty() -> {
-                        failedBatches.removeAt(0)
+            val beaconsToSend: List<Beacon>
+            val isRetry: Boolean
+            
+            when {
+                shouldRetryFailed -> {
+                    // Try to load from persistent storage first (FIFO)
+                    val failedBatch = offlineBatchStorage.loadOldestBatch()
+                    if (failedBatch != null) {
+                        beaconsToSend = failedBatch
+                        isRetry = true
+                        Log.d(TAG, "Retrying failed batch with ${beaconsToSend.size} beacons")
+                    } else {
+                        // No failed batches, try collected beacons
+                        beaconsToSend = beaconLock.withLock {
+                            if (collectedBeacons.isNotEmpty()) {
+                                val batch = collectedBeacons.values.toList()
+                                collectedBeacons.clear()
+                                batch
+                            } else {
+                                emptyList()
+                            }
+                        }
+                        isRetry = false
                     }
-                    collectedBeacons.isNotEmpty() -> {
-                        val batch = collectedBeacons.values.toList()
-                        collectedBeacons.clear()
-                        batch
+                }
+                else -> {
+                    // Get collected beacons
+                    beaconsToSend = beaconLock.withLock {
+                        if (collectedBeacons.isNotEmpty()) {
+                            val batch = collectedBeacons.values.toList()
+                            collectedBeacons.clear()
+                            batch
+                        } else {
+                            emptyList()
+                        }
                     }
-                    else -> {
-                        return@launch
-                    }
+                    isRetry = false
                 }
             }
 
             if (beaconsToSend.isEmpty()) return@launch
 
             isSyncing = true
+            
+            // Notify listener that sync is starting
+            handler.post {
+                listener?.onSyncStarted(beaconsToSend.size)
+            }
 
             val locationPermission = getLocationPermissionStatus()
             val bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off"
@@ -594,45 +631,70 @@ class BeAroundSDK private constructor() {
                     onSuccess = {
                         consecutiveFailures = 0
                         lastFailureTime = null
+                        
+                        // If this was a retry, remove the batch from storage
+                        if (isRetry) {
+                            offlineBatchStorage.removeOldestBatch()
+                            Log.d(TAG, "Removed successful retry batch from storage")
+                        }
+                        
+                        // Notify listener of success
+                        handler.post {
+                            listener?.onSyncCompleted(beaconsToSend.size, success = true, error = null)
+                        }
                     },
                     onFailure = { error ->
                         Log.e(TAG, "Sync failed: ${error.message}")
-                        handleSyncFailure(beaconsToSend, error)
+                        handleSyncFailure(beaconsToSend, error, isRetry)
+                        
+                        // Notify listener of failure
+                        handler.post {
+                            listener?.onSyncCompleted(
+                                beaconsToSend.size, 
+                                success = false, 
+                                error = error as? Exception ?: Exception(error.message)
+                            )
+                        }
                     }
                 )
             }
         }
     }
 
-    private fun handleSyncFailure(beacons: List<Beacon>, error: Throwable) {
-        beaconLock.withLock {
-            consecutiveFailures++
-            lastFailureTime = System.currentTimeMillis()
+    private fun handleSyncFailure(beacons: List<Beacon>, error: Throwable, isRetry: Boolean) {
+        consecutiveFailures++
+        lastFailureTime = System.currentTimeMillis()
 
-            if (failedBatches.size < (configuration?.maxQueuedPayloads?.value ?: 100)) {
-                failedBatches.add(beacons)
+        // Save to persistent storage (only if not already a retry)
+        if (!isRetry) {
+            val saved = offlineBatchStorage.saveBatch(beacons)
+            if (saved) {
+                Log.d(TAG, "Saved failed batch to persistent storage (total: ${offlineBatchStorage.getBatchCount()})")
             } else {
-                failedBatches.removeAt(0)
-                failedBatches.add(beacons)
+                Log.e(TAG, "Failed to save batch to persistent storage")
             }
+        }
 
-            if (consecutiveFailures >= 10) {
-                val circuitBreakerError = Exception(
-                    "API unreachable after $consecutiveFailures consecutive failures"
-                )
-                handler.post {
-                    delegate?.didFailWithError(circuitBreakerError)
-                }
+        if (consecutiveFailures >= 10) {
+            val circuitBreakerError = Exception(
+                "API unreachable after $consecutiveFailures consecutive failures"
+            )
+            handler.post {
+                listener?.onError(circuitBreakerError)
             }
         }
 
         handler.post {
-            delegate?.didFailWithError(error as? Exception ?: Exception(error.message))
+            listener?.onError(error as? Exception ?: Exception(error.message))
         }
     }
 
     private fun shouldRetryFailedBatches(): Boolean {
-        val lastFailure = lastFailureTime ?: return false
+        // Check if there are batches in persistent storage
+        if (offlineBatchStorage.getBatchCount() == 0) return false
+        
+        val lastFailure = lastFailureTime ?: return true
+
         val timeSinceFailure = System.currentTimeMillis() - lastFailure
 
         val backoffDelay = minOf(
@@ -642,5 +704,71 @@ class BeAroundSDK private constructor() {
 
         return timeSinceFailure >= backoffDelay
     }
+    
+    // region Background Scheduler Support Methods
+    
+    /**
+     * Check if there are pending beacons to sync
+     * Used by WorkManager to decide if sync is needed
+     */
+    internal fun hasPendingBeacons(): Boolean {
+        val hasCollected = beaconLock.withLock { collectedBeacons.isNotEmpty() }
+        val hasStored = offlineBatchStorage.getBatchCount() > 0
+        return hasCollected || hasStored
+    }
+    
+    /**
+     * Get the number of pending batches
+     * Useful for debugging and status display
+     */
+    val pendingBatchCount: Int
+        get() = offlineBatchStorage.getBatchCount()
+    
+    /**
+     * Perform background sync
+     * Called by WorkManager and AlarmManager watchdog
+     */
+    internal fun performBackgroundSync() {
+        Log.d(TAG, "performBackgroundSync called")
+        syncBeacons(forceBackground = true)
+    }
+    
+    /**
+     * Check if scanning was previously enabled (before app kill/reboot)
+     */
+    internal fun wasScanningEnabled(): Boolean {
+        return SDKConfigStorage.loadScanningEnabled(context)
+    }
+    
+    /**
+     * Restart scanning from background (after app kill/reboot)
+     * Only starts beacon detection, not full UI updates
+     */
+    internal fun restartScanningFromBackground() {
+        Log.d(TAG, "restartScanningFromBackground called")
+        
+        if (!isConfigured) {
+            attemptConfigRestore()
+            if (!isConfigured) {
+                Log.w(TAG, "Cannot restart scanning - SDK not configured")
+                return
+            }
+        }
+        
+        val config = configuration ?: return
+        
+        // Scanning mode is automatic based on app state
+        beaconManager.startScanning()
+        
+        // Re-enable background mechanisms
+        backgroundScanManager.enableBackgroundScanning()
+        backgroundScheduler.enableAll()
+        
+        // Bluetooth scanning is always enabled in v2.2.0+
+        bluetoothManager.startScanning()
+        
+        Log.d(TAG, "Scanning restarted from background")
+    }
+    
+    // endregion
 }
-

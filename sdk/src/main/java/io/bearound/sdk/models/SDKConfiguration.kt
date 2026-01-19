@@ -11,9 +11,7 @@ data class SDKConfiguration(
     val appId: String,
     val foregroundScanInterval: ForegroundScanInterval = ForegroundScanInterval.SECONDS_15,
     val backgroundScanInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_30,
-    val maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
-    val enableBluetoothScanning: Boolean = false,
-    val enablePeriodicScanning: Boolean = true
+    val maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM
 ) {
     val apiBaseURL: String = "https://ingest.bearound.io"
 

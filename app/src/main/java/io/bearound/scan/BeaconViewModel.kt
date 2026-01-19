@@ -12,7 +12,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.bearound.sdk.BeAroundSDK
-import io.bearound.sdk.interfaces.BeAroundSDKDelegate
+import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.BackgroundScanInterval
 import io.bearound.sdk.models.ForegroundScanInterval
@@ -40,15 +40,13 @@ data class BeAroundScanState(
     val foregroundInterval: ForegroundScanInterval = ForegroundScanInterval.SECONDS_15,
     val backgroundInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_30,
     val maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
-    val enableBluetoothScanning: Boolean = false,
-    val enablePeriodicScanning: Boolean = true,
     val isInBackground: Boolean = false,
     val sortOption: BeaconSortOption = BeaconSortOption.PROXIMITY,
     val secondsUntilNextSync: Int = 0,
     val isRanging: Boolean = false
 )
 
-class BeaconViewModel(application: Application) : AndroidViewModel(application), BeAroundSDKDelegate {
+class BeaconViewModel(application: Application) : AndroidViewModel(application), BeAroundSDKListener {
     private val _state = MutableStateFlow(BeAroundScanState())
     val state: StateFlow<BeAroundScanState> = _state.asStateFlow()
 
@@ -57,9 +55,14 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     
     private var wasInBeaconRegion = false
     private var scanStartTime: Date? = null
+    private var previousListener: BeAroundSDKListener? = null
 
     init {
-        sdk.delegate = this
+        // Save the background listener (registered in Application)
+        previousListener = sdk.listener
+        
+        // Set this ViewModel as listener while UI is active
+        sdk.listener = this
         
         updatePermissionStatus()
         checkBluetoothStatus()
@@ -69,29 +72,31 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         configureSDK(
             _state.value.foregroundInterval,
             _state.value.backgroundInterval,
-            _state.value.maxQueuedPayloads,
-            _state.value.enableBluetoothScanning,
-            _state.value.enablePeriodicScanning
+            _state.value.maxQueuedPayloads
         )
         
         // Auto-start scanning
         startScanning()
     }
+    
+    override fun onCleared() {
+        super.onCleared()
+        // Restore background listener when ViewModel is destroyed
+        sdk.listener = previousListener
+        android.util.Log.d("BeaconViewModel", "ViewModel cleared - restored background listener")
+    }
 
     private fun configureSDK(
         foreground: ForegroundScanInterval,
         background: BackgroundScanInterval,
-        maxQueued: MaxQueuedPayloads,
-        enableBluetooth: Boolean,
-        enablePeriodic: Boolean
+        maxQueued: MaxQueuedPayloads
     ) {
         sdk.configure(
             businessToken = "your-business-token-here",
             foregroundScanInterval = foreground,
             backgroundScanInterval = background,
-            maxQueuedPayloads = maxQueued,
-            enableBluetoothScanning = enableBluetooth,
-            enablePeriodicScanning = enablePeriodic
+            maxQueuedPayloads = maxQueued
+            // Bluetooth scanning and periodic scanning are now automatic in v2.2.0
         )
     }
 
@@ -129,17 +134,13 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     fun updateConfiguration(
         foreground: ForegroundScanInterval,
         background: BackgroundScanInterval,
-        maxQueued: MaxQueuedPayloads,
-        enableBluetooth: Boolean,
-        enablePeriodic: Boolean
+        maxQueued: MaxQueuedPayloads
     ) {
-        configureSDK(foreground, background, maxQueued, enableBluetooth, enablePeriodic)
+        configureSDK(foreground, background, maxQueued)
         _state.value = _state.value.copy(
             foregroundInterval = foreground,
             backgroundInterval = background,
             maxQueuedPayloads = maxQueued,
-            enableBluetoothScanning = enableBluetooth,
-            enablePeriodicScanning = enablePeriodic,
             currentSyncInterval = (sdk.currentSyncInterval ?: 0L).toInt() / 1000,
             statusMessage = "Configuração atualizada"
         )
@@ -169,38 +170,27 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             "Contínuo"
         }
 
-    // BeAroundSDKDelegate methods
-    override fun didUpdateBeacons(beacons: List<Beacon>) {
-        android.util.Log.d("BeaconViewModel", "========================================")
-        android.util.Log.d("BeaconViewModel", "didUpdateBeacons CALLED")
-        android.util.Log.d("BeaconViewModel", "Received ${beacons.size} beacon(s) from SDK")
-        android.util.Log.d("BeaconViewModel", "Current thread: ${Thread.currentThread().name}")
-
+    // region BeAroundSDKListener Implementation
+    
+    override fun onBeaconsUpdated(beacons: List<Beacon>) {
         viewModelScope.launch {
-            android.util.Log.d("BeaconViewModel", "Inside viewModelScope.launch")
-
             val sortedBeacons = sortBeacons(beacons, _state.value.sortOption)
             val isNowInBeaconRegion = sortedBeacons.isNotEmpty()
 
-            android.util.Log.d("BeaconViewModel", "Sorted beacons: ${sortedBeacons.size}")
-            sortedBeacons.forEach { beacon ->
-                android.util.Log.d("BeaconViewModel", "  - ${beacon.identifier}: rssi=${beacon.rssi}, proximity=${beacon.proximity}")
-            }
-
-            // Detect region entry
+            // Detect region entry for notification
             val shouldNotify = isNowInBeaconRegion && !wasInBeaconRegion
             if (shouldNotify) {
                 scanStartTime?.let { startTime ->
                     val timeSinceStart = (Date().time - startTime.time) / 1000.0
                     if (timeSinceStart >= 2.0) {
-                        notificationManager.notifyBeaconRegionEntered(sortedBeacons.size)
+                        notificationManager.notifyBeaconDetected(sortedBeacons.size, isBackground = false)
                     }
                 }
             }
 
             wasInBeaconRegion = isNowInBeaconRegion
 
-            val newState = _state.value.copy(
+            _state.value = _state.value.copy(
                 beacons = sortedBeacons,
                 lastScanTime = Date(),
                 statusMessage = if (sortedBeacons.isEmpty()) {
@@ -209,20 +199,10 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
                     "${sortedBeacons.size} beacon${if (sortedBeacons.size == 1) "" else "s"}"
                 }
             )
-
-            android.util.Log.d("BeaconViewModel", "Updating state with ${sortedBeacons.size} beacons")
-            android.util.Log.d("BeaconViewModel", "Old state beacons count: ${_state.value.beacons.size}")
-            android.util.Log.d("BeaconViewModel", "New state beacons count: ${newState.beacons.size}")
-
-            _state.value = newState
-
-            android.util.Log.d("BeaconViewModel", "State updated successfully")
-            android.util.Log.d("BeaconViewModel", "Current state beacons: ${_state.value.beacons.size}")
-            android.util.Log.d("BeaconViewModel", "========================================")
         }
     }
 
-    override fun didFailWithError(error: Exception) {
+    override fun onError(error: Exception) {
         viewModelScope.launch {
             _state.value = _state.value.copy(
                 statusMessage = "Erro: ${error.message}"
@@ -230,16 +210,23 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
-    override fun didChangeScanning(isScanning: Boolean) {
+    override fun onScanningStateChanged(isScanning: Boolean) {
         viewModelScope.launch {
             _state.value = _state.value.copy(
                 isScanning = isScanning,
                 statusMessage = if (isScanning) "Scaneando..." else "Parado"
             )
+            
+            // Notify scanning state change
+            if (isScanning) {
+                notificationManager.notifyScanningStarted()
+            } else {
+                notificationManager.notifyScanningStopped()
+            }
         }
     }
 
-    override fun didUpdateSyncStatus(secondsUntilNextSync: Int, isRanging: Boolean) {
+    override fun onSyncStatusUpdated(secondsUntilNextSync: Int, isRanging: Boolean) {
         viewModelScope.launch {
             _state.value = _state.value.copy(
                 secondsUntilNextSync = secondsUntilNextSync,
@@ -249,7 +236,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         }
     }
     
-    override fun didChangeAppState(isInBackground: Boolean) {
+    override fun onAppStateChanged(isInBackground: Boolean) {
         viewModelScope.launch {
             _state.value = _state.value.copy(
                 isInBackground = isInBackground,
@@ -257,6 +244,26 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             )
         }
     }
+    
+    override fun onSyncStarted(beaconCount: Int) {
+        viewModelScope.launch {
+            notificationManager.notifyAPISyncStarted(beaconCount)
+        }
+    }
+    
+    override fun onSyncCompleted(beaconCount: Int, success: Boolean, error: Exception?) {
+        viewModelScope.launch {
+            notificationManager.notifyAPISyncCompleted(beaconCount, success)
+        }
+    }
+    
+    override fun onBeaconDetectedInBackground(beaconCount: Int) {
+        viewModelScope.launch {
+            notificationManager.notifyBeaconDetected(beaconCount, isBackground = true)
+        }
+    }
+    
+    // endregion
 
     private fun sortBeacons(beacons: List<Beacon>, option: BeaconSortOption): List<Beacon> {
         return when (option) {

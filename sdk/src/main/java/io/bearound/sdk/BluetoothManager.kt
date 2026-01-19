@@ -13,23 +13,20 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
-import io.bearound.sdk.interfaces.BluetoothManagerDelegate
+import io.bearound.sdk.interfaces.BluetoothManagerListener
 import io.bearound.sdk.models.BeaconMetadata
-import java.util.UUID
-import androidx.core.util.isEmpty
+import io.bearound.sdk.utilities.IBeaconParser
 
 /**
  * Manages Bluetooth LE scanning for beacon metadata
- * Similar to iOS BluetoothManager
  */
 class BluetoothManager(private val context: Context) {
     companion object {
         private const val TAG = "BeAroundSDK-BLEManager"
-        private val TARGET_UUID = UUID.fromString("E25B8D3C-947A-452F-A13F-589CB706D2E5")
         private const val DEDUPLICATION_INTERVAL = 1000L
     }
 
-    var delegate: BluetoothManagerDelegate? = null
+    var listener: BluetoothManagerListener? = null
     
     private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothLeScanner: BluetoothLeScanner? = null
@@ -64,7 +61,7 @@ class BluetoothManager(private val context: Context) {
     fun startScanning() {
         if (!isPoweredOn) {
             Log.w(TAG, "Cannot start scanning - Bluetooth not powered on")
-            delegate?.didUpdateBluetoothState(false)
+            listener?.onBluetoothStateChanged(false)
             return
         }
 
@@ -116,29 +113,14 @@ class BluetoothManager(private val context: Context) {
         // Check if RSSI is valid
         if (rssi == 127 || rssi == 0) return
 
-        // Parse iBeacon data from manufacturer data
-        val manufacturerData = scanRecord.manufacturerSpecificData
-        if (manufacturerData.isEmpty()) return
-
-        // Apple's manufacturer ID is 0x004C
-        val appleData = manufacturerData.get(0x004C) ?: return
-        if (appleData.size < 23) return
-
-        // Verify iBeacon identifier
-        if (appleData[0] != 0x02.toByte() || appleData[1] != 0x15.toByte()) return
-
-        // Parse UUID
-        val uuidBytes = appleData.copyOfRange(2, 18)
-        val uuid = bytesToUUID(uuidBytes)
-        if (uuid != TARGET_UUID) return
-
-        // Parse major and minor
-        val major = ((appleData[18].toInt() and 0xFF) shl 8) or (appleData[19].toInt() and 0xFF)
-        val minor = ((appleData[20].toInt() and 0xFF) shl 8) or (appleData[21].toInt() and 0xFF)
-        val txPower = appleData[22].toInt()
+        // Parse iBeacon data using utility class
+        val beaconData = IBeaconParser.parse(scanRecord, rssi) ?: return
+        
+        // Only process BeAround beacons
+        if (!IBeaconParser.isBeAroundBeacon(beaconData)) return
 
         // Check deduplication
-        if (!shouldProcessBeacon(uuid, major, minor)) return
+        if (!shouldProcessBeacon(beaconData)) return
 
         // Check if connectable
         val isConnectable = scanRecord.advertiseFlags and 0x02 != 0
@@ -147,16 +129,16 @@ class BluetoothManager(private val context: Context) {
         var metadata: BeaconMetadata? = null
         val deviceName = scanRecord.deviceName
         if (deviceName != null && deviceName.startsWith("B:")) {
-            metadata = parseBeaconMetadata(deviceName, txPower, rssi, isConnectable)
+            metadata = parseBeaconMetadata(deviceName, beaconData.txPower, rssi, isConnectable)
         }
 
-        // Notify delegate
-        delegate?.didDiscoverBeacon(
-            uuid = uuid,
-            major = major,
-            minor = minor,
+        // Notify listener
+        listener?.onBeaconDiscovered(
+            uuid = beaconData.uuid,
+            major = beaconData.major,
+            minor = beaconData.minor,
             rssi = rssi,
-            txPower = txPower,
+            txPower = beaconData.txPower,
             metadata = metadata,
             isConnectable = isConnectable
         )
@@ -196,8 +178,8 @@ class BluetoothManager(private val context: Context) {
         }
     }
 
-    private fun shouldProcessBeacon(uuid: UUID, major: Int, minor: Int): Boolean {
-        val key = "$uuid-$major-$minor"
+    private fun shouldProcessBeacon(beaconData: IBeaconParser.IBeaconData): Boolean {
+        val key = "${beaconData.uuid}-${beaconData.major}-${beaconData.minor}"
         val now = System.currentTimeMillis()
         
         val lastSeen = lastSeenBeacons[key]
@@ -210,12 +192,6 @@ class BluetoothManager(private val context: Context) {
 
         lastSeenBeacons[key] = now
         return true
-    }
-
-    private fun bytesToUUID(bytes: ByteArray): UUID {
-        val msb = bytes.take(8).fold(0L) { acc, byte -> (acc shl 8) or (byte.toLong() and 0xFF) }
-        val lsb = bytes.drop(8).take(8).fold(0L) { acc, byte -> (acc shl 8) or (byte.toLong() and 0xFF) }
-        return UUID(msb, lsb)
     }
 
     private fun checkPermissions(): Boolean {
@@ -240,4 +216,3 @@ class BluetoothManager(private val context: Context) {
         return bluetoothScanPermission && bluetoothConnectPermission
     }
 }
-

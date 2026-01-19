@@ -4,13 +4,13 @@ import io.bearound.sdk.models.BeaconMetadata
 import java.util.UUID
 
 /**
- * Delegate interface for Bluetooth manager events
+ * Listener interface for Bluetooth manager events
  */
-interface BluetoothManagerDelegate {
+interface BluetoothManagerListener {
     /**
      * Called when a beacon is discovered via BLE scanning
      */
-    fun didDiscoverBeacon(
+    fun onBeaconDiscovered(
         uuid: UUID,
         major: Int,
         minor: Int,
@@ -23,6 +23,5 @@ interface BluetoothManagerDelegate {
     /**
      * Called when Bluetooth state changes
      */
-    fun didUpdateBluetoothState(isPoweredOn: Boolean)
+    fun onBluetoothStateChanged(isPoweredOn: Boolean)
 }
-

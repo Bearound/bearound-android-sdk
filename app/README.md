@@ -62,10 +62,11 @@ val sdk = BeAroundSDK.getInstance(context)
 sdk.delegate = this
 
 sdk.configure(
-    appId = packageName,
-    syncInterval = 10000L,
-    enableBluetoothScanning = true,
-    enablePeriodicScanning = true
+    businessToken = "your-business-token",
+    foregroundScanInterval = ForegroundScanInterval.SECONDS_15,
+    backgroundScanInterval = BackgroundScanInterval.SECONDS_30,
+    maxQueuedPayloads = MaxQueuedPayloads.MEDIUM
+    // Bluetooth scanning and periodic scanning are now automatic in v2.2.0
 )
 ```
 

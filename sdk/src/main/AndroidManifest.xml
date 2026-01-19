@@ -21,6 +21,15 @@
 
     <!-- Notifications permission (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    
+    <!-- Boot completed permission for restart scanning after reboot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    
+    <!-- Alarm permission for exact alarms (Android 12+) -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" 
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM"
+        tools:ignore="ExactAlarm" />
 
     <!-- Required hardware features -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
@@ -34,6 +43,16 @@
             tools:targetApi="34">
             <intent-filter>
                 <action android:name="io.bearound.sdk.ACTION_BLUETOOTH_SCAN" />
+            </intent-filter>
+        </receiver>
+        
+        <!-- Watchdog Receiver for AlarmManager + Boot Completed -->
+        <receiver 
+            android:name="io.bearound.sdk.background.ScanWatchdogReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="io.bearound.sdk.ACTION_WATCHDOG" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
     </application>

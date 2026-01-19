@@ -131,4 +131,10 @@ dependencies {
     
     // Security for encrypted storage (similar to iOS Keychain)
     implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+    
+    // WorkManager for periodic background sync
+    implementation 'androidx.work:work-runtime-ktx:2.9.0'
+    
+    // Gson for JSON serialization (offline batch storage)
+    implementation 'com.google.code.gson:gson:2.13.2'
 }

@@ -16,11 +16,8 @@ object SDKConfigStorage {
     private const val KEY_FOREGROUND_INTERVAL = "foreground_interval"
     private const val KEY_BACKGROUND_INTERVAL = "background_interval"
     private const val KEY_MAX_QUEUED_PAYLOADS = "max_queued_payloads"
-    private const val KEY_ENABLE_BLUETOOTH = "enable_bluetooth"
-    private const val KEY_ENABLE_PERIODIC = "enable_periodic"
     private const val KEY_IS_CONFIGURED = "is_configured"
-    
-    // Legacy key for migration
+    private const val KEY_SCANNING_ENABLED = "scanning_enabled"
     private const val KEY_SYNC_INTERVAL = "sync_interval"
     
     private fun getPrefs(context: Context): SharedPreferences {
@@ -33,8 +30,6 @@ object SDKConfigStorage {
             putLong(KEY_FOREGROUND_INTERVAL, config.foregroundScanInterval.milliseconds)
             putLong(KEY_BACKGROUND_INTERVAL, config.backgroundScanInterval.milliseconds)
             putInt(KEY_MAX_QUEUED_PAYLOADS, config.maxQueuedPayloads.value)
-            putBoolean(KEY_ENABLE_BLUETOOTH, config.enableBluetoothScanning)
-            putBoolean(KEY_ENABLE_PERIODIC, config.enablePeriodicScanning)
             putBoolean(KEY_IS_CONFIGURED, true)
             apply()
         }
@@ -82,9 +77,7 @@ object SDKConfigStorage {
             appId = appId,
             foregroundScanInterval = foregroundInterval,
             backgroundScanInterval = backgroundInterval,
-            maxQueuedPayloads = maxQueuedPayloads,
-            enableBluetoothScanning = prefs.getBoolean(KEY_ENABLE_BLUETOOTH, false),
-            enablePeriodicScanning = prefs.getBoolean(KEY_ENABLE_PERIODIC, true)
+            maxQueuedPayloads = maxQueuedPayloads
         )
     }
     
@@ -94,6 +87,25 @@ object SDKConfigStorage {
     
     fun isConfigured(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_IS_CONFIGURED, false)
+    }
+    
+    /**
+     * Save scanning enabled state
+     * Used to restore scanning after app kill or device reboot
+     */
+    fun saveScanningEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().apply {
+            putBoolean(KEY_SCANNING_ENABLED, enabled)
+            apply()
+        }
+    }
+    
+    /**
+     * Load scanning enabled state
+     * Returns true if scanning was enabled before app kill/reboot
+     */
+    fun loadScanningEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_SCANNING_ENABLED, false)
     }
 }
 

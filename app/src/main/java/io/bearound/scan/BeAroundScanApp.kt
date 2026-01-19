@@ -127,8 +127,8 @@ fun BeAroundScanApp(viewModel: BeaconViewModel = viewModel()) {
                             }
                         }
                     },
-                    onConfigurationChange = { fg, bg, queue, bluetooth, periodic ->
-                        viewModel.updateConfiguration(fg, bg, queue, bluetooth, periodic)
+                    onConfigurationChange = { fg, bg, queue ->
+                        viewModel.updateConfiguration(fg, bg, queue)
                     },
                     onSortOptionChange = { viewModel.changeSortOption(it) }
                 )
@@ -276,14 +276,8 @@ fun ScanInfoCard(state: BeAroundScanState, viewModel: BeaconViewModel) {
             InfoRow(label = "FG Interval:", value = "${state.foregroundInterval.milliseconds / 1000}s")
             InfoRow(label = "BG Interval:", value = "${state.backgroundInterval.milliseconds / 1000}s")
             InfoRow(label = "Fila de retry:", value = "${state.maxQueuedPayloads.value} batches")
-            InfoRow(
-                label = "Bluetooth Metadata:",
-                value = if (state.enableBluetoothScanning) "Ligado" else "Desligado"
-            )
-            InfoRow(
-                label = "Scan Periódico:",
-                value = if (state.enablePeriodicScanning) "Ligado" else "Desligado"
-            )
+            InfoRow(label = "Bluetooth Metadata:", value = "Automático")
+            InfoRow(label = "Scan Periódico:", value = if (state.isInBackground) "Desligado (BG)" else "Ligado (FG)")
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
@@ -352,7 +346,7 @@ fun InfoRow(label: String, value: String, valueColor: Color = MaterialTheme.colo
 fun ControlsCard(
     state: BeAroundScanState,
     onStartStop: () -> Unit,
-    onConfigurationChange: (ForegroundScanInterval, BackgroundScanInterval, MaxQueuedPayloads, Boolean, Boolean) -> Unit,
+    onConfigurationChange: (ForegroundScanInterval, BackgroundScanInterval, MaxQueuedPayloads) -> Unit,
     onSortOptionChange: (BeaconSortOption) -> Unit
 ) {
     Card(
@@ -423,7 +417,7 @@ fun ControlsCard(
                             DropdownMenuItem(
                                 text = { Text("${interval.milliseconds / 1000}s") },
                                 onClick = {
-                                    onConfigurationChange(interval, state.backgroundInterval, state.maxQueuedPayloads, state.enableBluetoothScanning, state.enablePeriodicScanning)
+                                    onConfigurationChange(interval, state.backgroundInterval, state.maxQueuedPayloads)
                                     expanded = false
                                 }
                             )
@@ -469,7 +463,7 @@ fun ControlsCard(
                             DropdownMenuItem(
                                 text = { Text("${interval.milliseconds / 1000}s") },
                                 onClick = {
-                                    onConfigurationChange(state.foregroundInterval, interval, state.maxQueuedPayloads, state.enableBluetoothScanning, state.enablePeriodicScanning)
+                                    onConfigurationChange(state.foregroundInterval, interval, state.maxQueuedPayloads)
                                     expanded = false
                                 }
                             )
@@ -526,7 +520,7 @@ fun ControlsCard(
                             DropdownMenuItem(
                                 text = { Text(label) },
                                 onClick = {
-                                    onConfigurationChange(state.foregroundInterval, state.backgroundInterval, size, state.enableBluetoothScanning, state.enablePeriodicScanning)
+                                    onConfigurationChange(state.foregroundInterval, state.backgroundInterval, size)
                                     expanded = false
                                 }
                             )
@@ -535,69 +529,9 @@ fun ControlsCard(
                 }
             }
             
-            // Bluetooth Scanning Switch
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Bluetooth Metadata",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        text = "Coleta bateria, firmware e temperatura",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = state.enableBluetoothScanning,
-                    onCheckedChange = { enabled ->
-                        onConfigurationChange(
-                            state.foregroundInterval,
-                            state.backgroundInterval,
-                            state.maxQueuedPayloads,
-                            enabled,
-                            state.enablePeriodicScanning
-                        )
-                    }
-                )
-            }
-            
-            // Periodic Scanning Switch
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Scan Periódico",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        text = "Melhora consumo de bateria",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = state.enablePeriodicScanning,
-                    onCheckedChange = { enabled ->
-                        onConfigurationChange(
-                            state.foregroundInterval,
-                            state.backgroundInterval,
-                            state.maxQueuedPayloads,
-                            state.enableBluetoothScanning,
-                            enabled
-                        )
-                    }
-                )
-            }
+            // Note: Bluetooth Metadata and Periodic Scanning are now automatic in v2.2.0
+            // - Bluetooth: Always enabled when permissions granted
+            // - Periodic: Enabled in foreground, disabled in background
             
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
