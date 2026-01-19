@@ -1,5 +1,6 @@
 package io.bearound.sdk.background
 
+import android.annotation.SuppressLint
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
@@ -35,6 +36,7 @@ class BackgroundScheduler private constructor(private val context: Context) {
         private const val WATCHDOG_INTERVAL_MS = 15 * 60 * 1000L // 15 minutes
         private const val PENDING_INTENT_REQUEST_CODE = 19921
         
+        @SuppressLint("StaticFieldLeak")
         @Volatile
         private var instance: BackgroundScheduler? = null
         
