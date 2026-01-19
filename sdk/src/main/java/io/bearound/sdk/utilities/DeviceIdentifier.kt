@@ -15,6 +15,9 @@ object DeviceIdentifier {
     private const val TAG = "BeAroundSDK-DeviceId"
     private const val STORAGE_KEY = "io.bearound.sdk.deviceId"
     private var cachedDeviceId: String? = null
+    private var cachedAdTrackingEnabled: Boolean? = null
+    private var cachedAdvertisingId: String? = null
+    private var adInfoFetched = false
 
     fun getDeviceId(): String {
         cachedDeviceId?.let { return it }
@@ -32,31 +35,68 @@ object DeviceIdentifier {
         return uuid
     }
 
+    /**
+     * Get advertising ID asynchronously with caching
+     */
     suspend fun getAdvertisingId(context: Context): String? {
+        // Return cached value if already fetched
+        if (adInfoFetched) {
+            return cachedAdvertisingId
+        }
+        
         return try {
             withContext(Dispatchers.IO) {
                 val adInfo = AdvertisingIdClient.getAdvertisingIdInfo(context)
+                
+                // Cache the results
+                cachedAdTrackingEnabled = !adInfo.isLimitAdTrackingEnabled
+                adInfoFetched = true
+                
                 if (!adInfo.isLimitAdTrackingEnabled && adInfo.id != null) {
                     Log.d(TAG, "GAID available")
+                    cachedAdvertisingId = adInfo.id
                     adInfo.id
                 } else {
+                    cachedAdvertisingId = null
                     null
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to get GAID: ${e.message}")
+            adInfoFetched = true
+            cachedAdvertisingId = null
             null
         }
     }
 
-    fun isAdTrackingEnabled(context: Context): Boolean {
-        return try {
-            val adInfo = AdvertisingIdClient.getAdvertisingIdInfo(context)
-            !adInfo.isLimitAdTrackingEnabled
-        } catch (e: Exception) {
-            Log.w(TAG, "isAdTrackingEnabled: ${e.message}")
-            false
-        }
+    /**
+     * Check if ad tracking is enabled (uses cached value if available)
+     * This is now non-blocking after the first call to getAdvertisingId
+     */
+    fun isAdTrackingEnabled(): Boolean {
+        // Return cached value if available (already fetched asynchronously)
+        cachedAdTrackingEnabled?.let { return it }
+        
+        // Default to false if not yet fetched
+        // The actual value will be fetched when getAdvertisingId is called
+        return false
+    }
+    
+    /**
+     * Prefetch advertising info asynchronously
+     * Call this early in app lifecycle to have cached values ready
+     */
+    suspend fun prefetchAdInfo(context: Context) {
+        if (adInfoFetched) return
+        getAdvertisingId(context)
+    }
+    
+    /**
+     * Clear cached values (useful for testing)
+     */
+    fun clearCache() {
+        cachedAdTrackingEnabled = null
+        cachedAdvertisingId = null
+        adInfoFetched = false
     }
 }
-

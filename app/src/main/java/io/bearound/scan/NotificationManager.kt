@@ -4,18 +4,55 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import java.util.Date
 
+/**
+ * Manages local notifications for BeAround Scan app.
+ * Handles beacon detection, scanning state, and API sync notifications with cooldown logic.
+ */
 class NotificationManager(private val context: Context) {
     companion object {
+        private const val TAG = "NotificationManager"
         private const val CHANNEL_ID = "beacon_detection"
         private const val CHANNEL_NAME = "Beacon Detection"
-        private const val NOTIFICATION_COOLDOWN = 300000L // 5 minutes in milliseconds
+        
+        // Notification IDs
+        private const val NOTIFICATION_ID_SCANNING = 1001
+        private const val NOTIFICATION_ID_BEACON = 1002
+        private const val NOTIFICATION_ID_SYNC = 1003
+        private const val NOTIFICATION_ID_BACKGROUND = 1004
     }
 
-    private var lastNotificationDate: Date? = null
+    private enum class NotificationIdentifier {
+        SCANNING_STARTED,
+        SCANNING_STOPPED,
+        BEACON_DETECTED,
+        BEACON_DETECTED_BACKGROUND,
+        API_SYNC_STARTED,
+        API_SYNC_SUCCESS,
+        API_SYNC_FAILED,
+        APP_RELAUNCHED
+    }
+
+    private val lastNotificationDates = mutableMapOf<NotificationIdentifier, Date>()
+    private val cooldowns = mapOf(
+        NotificationIdentifier.SCANNING_STARTED to 10000L,
+        NotificationIdentifier.SCANNING_STOPPED to 10000L,
+        NotificationIdentifier.BEACON_DETECTED to 300000L,
+        NotificationIdentifier.BEACON_DETECTED_BACKGROUND to 60000L,
+        NotificationIdentifier.API_SYNC_STARTED to 30000L,
+        NotificationIdentifier.API_SYNC_SUCCESS to 60000L,
+        NotificationIdentifier.API_SYNC_FAILED to 30000L,
+        NotificationIdentifier.APP_RELAUNCHED to 60000L
+    )
+
+    var enableScanningNotifications = true
+    var enableBeaconNotifications = true
+    var enableAPISyncNotifications = true
+    var enableBackgroundNotifications = true
 
     init {
         createNotificationChannel()
@@ -28,7 +65,7 @@ class NotificationManager(private val context: Context) {
                 CHANNEL_NAME,
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Notificações quando beacons são detectados"
+                description = "Notificações do BeAround SDK"
             }
 
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -36,31 +73,157 @@ class NotificationManager(private val context: Context) {
         }
     }
 
-    fun notifyBeaconRegionEntered(beaconCount: Int) {
-        // Avoid too frequent notifications
-        lastNotificationDate?.let { lastDate ->
-            val timeSinceLastNotification = Date().time - lastDate.time
-            if (timeSinceLastNotification < NOTIFICATION_COOLDOWN) {
-                println("[NotificationManager] Notification ignored - too recent (${timeSinceLastNotification / 1000}s ago)")
-                return
-            }
+    fun notifyScanningStarted() {
+        if (!enableScanningNotifications) return
+        if (!canSendNotification(NotificationIdentifier.SCANNING_STARTED)) return
+
+        sendNotification(
+            id = NOTIFICATION_ID_SCANNING,
+            identifier = NotificationIdentifier.SCANNING_STARTED,
+            title = "Escaneamento Iniciado",
+            body = "BeAroundSDK está escaneando beacons",
+            withSound = true
+        )
+    }
+
+    fun notifyScanningStopped() {
+        if (!enableScanningNotifications) return
+        if (!canSendNotification(NotificationIdentifier.SCANNING_STOPPED)) return
+
+        sendNotification(
+            id = NOTIFICATION_ID_SCANNING,
+            identifier = NotificationIdentifier.SCANNING_STOPPED,
+            title = "Escaneamento Parado",
+            body = "BeAroundSDK parou de escanear",
+            withSound = true
+        )
+    }
+
+    fun notifyBeaconDetected(beaconCount: Int, isBackground: Boolean = false) {
+        if (!enableBeaconNotifications) return
+
+        val identifier = if (isBackground) {
+            NotificationIdentifier.BEACON_DETECTED_BACKGROUND
+        } else {
+            NotificationIdentifier.BEACON_DETECTED
+        }
+        
+        if (!canSendNotification(identifier)) return
+
+        val title = if (isBackground) "Beacon Detectado (Background)" else "Beacon Detectado"
+        val body = "Encontrado $beaconCount beacon${if (beaconCount == 1) "" else "s"} próximo${if (beaconCount == 1) "" else "s"}"
+
+        sendNotification(
+            id = NOTIFICATION_ID_BEACON,
+            identifier = identifier,
+            title = title,
+            body = body,
+            withSound = true,
+            badge = beaconCount
+        )
+    }
+
+    fun notifyAPISyncStarted(beaconCount: Int) {
+        if (!enableAPISyncNotifications) return
+        if (!canSendNotification(NotificationIdentifier.API_SYNC_STARTED)) return
+
+        sendNotification(
+            id = NOTIFICATION_ID_SYNC,
+            identifier = NotificationIdentifier.API_SYNC_STARTED,
+            title = "Sincronizando",
+            body = "Enviando $beaconCount beacon${if (beaconCount == 1) "" else "s"} para o servidor",
+            withSound = false
+        )
+    }
+
+    fun notifyAPISyncCompleted(beaconCount: Int, success: Boolean) {
+        if (!enableAPISyncNotifications) return
+
+        val identifier = if (success) {
+            NotificationIdentifier.API_SYNC_SUCCESS
+        } else {
+            NotificationIdentifier.API_SYNC_FAILED
+        }
+        
+        if (!canSendNotification(identifier)) return
+
+        val title = if (success) "Sync Completo" else "Sync Falhou"
+        val body = if (success) {
+            "$beaconCount beacon${if (beaconCount == 1) "" else "s"} enviado${if (beaconCount == 1) "" else "s"} com sucesso"
+        } else {
+            "Falha ao enviar $beaconCount beacon${if (beaconCount == 1) "" else "s"}. Tentando novamente."
         }
 
+        sendNotification(
+            id = NOTIFICATION_ID_SYNC,
+            identifier = identifier,
+            title = title,
+            body = body,
+            withSound = !success  // Sound only on failure
+        )
+    }
+
+    fun notifyAppRelaunchedInBackground() {
+        if (!enableBackgroundNotifications) return
+        if (!canSendNotification(NotificationIdentifier.APP_RELAUNCHED)) return
+
+        sendNotification(
+            id = NOTIFICATION_ID_BACKGROUND,
+            identifier = NotificationIdentifier.APP_RELAUNCHED,
+            title = "App Reativado",
+            body = "BeAroundSDK detectou região de beacons em segundo plano",
+            withSound = true
+        )
+    }
+
+    private fun canSendNotification(identifier: NotificationIdentifier): Boolean {
+        val lastDate = lastNotificationDates[identifier] ?: return true
+        val cooldown = cooldowns[identifier] ?: return true
+        
+        val elapsed = Date().time - lastDate.time
+        if (elapsed < cooldown) {
+            Log.d(TAG, "Cooldown ativo para ${identifier.name} (${(cooldown - elapsed) / 1000}s restantes)")
+            return false
+        }
+        
+        return true
+    }
+
+    private fun sendNotification(
+        id: Int,
+        identifier: NotificationIdentifier,
+        title: String,
+        body: String,
+        withSound: Boolean,
+        badge: Int? = null
+    ) {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("Beacon Detectado")
-            .setContentText("Você entrou na zona de $beaconCount beacon${if (beaconCount == 1) "" else "s"}")
+            .setContentTitle(title)
+            .setContentText(body)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
+            .apply {
+                if (withSound) {
+                    setDefaults(NotificationCompat.DEFAULT_SOUND)
+                }
+                if (badge != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    setNumber(badge)
+                }
+            }
             .build()
 
         try {
-            NotificationManagerCompat.from(context).notify(beaconCount, notification)
-            lastNotificationDate = Date()
-            println("[NotificationManager] Notification sent: $beaconCount beacon(s) detected")
+            NotificationManagerCompat.from(context).notify(id, notification)
+            lastNotificationDates[identifier] = Date()
+            Log.d(TAG, "Notificação enviada: $title - $body")
         } catch (e: SecurityException) {
-            println("[NotificationManager] Failed to send notification: ${e.message}")
+            Log.e(TAG, "Falha ao enviar notificação: ${e.message}")
         }
+    }
+
+    fun clearAllNotifications() {
+        NotificationManagerCompat.from(context).cancelAll()
     }
 }
 

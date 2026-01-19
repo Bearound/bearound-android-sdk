@@ -13,22 +13,18 @@ import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
 import io.bearound.sdk.models.Beacon
+import io.bearound.sdk.utilities.IBeaconParser
 import java.util.Date
-import java.util.UUID
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.math.pow
-import androidx.core.util.size
-import androidx.core.util.isEmpty
 
 /**
  * Manages beacon scanning using Android's Bluetooth LE APIs
- * Similar to iOS BeaconManager
  */
 class BeaconManager(private val context: Context) {
     companion object {
         private const val TAG = "BeAroundSDK-BeaconM"
-        private val BEACON_UUID = UUID.fromString("E25B8D3C-947A-452F-A13F-589CB706D2E5")
         private const val BEACON_TIMEOUT_FOREGROUND = 5000L
         private const val BEACON_TIMEOUT_BACKGROUND = 10000L
         private const val WATCHDOG_INTERVAL = 30000L
@@ -42,7 +38,6 @@ class BeaconManager(private val context: Context) {
     private var isInForeground = true
     private var isInBeaconRegion = false
     
-    var enablePeriodicScanning = false
     var lastLocation: Location? = null
 
     // Callbacks
@@ -174,9 +169,9 @@ class BeaconManager(private val context: Context) {
         val filters = listOf(
             ScanFilter.Builder()
                 .setManufacturerData(
-                    0x004C,
-                    byteArrayOf(0x02, 0x15),
-                    byteArrayOf(0xFF.toByte(), 0xFF.toByte())
+                    IBeaconParser.APPLE_MANUFACTURER_ID,
+                    IBeaconParser.IBEACON_PREFIX,
+                    IBeaconParser.IBEACON_MASK
                 )
                 .build()
         )
@@ -218,46 +213,37 @@ class BeaconManager(private val context: Context) {
     }
 
     private fun startMonitoring() {
-        if (!enablePeriodicScanning) {
+        // Periodic scanning in foreground (controlled by external timer in BeAroundSDK)
+        // Continuous scanning in background (always ranging)
+        if (!isInForeground) {
             startRanging()
-            if (!isInForeground) {
-                startRangingRefreshTimer()
-            }
+            startRangingRefreshTimer()
         }
+        // In foreground: ranging is controlled by BeAroundSDK's sync timer
     }
 
     private fun processScanResult(result: ScanResult) {
         val scanRecord = result.scanRecord ?: return
-        val manufacturerData = scanRecord.manufacturerSpecificData
-        if (manufacturerData.isEmpty()) return
+        
+        // Parse iBeacon data using utility class
+        val beaconData = IBeaconParser.parse(scanRecord, result.rssi) ?: return
+        
+        // Only process BeAround beacons
+        if (!IBeaconParser.isBeAroundBeacon(beaconData)) return
 
-        val appleData = manufacturerData.get(0x004C) ?: return
-        if (appleData.size < 23) return
-
-        if (appleData[0] != 0x02.toByte() || appleData[1] != 0x15.toByte()) return
-
-        val uuidBytes = appleData.copyOfRange(2, 18)
-        val uuid = bytesToUUID(uuidBytes)
-        if (uuid != BEACON_UUID) return
-
-        val major = ((appleData[18].toInt() and 0xFF) shl 8) or (appleData[19].toInt() and 0xFF)
-        val minor = ((appleData[20].toInt() and 0xFF) shl 8) or (appleData[21].toInt() and 0xFF)
-        val txPower = appleData[22].toInt()
-        val rssi = result.rssi
-
-        val accuracy = calculateAccuracy(txPower, rssi)
+        val accuracy = calculateAccuracy(beaconData.txPower, beaconData.rssi)
         val proximity = calculateProximity(accuracy)
 
         val beacon = Beacon(
-            uuid = uuid,
-            major = major,
-            minor = minor,
-            rssi = rssi,
+            uuid = beaconData.uuid,
+            major = beaconData.major,
+            minor = beaconData.minor,
+            rssi = beaconData.rssi,
             proximity = proximity,
             accuracy = accuracy,
             timestamp = Date(),
             metadata = null,
-            txPower = txPower
+            txPower = beaconData.txPower
         )
 
         processBeacon(beacon)
@@ -320,12 +306,6 @@ class BeaconManager(private val context: Context) {
             accuracy < 3.0 -> Beacon.Proximity.NEAR
             else -> Beacon.Proximity.FAR
         }
-    }
-
-    private fun bytesToUUID(bytes: ByteArray): UUID {
-        val msb = bytes.take(8).fold(0L) { acc, byte -> (acc shl 8) or (byte.toLong() and 0xFF) }
-        val lsb = bytes.drop(8).take(8).fold(0L) { acc, byte -> (acc shl 8) or (byte.toLong() and 0xFF) }
-        return UUID(msb, lsb)
     }
 
     private fun startWatchdog() {
@@ -428,4 +408,3 @@ class BeaconManager(private val context: Context) {
         return locationPermission && bluetoothScanPermission
     }
 }
-

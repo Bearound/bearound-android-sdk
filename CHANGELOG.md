@@ -7,6 +7,170 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-01-17
+
+### ⚠️ Breaking Changes
+
+- **Removed `enableBluetoothScanning` parameter**: Bluetooth metadata scanning is now always enabled when available
+- **Removed `enablePeriodicScanning` parameter**: Periodic scanning behavior is now automatic based on app state
+
+**Before (v2.1.x):**
+```kotlin
+sdk.configure(
+    businessToken = "token",
+    foregroundScanInterval = ForegroundScanInterval.SECONDS_30,
+    backgroundScanInterval = BackgroundScanInterval.SECONDS_90,
+    maxQueuedPayloads = MaxQueuedPayloads.LARGE,
+    enableBluetoothScanning = true,    // ❌ REMOVED
+    enablePeriodicScanning = true      // ❌ REMOVED
+)
+```
+
+**After (v2.2.0):**
+```kotlin
+sdk.configure(
+    businessToken = "token",
+    foregroundScanInterval = ForegroundScanInterval.SECONDS_30,
+    backgroundScanInterval = BackgroundScanInterval.SECONDS_90,
+    maxQueuedPayloads = MaxQueuedPayloads.LARGE
+)
+// Bluetooth scanning: always attempts to connect
+// Periodic scanning: automatic (enabled in foreground, disabled in background)
+```
+
+### Added
+
+- **WorkManager Integration**: Periodic background sync every 15 minutes
+  - Uses `androidx.work:work-runtime-ktx:2.9.0`
+  - Network-aware: only syncs when network is available
+  - Survives app kill and device reboot
+  - Complements Bluetooth Scan Broadcast for Android < 14
+  
+- **AlarmManager Watchdog**: Secondary mechanism for reliable background operation
+  - Fires every 15 minutes using `setExactAndAllowWhileIdle`
+  - Restarts scanning if it was stopped unexpectedly
+  - Syncs pending beacons as fallback
+  - Works in Doze mode
+  
+- **Boot Completed Receiver**: Automatic restart after device reboot
+  - Restores SDK configuration from storage
+  - Re-enables scanning if it was active before reboot
+  - Re-schedules WorkManager and AlarmManager tasks
+
+- **Automatic Bluetooth Scanning**: Bluetooth metadata collection is now always enabled
+  - SDK automatically attempts to connect to beacons for metadata (firmware, battery, etc.)
+  - No configuration needed - works automatically when permissions are granted
+  
+- **Automatic Periodic Scanning**: Smart scanning based on app state
+  - **Foreground**: Periodic scanning enabled (battery efficient)
+  - **Background**: Continuous scanning (better detection for WorkManager/Broadcast triggers)
+  - No manual configuration required - adapts automatically
+
+- **Persistent Batch Storage**: Failed batches now saved to disk (like iOS)
+  - New `OfflineBatchStorage` class for persistent failed batch storage
+  - Stores batches as JSON files in app's private directory
+  - FIFO ordering (oldest batch sent first)
+  - Auto-cleanup of batches older than 7 days
+  - Survives app kill, device reboot, and crashes
+  - Thread-safe operations with `ReentrantLock`
+  - Respects `maxQueuedPayloads` from configuration
+
+- **Sync Lifecycle Callbacks**: New listener methods for sync monitoring
+  - `onSyncStarted(beaconCount: Int)` - Called before sync starts
+  - `onSyncCompleted(beaconCount: Int, success: Boolean, error: Exception?)` - Called after sync
+  - Enables apps to show notifications or UI updates for sync events
+  
+- **Background Detection Callback**: New listener method for background beacon detection
+  - `onBeaconDetectedInBackground(beaconCount: Int)` - Called when beacons detected in background
+  - Enables apps to send notifications even when app is closed
+
+- **Scanning State Persistence**: New methods in `SDKConfigStorage`
+  - `saveScanningEnabled(context, enabled)` - Persist scanning state
+  - `loadScanningEnabled(context)` - Restore scanning state
+  - Enables proper recovery after app kill/reboot
+
+- **BackgroundScheduler**: Unified manager for all background mechanisms
+  - `enableAll()` - Enable WorkManager + AlarmManager
+  - `disableAll()` - Disable all background tasks
+  - `schedulePeriodicSync()` - Configure WorkManager
+  - `scheduleWatchdogAlarm()` - Configure AlarmManager
+  - Singleton pattern with proper lifecycle management
+
+### Removed
+
+- **`enableBluetoothScanning` parameter from `configure()`**: Bluetooth scanning now automatic
+- **`enablePeriodicScanning` parameter from `configure()`**: Periodic scanning now automatic based on app state
+- **`setBluetoothScanning(enabled)` method**: No longer needed (always enabled)
+- **`isBluetoothScanningEnabled` property**: No longer relevant
+
+### Changed
+
+- **startScanning()**: Now also enables WorkManager and AlarmManager
+- **Bluetooth scanning**: Now always attempts to start (no manual toggle needed)
+- **Periodic scanning**: Automatically enabled in foreground, disabled in background
+- **stopScanning()**: Now also disables WorkManager and AlarmManager
+- **Failed batch handling**: Replaced in-memory `failedBatches` list with persistent `OfflineBatchStorage`
+  - Batches are now saved to disk instead of RAM
+  - Survives app termination and device reboot
+  - Better reliability for offline scenarios
+- **AndroidManifest.xml**: Added new permissions and receivers
+  - `RECEIVE_BOOT_COMPLETED` - For restart after reboot
+  - `SCHEDULE_EXACT_ALARM` (Android 12-13)
+  - `USE_EXACT_ALARM` (Android 14+)
+  - `ScanWatchdogReceiver` for AlarmManager and Boot events
+
+### Dependencies
+
+- **WorkManager**: `androidx.work:work-runtime-ktx:2.9.0`
+- **Gson**: `com.google.code.gson:gson:2.10.1` (for offline batch storage)
+
+### Background Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│               Android Background Mechanisms                   │
+├──────────────┬──────────────┬──────────────┬────────────────┤
+│ Bluetooth    │  WorkManager │ AlarmManager │ Boot Completed │
+│ Scan Broad-  │  (periodic)  │  (watchdog)  │  (reboot)      │
+│ cast (14+)   │              │              │                │
+└──────┬───────┴──────┬───────┴──────┬───────┴───────┬────────┘
+       │              │              │               │
+       ▼              ▼              ▼               ▼
+┌──────────────────────────────────────────────────────────────┐
+│                      BeAroundSDK                             │
+│                                                              │
+│  - processBroadcastResults() ← Bluetooth Broadcast           │
+│  - performBackgroundSync()   ← WorkManager/AlarmManager      │
+│  - restartScanningFromBackground() ← Boot/Watchdog           │
+│                                                              │
+│                    ↓ All converge to ↓                       │
+│                      syncBeacons()                           │
+│                           ↓                                  │
+│            [Success] → API → Remove from storage             │
+│            [Failure] → OfflineBatchStorage (persistent)      │
+│                           ↓                                  │
+│              timestamp_uuid.json files (FIFO)                │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Timing Behavior
+
+| Mechanism | Interval | Guaranteed? | Works in Doze? |
+|-----------|----------|-------------|----------------|
+| Bluetooth Scan Broadcast | Real-time | ✅ Yes (Android 14+) | ✅ Yes |
+| WorkManager | ~15 min | ⚠️ Opportunistic | ✅ Yes |
+| AlarmManager | ~15 min | ✅ Exact* | ✅ Yes |
+
+*Exact alarms may be limited to 1/15min in Doze mode
+
+### Notes
+
+- No notification required for any of these mechanisms
+- All mechanisms are complementary and work together
+- Battery impact is minimal due to intelligent scheduling
+
+---
+
 ## [2.1.0] - 2026-01-13
 
 ### ⚠️ Breaking Changes
@@ -28,7 +192,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Replaces fixed limit of 10 with configurable options
   - Each batch can contain multiple beacons from a single sync
 
-- **App State Delegate**: New `didChangeAppState(isInBackground: Boolean)` callback in `BeAroundSDKDelegate`
+- **App State Listener**: New `onAppStateChanged(isInBackground: Boolean)` callback in `BeAroundSDKListener`
   - Notifies when app transitions between foreground and background
 
 ### Changed
@@ -195,6 +359,7 @@ This is a **major breaking release** with a complete rewrite of the BeAround And
 
 **Core Components:**
 - **`BeAroundSDK`** - Main singleton class (replaces `BeAround`)
+- **`BeAroundSDKListener`** - Listener interface for SDK callbacks
 - **`BeaconManager`** - Native Android Bluetooth LE scanning (no external dependencies)
 - **`BluetoothManager`** - BLE metadata collection (battery, firmware, temperature)
 - **`APIClient`** - HTTP communication with BeAround backend
@@ -303,7 +468,7 @@ dependencies {
 
 **UI Update Issues:**
 - **Fixed**: UI not updating when beacons detected
-- **Solution**: Proper delegate callback flow from BeaconManager → BeAroundSDK → App
+- **Solution**: Proper listener callback flow from BeaconManager → BeAroundSDK → App
 - **Impact**: Real-time beacon updates now work correctly
 
 #### 📱 New Sample App
@@ -339,34 +504,35 @@ beAround.initialize(
     debug = true
 )
 
-// NEW (v2.0)
+// NEW (v2.2)
 val sdk = BeAroundSDK.getInstance(context)
-sdk.delegate = this // implement BeAroundSDKDelegate
+sdk.listener = this // implement BeAroundSDKListener
 sdk.configure(
-    appId = "your-app-id",
-    syncInterval = 30000L, // milliseconds
-    enableBluetoothScanning = true,
-    enablePeriodicScanning = true
+    businessToken = "your-business-token",
+    foregroundScanInterval = ForegroundScanInterval.SECONDS_15,
+    backgroundScanInterval = BackgroundScanInterval.SECONDS_30,
+    maxQueuedPayloads = MaxQueuedPayloads.MEDIUM
+    // Bluetooth and periodic scanning are now automatic
 )
 sdk.startScanning()
 ```
 
-**3. Implement New Delegate:**
+**3. Implement New Listener:**
 ```kotlin
-class MainActivity : AppCompatActivity(), BeAroundSDKDelegate {
+class MainActivity : AppCompatActivity(), BeAroundSDKListener {
     
-    override fun didUpdateBeacons(beacons: List<Beacon>) {
+    override fun onBeaconsUpdated(beacons: List<Beacon>) {
         // Handle beacon updates
         beacons.forEach { beacon ->
             Log.d("Beacon", "${beacon.identifier}: rssi=${beacon.rssi}, proximity=${beacon.proximity}")
         }
     }
     
-    override fun didUpdateSyncStatus(secondsUntilSync: Int, isScanning: Boolean) {
+    override fun onSyncStatusUpdated(secondsUntilSync: Int, isScanning: Boolean) {
         // Update UI with sync countdown
     }
     
-    override fun didFailWithError(error: Throwable) {
+    override fun onError(error: Exception) {
         // Handle errors
     }
 }
@@ -385,9 +551,9 @@ class MainActivity : AppCompatActivity(), BeAroundSDKDelegate {
 ```
 
 **5. Removed Features:**
-- Listener interfaces (BeaconListener, SyncListener, RegionListener) - replaced with single BeAroundSDKDelegate
+- Listener interfaces (BeaconListener, SyncListener, RegionListener) - replaced with single BeAroundSDKListener
 - Notification management - now handled by app
-- Event type system - simplified to delegate callbacks
+- Event type system - simplified to listener callbacks
 - Backup list configuration - replaced with internal retry logic
 
 #### 📚 Documentation

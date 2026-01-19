@@ -60,7 +60,7 @@ class DeviceInfoCollector(
             ramAvailableMb = getRamAvailableMb(),
             screenWidth = getScreenWidth(),
             screenHeight = getScreenHeight(),
-            adTrackingEnabled = DeviceIdentifier.isAdTrackingEnabled(context),
+            adTrackingEnabled = DeviceIdentifier.isAdTrackingEnabled(),
             appInForeground = appInForeground,
             appUptimeMs = System.currentTimeMillis() - appStartTime,
             coldStart = isColdStart,
@@ -213,9 +213,79 @@ class DeviceInfoCollector(
 
     @SuppressLint("MissingPermission")
     private fun getWifiSSID(): String? {
-        // Note: Requires ACCESS_FINE_LOCATION permission on Android 10+
-        // Returns null if permission not granted
-        return null // Simplified for now
+        // WiFi SSID requires ACCESS_FINE_LOCATION on Android 10+
+        // Check if we have location permission
+        val hasLocationPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        
+        if (!hasLocationPermission) {
+            return null
+        }
+        
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Android 12+ (API 31): Use ConnectivityManager with NetworkCapabilities
+                getWifiSSIDFromConnectivityManager()
+            } else {
+                // Android 10-11 (API 29-30): Use WifiManager
+                getWifiSSIDFromWifiManager()
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+    
+    @SuppressLint("MissingPermission")
+    private fun getWifiSSIDFromWifiManager(): String? {
+        return try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+            val wifiInfo = wifiManager?.connectionInfo
+            
+            if (wifiInfo != null && wifiInfo.networkId != -1) {
+                // SSID comes with quotes, remove them
+                val ssid = wifiInfo.ssid
+                if (ssid != null && ssid != "<unknown ssid>") {
+                    ssid.removeSurrounding("\"")
+                } else {
+                    null
+                }
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+    
+    @SuppressLint("MissingPermission")
+    private fun getWifiSSIDFromConnectivityManager(): String? {
+        return try {
+            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val network = connectivityManager.activeNetwork ?: return null
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return null
+            
+            if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                return null
+            }
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // On Android 10+, try to get WifiInfo from TransportInfo
+                val transportInfo = capabilities.transportInfo
+                if (transportInfo is android.net.wifi.WifiInfo) {
+                    val ssid = transportInfo.ssid
+                    if (ssid != null && ssid != "<unknown ssid>") {
+                        return ssid.removeSurrounding("\"")
+                    }
+                }
+            }
+            
+            // Fallback to WifiManager
+            getWifiSSIDFromWifiManager()
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun isConnectionMetered(): Boolean {
@@ -294,6 +364,7 @@ class DeviceInfoCollector(
         }
     }
 
+    @SuppressLint("UsableSpace")
     private fun getAvailableStorageMb(): Long? {
         return try {
             val dataDir = context.filesDir
@@ -322,4 +393,3 @@ class DeviceInfoCollector(
         }
     }
 }
-

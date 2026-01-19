@@ -246,18 +246,3 @@ class APIClient(private val configuration: SDKConfiguration) {
         return payload
     }
 }
-
-sealed class APIError : Exception() {
-    object InvalidURL : APIError() {
-        override val message: String = "Invalid API URL"
-    }
-
-    object InvalidResponse : APIError() {
-        override val message: String = "Invalid server response"
-    }
-
-    data class HTTPError(val statusCode: Int) : APIError() {
-        override val message: String = "HTTP error: $statusCode"
-    }
-}
-
