@@ -28,7 +28,8 @@
     <!-- Alarm permission for exact alarms (Android 12+) -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" 
         android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM"
+        tools:ignore="ExactAlarm" />
 
     <!-- Required hardware features -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
