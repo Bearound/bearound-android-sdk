@@ -15,6 +15,7 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import io.bearound.sdk.background.BackgroundScanManager
+import io.bearound.sdk.background.BackgroundScheduler
 import io.bearound.sdk.interfaces.BeAroundSDKDelegate
 import io.bearound.sdk.interfaces.BluetoothManagerDelegate
 import io.bearound.sdk.models.BackgroundScanInterval
@@ -72,6 +73,7 @@ class BeAroundSDK private constructor() {
     private lateinit var beaconManager: BeaconManager
     private lateinit var bluetoothManager: BluetoothManager
     private lateinit var backgroundScanManager: BackgroundScanManager
+    private lateinit var backgroundScheduler: BackgroundScheduler
     private var apiClient: APIClient? = null
 
     private val metadataCache = mutableMapOf<String, BeaconMetadata>()
@@ -137,6 +139,7 @@ class BeAroundSDK private constructor() {
         beaconManager = BeaconManager(context)
         bluetoothManager = BluetoothManager(context)
         backgroundScanManager = BackgroundScanManager(context)
+        backgroundScheduler = BackgroundScheduler.getInstance(context)
 
         setupCallbacks()
         setupLifecycleObserver()
@@ -317,6 +320,12 @@ class BeAroundSDK private constructor() {
         beaconManager.enablePeriodicScanning = config.enablePeriodicScanning
         beaconManager.startScanning()
         startSyncTimer()
+        
+        // Enable background mechanisms (WorkManager + AlarmManager)
+        backgroundScheduler.enableAll()
+        
+        // Persist scanning state for recovery after kill/reboot
+        SDKConfigStorage.saveScanningEnabled(context, true)
 
         if (config.enableBluetoothScanning) {
             bluetoothManager.startScanning()
@@ -327,7 +336,11 @@ class BeAroundSDK private constructor() {
         beaconManager.stopScanning()
         bluetoothManager.stopScanning()
         backgroundScanManager.disableBackgroundScanning()
+        backgroundScheduler.disableAll()
         stopSyncTimer()
+        
+        // Persist scanning state
+        SDKConfigStorage.saveScanningEnabled(context, false)
 
         syncBeacons()
     }
@@ -641,6 +654,67 @@ class BeAroundSDK private constructor() {
         )
 
         return timeSinceFailure >= backoffDelay
+    }
+    
+    // =========================================================================
+    // BACKGROUND SCHEDULER SUPPORT METHODS
+    // =========================================================================
+    
+    /**
+     * Check if there are pending beacons to sync
+     * Used by WorkManager to decide if sync is needed
+     */
+    internal fun hasPendingBeacons(): Boolean {
+        return beaconLock.withLock {
+            collectedBeacons.isNotEmpty() || failedBatches.isNotEmpty()
+        }
+    }
+    
+    /**
+     * Perform background sync
+     * Called by WorkManager and AlarmManager watchdog
+     */
+    internal fun performBackgroundSync() {
+        Log.d(TAG, "performBackgroundSync called")
+        syncBeacons(forceBackground = true)
+    }
+    
+    /**
+     * Check if scanning was previously enabled (before app kill/reboot)
+     */
+    internal fun wasScanningEnabled(): Boolean {
+        return SDKConfigStorage.loadScanningEnabled(context)
+    }
+    
+    /**
+     * Restart scanning from background (after app kill/reboot)
+     * Only starts beacon detection, not full UI updates
+     */
+    internal fun restartScanningFromBackground() {
+        Log.d(TAG, "restartScanningFromBackground called")
+        
+        if (!isConfigured) {
+            attemptConfigRestore()
+            if (!isConfigured) {
+                Log.w(TAG, "Cannot restart scanning - SDK not configured")
+                return
+            }
+        }
+        
+        val config = configuration ?: return
+        
+        beaconManager.enablePeriodicScanning = config.enablePeriodicScanning
+        beaconManager.startScanning()
+        
+        // Re-enable background mechanisms
+        backgroundScanManager.enableBackgroundScanning()
+        backgroundScheduler.enableAll()
+        
+        if (config.enableBluetoothScanning) {
+            bluetoothManager.startScanning()
+        }
+        
+        Log.d(TAG, "Scanning restarted from background")
     }
 }
 

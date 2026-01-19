@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-01-17
+
+### Added
+
+- **WorkManager Integration**: Periodic background sync every 15 minutes
+  - Uses `androidx.work:work-runtime-ktx:2.9.0`
+  - Network-aware: only syncs when network is available
+  - Survives app kill and device reboot
+  - Complements Bluetooth Scan Broadcast for Android < 14
+  
+- **AlarmManager Watchdog**: Secondary mechanism for reliable background operation
+  - Fires every 15 minutes using `setExactAndAllowWhileIdle`
+  - Restarts scanning if it was stopped unexpectedly
+  - Syncs pending beacons as fallback
+  - Works in Doze mode
+  
+- **Boot Completed Receiver**: Automatic restart after device reboot
+  - Restores SDK configuration from storage
+  - Re-enables scanning if it was active before reboot
+  - Re-schedules WorkManager and AlarmManager tasks
+
+- **Scanning State Persistence**: New methods in `SDKConfigStorage`
+  - `saveScanningEnabled(context, enabled)` - Persist scanning state
+  - `loadScanningEnabled(context)` - Restore scanning state
+  - Enables proper recovery after app kill/reboot
+
+- **BackgroundScheduler**: Unified manager for all background mechanisms
+  - `enableAll()` - Enable WorkManager + AlarmManager
+  - `disableAll()` - Disable all background tasks
+  - `schedulePeriodicSync()` - Configure WorkManager
+  - `scheduleWatchdogAlarm()` - Configure AlarmManager
+  - Singleton pattern with proper lifecycle management
+
+### Changed
+
+- **startScanning()**: Now also enables WorkManager and AlarmManager
+- **stopScanning()**: Now also disables WorkManager and AlarmManager
+- **AndroidManifest.xml**: Added new permissions and receivers
+  - `RECEIVE_BOOT_COMPLETED` - For restart after reboot
+  - `SCHEDULE_EXACT_ALARM` (Android 12-13)
+  - `USE_EXACT_ALARM` (Android 14+)
+  - `ScanWatchdogReceiver` for AlarmManager and Boot events
+
+### Background Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│               Android Background Mechanisms                   │
+├──────────────┬──────────────┬──────────────┬────────────────┤
+│ Bluetooth    │  WorkManager │ AlarmManager │ Boot Completed │
+│ Scan Broad-  │  (periodic)  │  (watchdog)  │  (reboot)      │
+│ cast (14+)   │              │              │                │
+└──────┬───────┴──────┬───────┴──────┬───────┴───────┬────────┘
+       │              │              │               │
+       ▼              ▼              ▼               ▼
+┌──────────────────────────────────────────────────────────────┐
+│                      BeAroundSDK                             │
+│                                                              │
+│  - processBroadcastResults() ← Bluetooth Broadcast           │
+│  - performBackgroundSync()   ← WorkManager/AlarmManager      │
+│  - restartScanningFromBackground() ← Boot/Watchdog           │
+│                                                              │
+│                    ↓ All converge to ↓                       │
+│                      syncBeacons() → API                     │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Timing Behavior
+
+| Mechanism | Interval | Guaranteed? | Works in Doze? |
+|-----------|----------|-------------|----------------|
+| Bluetooth Scan Broadcast | Real-time | ✅ Yes (Android 14+) | ✅ Yes |
+| WorkManager | ~15 min | ⚠️ Opportunistic | ✅ Yes |
+| AlarmManager | ~15 min | ✅ Exact* | ✅ Yes |
+
+*Exact alarms may be limited to 1/15min in Doze mode
+
+### Notes
+
+- No notification required for any of these mechanisms
+- All mechanisms are complementary and work together
+- Battery impact is minimal due to intelligent scheduling
+
+---
+
 ## [2.1.0] - 2026-01-13
 
 ### ⚠️ Breaking Changes

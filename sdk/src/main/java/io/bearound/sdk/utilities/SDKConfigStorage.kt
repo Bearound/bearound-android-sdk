@@ -19,6 +19,7 @@ object SDKConfigStorage {
     private const val KEY_ENABLE_BLUETOOTH = "enable_bluetooth"
     private const val KEY_ENABLE_PERIODIC = "enable_periodic"
     private const val KEY_IS_CONFIGURED = "is_configured"
+    private const val KEY_SCANNING_ENABLED = "scanning_enabled"
     
     // Legacy key for migration
     private const val KEY_SYNC_INTERVAL = "sync_interval"
@@ -94,6 +95,25 @@ object SDKConfigStorage {
     
     fun isConfigured(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_IS_CONFIGURED, false)
+    }
+    
+    /**
+     * Save scanning enabled state
+     * Used to restore scanning after app kill or device reboot
+     */
+    fun saveScanningEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().apply {
+            putBoolean(KEY_SCANNING_ENABLED, enabled)
+            apply()
+        }
+    }
+    
+    /**
+     * Load scanning enabled state
+     * Returns true if scanning was enabled before app kill/reboot
+     */
+    fun loadScanningEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_SCANNING_ENABLED, false)
     }
 }
 
