@@ -21,11 +21,6 @@ interface BeAroundSDKListener {
      * Called when scanning state changes
      */
     fun onScanningStateChanged(isScanning: Boolean) {}
-
-    /**
-     * Called periodically to update sync status
-     */
-    fun onSyncStatusUpdated(secondsUntilNextSync: Int, isRanging: Boolean) {}
     
     /**
      * Called when app state changes between foreground and background

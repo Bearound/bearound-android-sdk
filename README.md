@@ -146,10 +146,6 @@ class MainActivity : AppCompatActivity(), BeAroundSDKListener {
     override fun onScanningStateChanged(isScanning: Boolean) {
         Log.d("BeAround", "Scanning: $isScanning")
     }
-    
-    override fun onSyncStatusUpdated(secondsUntilNextSync: Int, isRanging: Boolean) {
-        Log.d("BeAround", "Next sync in: ${secondsUntilNextSync}s, Ranging: $isRanging")
-    }
 }
 ```
 
@@ -391,7 +387,6 @@ interface BeAroundSDKListener {
     // Optional (with default implementations)
     fun onError(error: Exception) {}
     fun onScanningStateChanged(isScanning: Boolean) {}
-    fun onSyncStatusUpdated(secondsUntilNextSync: Int, isRanging: Boolean) {}
     fun onAppStateChanged(isInBackground: Boolean) {}
     
     // Sync Lifecycle (v2.2.0)
@@ -449,11 +444,11 @@ data class Beacon(
     val metadata: BeaconMetadata?,
     val txPower: Int?
 ) {
-    enum class Proximity {
-        IMMEDIATE,
-        NEAR,
-        FAR,
-        UNKNOWN
+enum class Proximity {
+    IMMEDIATE,
+    NEAR,
+    FAR,
+    UNKNOWN
     }
 }
 ```
@@ -576,7 +571,6 @@ beAround.addBeaconListener(object : BeaconListener {
 // NEW (v2.2)
 class MainActivity : AppCompatActivity(), BeAroundSDKListener {
     override fun onBeaconsUpdated(beacons: List<Beacon>) { }
-    override fun onSyncStatusUpdated(secondsUntilSync: Int, isScanning: Boolean) { }
     override fun onError(error: Exception) { }
 }
 ```

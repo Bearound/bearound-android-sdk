@@ -90,9 +90,7 @@ override fun didChangeScanning(isScanning: Boolean) {
     // Atualiza estado de scanning
 }
 
-override fun didUpdateSyncStatus(secondsUntilNextSync: Int, isRanging: Boolean) {
-    // Atualiza countdown e status
-}
+// onSyncStatusUpdated removed in v2.2.0 for battery optimization
 ```
 
 ### Informações do SDK

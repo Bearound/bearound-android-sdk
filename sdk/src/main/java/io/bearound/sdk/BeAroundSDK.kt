@@ -85,8 +85,6 @@ class BeAroundSDK private constructor() {
     private val handler = Handler(Looper.getMainLooper())
 
     private var syncRunnable: Runnable? = null
-    private var countdownRunnable: Runnable? = null
-    private var nextSyncTime: Long? = null
 
     private var isSyncing = false
     private lateinit var offlineBatchStorage: OfflineBatchStorage
@@ -122,7 +120,7 @@ class BeAroundSDK private constructor() {
             
             val buildNumber = try {
                 context.packageManager.getPackageInfo(context.packageName, 0).versionCode
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 1
             }
             sdkInfo = SDKInfo(appId = savedConfig.appId, build = buildNumber)
@@ -280,7 +278,7 @@ class BeAroundSDK private constructor() {
 
         val buildNumber = try {
             context.packageManager.getPackageInfo(context.packageName, 0).versionCode
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             1
         }
 
@@ -456,26 +454,27 @@ class BeAroundSDK private constructor() {
     private fun startSyncTimer() {
         val config = configuration ?: return
         
+        // Capture current background state - this won't change during this timer's lifecycle
+        // When app state changes, restartSyncTimer() is called which creates a new timer
+        val backgroundMode = isInBackground
+        
         Log.d(TAG, "=== START SYNC TIMER ===")
-        Log.d(TAG, "isInBackground: $isInBackground")
-        Log.d(TAG, "Scanning mode: ${if (isInBackground) "continuous" else "periodic"}")
+        Log.d(TAG, "isInBackground: $backgroundMode")
+        Log.d(TAG, "Scanning mode: ${if (backgroundMode) "continuous" else "periodic"}")
         
         stopSyncTimer()
-        startCountdownTimer()
 
-        val syncInterval = config.syncInterval(isInBackground)
+        val syncInterval = config.syncInterval(backgroundMode)
         Log.d(TAG, "Sync interval to use: ${syncInterval}ms (${syncInterval/1000}s)")
         
         syncRunnable = object : Runnable {
             override fun run() {
-                val currentInterval = config.syncInterval(isInBackground)
-                nextSyncTime = System.currentTimeMillis() + currentInterval
                 syncBeacons()
                 
                 // Periodic scanning in foreground only
-                if (!isInBackground) {
-                    val scanDuration = config.scanDuration(isInBackground)
-                    val delayUntilNextRanging = currentInterval - scanDuration
+                if (!backgroundMode) {
+                    val scanDuration = config.scanDuration(false)
+                    val delayUntilNextRanging = syncInterval - scanDuration
                     
                     handler.postDelayed({
                         beaconManager.stopRanging()
@@ -488,15 +487,14 @@ class BeAroundSDK private constructor() {
                 }
                 // In background: continuous scanning (no stop/start cycle)
                 
-                handler.postDelayed(this, currentInterval)
+                handler.postDelayed(this, syncInterval)
             }
         }
 
-        if (!isInBackground) {
+        if (!backgroundMode) {
             // Foreground: periodic scanning
-            val scanDuration = config.scanDuration(isInBackground)
+            val scanDuration = config.scanDuration(false)
             val delayUntilFirstRanging = syncInterval - scanDuration
-            nextSyncTime = System.currentTimeMillis() + syncInterval
             
             handler.postDelayed({
                 beaconManager.startRanging()
@@ -505,7 +503,6 @@ class BeAroundSDK private constructor() {
             handler.postDelayed(syncRunnable!!, syncInterval)
         } else {
             // Background: continuous scanning (just schedule the sync timer)
-            nextSyncTime = System.currentTimeMillis() + syncInterval
             handler.postDelayed(syncRunnable!!, syncInterval)
         }
     }
@@ -519,34 +516,6 @@ class BeAroundSDK private constructor() {
     private fun stopSyncTimer() {
         syncRunnable?.let { handler.removeCallbacks(it) }
         syncRunnable = null
-    }
-
-    private fun startCountdownTimer() {
-        stopCountdownTimer()
-        
-        countdownRunnable = object : Runnable {
-            override fun run() {
-                updateCountdown()
-                handler.postDelayed(this, 1000)
-            }
-        }
-        handler.post(countdownRunnable!!)
-    }
-
-    private fun stopCountdownTimer() {
-        countdownRunnable?.let { handler.removeCallbacks(it) }
-        countdownRunnable = null
-        nextSyncTime = null
-    }
-
-    private fun updateCountdown() {
-        val nextSync = nextSyncTime ?: run {
-            listener?.onSyncStatusUpdated(0, beaconManager.isScanning)
-            return
-        }
-
-        val secondsRemaining = maxOf(0, ((nextSync - System.currentTimeMillis()) / 1000).toInt())
-        listener?.onSyncStatusUpdated(secondsRemaining, beaconManager.isScanning)
     }
 
     private fun syncBeacons(forceBackground: Boolean = false) {

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-01-20
+
+### ⚠️ Breaking Changes
+
+- **Removed `onSyncStatusUpdated` callback**: Countdown updates every second were consuming unnecessary battery. Apps should no longer rely on this callback for UI updates.
+
 ## [2.2.0] - 2026-01-17
 
 ### ⚠️ Breaking Changes
@@ -526,10 +532,6 @@ class MainActivity : AppCompatActivity(), BeAroundSDKListener {
         beacons.forEach { beacon ->
             Log.d("Beacon", "${beacon.identifier}: rssi=${beacon.rssi}, proximity=${beacon.proximity}")
         }
-    }
-    
-    override fun onSyncStatusUpdated(secondsUntilSync: Int, isScanning: Boolean) {
-        // Update UI with sync countdown
     }
     
     override fun onError(error: Exception) {
