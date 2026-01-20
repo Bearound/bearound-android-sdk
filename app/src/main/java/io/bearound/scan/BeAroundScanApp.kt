@@ -281,19 +281,13 @@ fun ScanInfoCard(state: BeAroundScanState, viewModel: BeaconViewModel) {
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-            InfoRow(
-                label = "Envio para API em:",
-                value = "${state.secondsUntilNextSync}s",
-                valueColor = MaterialTheme.colorScheme.primary
-            )
-
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Ranging:",
+                    text = "Status:",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -305,15 +299,15 @@ fun ScanInfoCard(state: BeAroundScanState, viewModel: BeaconViewModel) {
                         modifier = Modifier
                             .size(6.dp)
                             .background(
-                                color = if (state.isRanging) Color(0xFF4CAF50) else Color(0xFFFF9800),
+                                color = if (state.isScanning) Color(0xFF4CAF50) else Color(0xFFFF9800),
                                 shape = CircleShape
                             )
                     )
                     Text(
-                        text = if (state.isRanging) "Ativo" else "Pausado",
+                        text = if (state.isScanning) "Escaneando" else "Parado",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
-                        color = if (state.isRanging) Color(0xFF4CAF50) else Color(0xFFFF9800)
+                        color = if (state.isScanning) Color(0xFF4CAF50) else Color(0xFFFF9800)
                     )
                 }
             }

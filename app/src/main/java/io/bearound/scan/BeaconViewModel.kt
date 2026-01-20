@@ -41,9 +41,7 @@ data class BeAroundScanState(
     val backgroundInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_30,
     val maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
     val isInBackground: Boolean = false,
-    val sortOption: BeaconSortOption = BeaconSortOption.PROXIMITY,
-    val secondsUntilNextSync: Int = 0,
-    val isRanging: Boolean = false
+    val sortOption: BeaconSortOption = BeaconSortOption.PROXIMITY
 )
 
 class BeaconViewModel(application: Application) : AndroidViewModel(application), BeAroundSDKListener {
@@ -226,16 +224,6 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
-    override fun onSyncStatusUpdated(secondsUntilNextSync: Int, isRanging: Boolean) {
-        viewModelScope.launch {
-            _state.value = _state.value.copy(
-                secondsUntilNextSync = secondsUntilNextSync,
-                isRanging = isRanging,
-                currentSyncInterval = (sdk.currentSyncInterval ?: 0L).toInt() / 1000
-            )
-        }
-    }
-    
     override fun onAppStateChanged(isInBackground: Boolean) {
         viewModelScope.launch {
             _state.value = _state.value.copy(
