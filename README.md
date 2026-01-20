@@ -6,7 +6,7 @@
 
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by BeAround.
 
-## Version 2.2.0
+## Version 2.2.1
 
 Latest version with enhanced background support and simplified API. Automatic Bluetooth scanning, smart periodic scanning based on app state, WorkManager integration, and AlarmManager watchdog.
 
@@ -63,7 +63,7 @@ dependencyResolutionManagement {
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:v2.2.0'
+    implementation 'com.github.Bearound:bearound-android-sdk:v2.2.1'
 }
 ```
 
@@ -525,7 +525,7 @@ Version 2.0.x introduces breaking changes. Follow these steps to migrate:
 implementation 'com.github.Bearound:bearound-android-sdk:1.3.2'
 
 // NEW (v2.2+)
-implementation 'com.github.Bearound:bearound-android-sdk:v2.2.0'
+implementation 'com.github.Bearound:bearound-android-sdk:v2.2.1'
 ```
 
 ### 2. Update AndroidManifest.xml
@@ -631,6 +631,11 @@ beacon.metadata  // new: battery, firmware, temperature
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
+
+### Version 2.2.1 (2026-01-20)
+
+- ⚠️ **Breaking**: Removed `onSyncStatusUpdated` callback (battery optimization - was firing every second)
+- 🔧 Fixed lint warnings in sync timer logic
 
 ### Version 2.2.0 (2026-01-17)
 
