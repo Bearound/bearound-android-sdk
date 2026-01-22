@@ -32,9 +32,17 @@ data class SDKConfiguration(
      * Calculate scan duration based on current sync interval (1/3 of sync interval)
      * @param isInBackground Whether the app is in background
      * @return The scan duration in milliseconds (min 5s, max 10s)
+     * 
+     * Special case: For 5s interval in foreground, returns full 5s (continuous mode)
      */
     fun scanDuration(isInBackground: Boolean): Long {
         val interval = syncInterval(isInBackground)
+        
+        // Special case: 5s interval = continuous mode (no pause)
+        if (!isInBackground && interval == 5000L) {
+            return interval
+        }
+        
         val calculatedDuration = interval / 3
         return max(5000L, min(calculatedDuration, 10000L))
     }

@@ -467,40 +467,52 @@ class BeAroundSDK private constructor() {
         val syncInterval = config.syncInterval(backgroundMode)
         Log.d(TAG, "Sync interval to use: ${syncInterval}ms (${syncInterval/1000}s)")
         
+        // Check if continuous mode (5s interval = no stop/start cycling)
+        val isContinuousMode = !backgroundMode && syncInterval == 5000L
+        
         syncRunnable = object : Runnable {
             override fun run() {
                 syncBeacons()
                 
-                // Periodic scanning in foreground only
-                if (!backgroundMode) {
+                // Periodic scanning in foreground only (not in continuous mode)
+                if (!backgroundMode && !isContinuousMode) {
                     val scanDuration = config.scanDuration(false)
                     val delayUntilNextRanging = syncInterval - scanDuration
                     
-                    handler.postDelayed({
-                        beaconManager.stopRanging()
-                        listener?.onBeaconsUpdated(emptyList())
-                    }, 100)
+                    // Only stop ranging if there's a pause period
+                    if (delayUntilNextRanging > 0) {
+                        handler.postDelayed({
+                            beaconManager.stopRanging()
+                            // DON'T clear the UI - keep showing collected beacons
+                        }, 100)
 
-                    handler.postDelayed({
-                        beaconManager.startRanging()
-                    }, delayUntilNextRanging)
+                        handler.postDelayed({
+                            beaconManager.startRanging()
+                        }, delayUntilNextRanging)
+                    }
                 }
-                // In background: continuous scanning (no stop/start cycle)
+                // In continuous mode or background: no stop/start cycle
                 
                 handler.postDelayed(this, syncInterval)
             }
         }
 
         if (!backgroundMode) {
-            // Foreground: periodic scanning
-            val scanDuration = config.scanDuration(false)
-            val delayUntilFirstRanging = syncInterval - scanDuration
-            
-            handler.postDelayed({
+            if (isContinuousMode) {
+                // Continuous mode: start ranging immediately, no cycling
                 beaconManager.startRanging()
-            }, delayUntilFirstRanging)
-            
-            handler.postDelayed(syncRunnable!!, syncInterval)
+                handler.postDelayed(syncRunnable!!, syncInterval)
+            } else {
+                // Periodic scanning: delay first ranging
+                val scanDuration = config.scanDuration(false)
+                val delayUntilFirstRanging = syncInterval - scanDuration
+                
+                handler.postDelayed({
+                    beaconManager.startRanging()
+                }, delayUntilFirstRanging)
+                
+                handler.postDelayed(syncRunnable!!, syncInterval)
+            }
         } else {
             // Background: continuous scanning (just schedule the sync timer)
             handler.postDelayed(syncRunnable!!, syncInterval)
@@ -548,7 +560,7 @@ class BeAroundSDK private constructor() {
                         beaconsToSend = beaconLock.withLock {
                             if (collectedBeacons.isNotEmpty()) {
                                 val batch = collectedBeacons.values.toList()
-                                collectedBeacons.clear()
+                                // DON'T clear - keep beacons for continuous updates
                                 batch
                             } else {
                                 emptyList()
@@ -562,7 +574,7 @@ class BeAroundSDK private constructor() {
                     beaconsToSend = beaconLock.withLock {
                         if (collectedBeacons.isNotEmpty()) {
                             val batch = collectedBeacons.values.toList()
-                            collectedBeacons.clear()
+                            // DON'T clear - keep beacons for continuous updates
                             batch
                         } else {
                             emptyList()
