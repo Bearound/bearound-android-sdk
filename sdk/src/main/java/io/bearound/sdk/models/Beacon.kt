@@ -21,12 +21,14 @@ data class Beacon(
         IMMEDIATE,
         NEAR,
         FAR,
+        BT,
         UNKNOWN;
 
         fun toApiString(): String = when (this) {
             IMMEDIATE -> "immediate"
             NEAR -> "near"
             FAR -> "far"
+            BT -> "bt"
             UNKNOWN -> "unknown"
         }
     }
