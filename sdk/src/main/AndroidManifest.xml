@@ -31,16 +31,19 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM"
         tools:ignore="ExactAlarm" />
 
+    <!-- Foreground service permissions -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
     <!-- Required hardware features -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <application>
-        <!-- BroadcastReceiver for Android 14+ Bluetooth Scan Broadcast -->
-        <receiver 
+        <!-- BroadcastReceiver for PendingIntent-based BLE scan (API 26+) -->
+        <receiver
             android:name="io.bearound.sdk.background.BluetoothScanReceiver"
-            android:exported="false"
-            tools:targetApi="34">
+            android:exported="false">
             <intent-filter>
                 <action android:name="io.bearound.sdk.ACTION_BLUETOOTH_SCAN" />
             </intent-filter>
@@ -55,6 +58,12 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- Foreground service to keep process alive for BLE scanning (opt-in) -->
+        <service
+            android:name="io.bearound.sdk.background.BeaconScanService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
     </application>
 
 </manifest>

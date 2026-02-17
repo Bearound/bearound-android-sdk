@@ -12,8 +12,8 @@ import android.util.Log
 
 /**
  * Manages background beacon scanning using:
- * - Android 14+: Bluetooth Scan Broadcast (real-time, no notification)
- * - Android <14: Not supported (requires foreground service or manual implementation)
+ * - Android 8+ (API 26+): Bluetooth Scan Broadcast via PendingIntent (real-time, no notification)
+ * - Android <8: Not supported
  */
 class BackgroundScanManager(private val context: Context) {
     
@@ -29,33 +29,32 @@ class BackgroundScanManager(private val context: Context) {
     
     /**
      * Enable background scanning
-     * Only works on Android 14+ (API 34+) using Bluetooth Scan Broadcast
+     * Works on Android 8+ (API 26+) using PendingIntent-based BLE scan
      */
     @SuppressLint("MissingPermission")
     fun enableBackgroundScanning() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             enableBluetoothScanBroadcast()
         } else {
-            Log.w(TAG, "Background scanning requires Android 14+")
+            Log.w(TAG, "Background scanning requires Android 8+")
         }
     }
-    
+
     /**
      * Disable background scanning
      */
     @SuppressLint("MissingPermission")
     fun disableBackgroundScanning() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             disableBluetoothScanBroadcast()
         }
     }
     
     /**
-     * Android 14+ - Register Bluetooth Scan Broadcast
+     * Android 8+ (API 26+) - Register PendingIntent-based BLE scan
      * System will wake up the app when beacon is detected
      */
     @SuppressLint("MissingPermission")
-    @androidx.annotation.RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     private fun enableBluetoothScanBroadcast() {
         try {
             val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) 
@@ -71,11 +70,17 @@ class BackgroundScanManager(private val context: Context) {
                 action = BluetoothScanReceiver.ACTION_BLUETOOTH_SCAN
             }
             
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+
             pendingIntent = PendingIntent.getBroadcast(
                 context,
                 0,
                 intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                flags
             )
             
             val filters = listOf(
@@ -107,7 +112,6 @@ class BackgroundScanManager(private val context: Context) {
     }
     
     @SuppressLint("MissingPermission")
-    @androidx.annotation.RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     private fun disableBluetoothScanBroadcast() {
         try {
             pendingIntent?.let { pi ->

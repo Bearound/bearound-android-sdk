@@ -16,11 +16,13 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import io.bearound.sdk.background.BackgroundScanManager
 import io.bearound.sdk.background.BackgroundScheduler
+import io.bearound.sdk.background.BeaconScanService
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.interfaces.BluetoothManagerListener
 import io.bearound.sdk.models.BackgroundScanInterval
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.BeaconMetadata
+import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.ForegroundScanInterval
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.SDKConfiguration
@@ -93,6 +95,7 @@ class BeAroundSDK private constructor() {
 
     private var isInBackground = false
     private val isColdStart = true
+    private var foregroundScanConfig: ForegroundScanConfig? = null
 
     val isScanning: Boolean
         get() = ::beaconManager.isInitialized && beaconManager.isScanning
@@ -143,6 +146,9 @@ class BeAroundSDK private constructor() {
         backgroundScanManager = BackgroundScanManager(context)
         backgroundScheduler = BackgroundScheduler.getInstance(context)
         offlineBatchStorage = OfflineBatchStorage(context)
+
+        // Restore foreground scan config if previously set
+        foregroundScanConfig = SDKConfigStorage.loadForegroundScanConfig(context)
 
         setupCallbacks()
         setupLifecycleObserver()
@@ -225,9 +231,13 @@ class BeAroundSDK private constructor() {
     private fun onAppForegrounded() {
         isInBackground = false
         Log.d(TAG, "App foregrounded")
-        
+
         backgroundScanManager.disableBackgroundScanning()
-        
+
+        if (BeaconScanService.isRunning) {
+            BeaconScanService.stop(context)
+        }
+
         beaconManager.setForegroundState(true)
         // Periodic scanning in foreground is automatic (controlled by sync timer)
         
@@ -241,10 +251,15 @@ class BeAroundSDK private constructor() {
     private fun onAppBackgrounded() {
         isInBackground = true
         Log.d(TAG, "App backgrounded")
-        
+
         beaconManager.setForegroundState(false)
         backgroundScanManager.enableBackgroundScanning()
-        // Continuous scanning in background is automatic (BeaconManager handles it)
+
+        // Start foreground service if opted-in and scanning is active
+        val fgConfig = foregroundScanConfig
+        if (fgConfig?.enabled == true && isScanning) {
+            BeaconScanService.start(context, fgConfig)
+        }
         
         if (isScanning) {
             restartSyncTimer()
@@ -302,6 +317,28 @@ class BeAroundSDK private constructor() {
         userProperties = null
     }
 
+    fun enableForegroundScanning(config: ForegroundScanConfig) {
+        val enabledConfig = config.copy(enabled = true)
+        foregroundScanConfig = enabledConfig
+        SDKConfigStorage.saveForegroundScanConfig(context, enabledConfig)
+
+        if (isInBackground && isScanning) {
+            BeaconScanService.start(context, enabledConfig)
+        }
+    }
+
+    fun disableForegroundScanning() {
+        foregroundScanConfig = foregroundScanConfig?.copy(enabled = false)
+        SDKConfigStorage.saveForegroundScanConfig(context, ForegroundScanConfig(enabled = false))
+
+        if (BeaconScanService.isRunning) {
+            BeaconScanService.stop(context)
+        }
+    }
+
+    val isForegroundScanningEnabled: Boolean
+        get() = foregroundScanConfig?.enabled == true
+
     fun startScanning() {
         val config = configuration
         if (config == null) {
@@ -330,6 +367,10 @@ class BeAroundSDK private constructor() {
         backgroundScanManager.disableBackgroundScanning()
         backgroundScheduler.disableAll()
         stopSyncTimer()
+
+        if (BeaconScanService.isRunning) {
+            BeaconScanService.stop(context)
+        }
         
         // Persist scanning state
         SDKConfigStorage.saveScanningEnabled(context, false)
@@ -747,7 +788,13 @@ class BeAroundSDK private constructor() {
         
         // Bluetooth scanning is always enabled in v2.2.0+
         bluetoothManager.startScanning()
-        
+
+        // Restore foreground service if it was enabled
+        val fgConfig = foregroundScanConfig
+        if (fgConfig?.enabled == true && !BeaconScanService.isRunning) {
+            BeaconScanService.start(context, fgConfig)
+        }
+
         Log.d(TAG, "Scanning restarted from background")
     }
     

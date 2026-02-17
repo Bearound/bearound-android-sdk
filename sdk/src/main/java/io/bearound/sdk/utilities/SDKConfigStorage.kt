@@ -3,6 +3,7 @@ package io.bearound.sdk.utilities
 import android.content.Context
 import android.content.SharedPreferences
 import io.bearound.sdk.models.BackgroundScanInterval
+import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.ForegroundScanInterval
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.SDKConfiguration
@@ -19,6 +20,12 @@ object SDKConfigStorage {
     private const val KEY_IS_CONFIGURED = "is_configured"
     private const val KEY_SCANNING_ENABLED = "scanning_enabled"
     private const val KEY_SYNC_INTERVAL = "sync_interval"
+    private const val KEY_FG_SCAN_ENABLED = "fg_scan_enabled"
+    private const val KEY_FG_SCAN_TITLE = "fg_scan_title"
+    private const val KEY_FG_SCAN_TEXT = "fg_scan_text"
+    private const val KEY_FG_SCAN_ICON = "fg_scan_icon"
+    private const val KEY_FG_SCAN_CHANNEL_ID = "fg_scan_channel_id"
+    private const val KEY_FG_SCAN_CHANNEL_NAME = "fg_scan_channel_name"
     
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -106,6 +113,34 @@ object SDKConfigStorage {
      */
     fun loadScanningEnabled(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_SCANNING_ENABLED, false)
+    }
+
+    fun saveForegroundScanConfig(context: Context, config: ForegroundScanConfig) {
+        getPrefs(context).edit().apply {
+            putBoolean(KEY_FG_SCAN_ENABLED, config.enabled)
+            putString(KEY_FG_SCAN_TITLE, config.notificationTitle)
+            putString(KEY_FG_SCAN_TEXT, config.notificationText)
+            putInt(KEY_FG_SCAN_ICON, config.notificationIcon ?: 0)
+            putString(KEY_FG_SCAN_CHANNEL_ID, config.notificationChannelId)
+            putString(KEY_FG_SCAN_CHANNEL_NAME, config.notificationChannelName)
+            apply()
+        }
+    }
+
+    fun loadForegroundScanConfig(context: Context): ForegroundScanConfig? {
+        val prefs = getPrefs(context)
+        if (!prefs.contains(KEY_FG_SCAN_ENABLED)) return null
+
+        val icon = prefs.getInt(KEY_FG_SCAN_ICON, 0).takeIf { it != 0 }
+
+        return ForegroundScanConfig(
+            enabled = prefs.getBoolean(KEY_FG_SCAN_ENABLED, false),
+            notificationTitle = prefs.getString(KEY_FG_SCAN_TITLE, "Monitorando região") ?: "Monitorando região",
+            notificationText = prefs.getString(KEY_FG_SCAN_TEXT, "Verificando região em background") ?: "Verificando região em background",
+            notificationIcon = icon,
+            notificationChannelId = prefs.getString(KEY_FG_SCAN_CHANNEL_ID, null),
+            notificationChannelName = prefs.getString(KEY_FG_SCAN_CHANNEL_NAME, "Serviço de monitoramento da região") ?: "Serviço de monitoramento da região"
+        )
     }
 }
 
