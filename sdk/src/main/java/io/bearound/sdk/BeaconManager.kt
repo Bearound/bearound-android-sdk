@@ -173,6 +173,9 @@ class BeaconManager(private val context: Context) {
                     IBeaconParser.IBEACON_PREFIX,
                     IBeaconParser.IBEACON_MASK
                 )
+                .build(),
+            ScanFilter.Builder()
+                .setServiceData(IBeaconParser.BEAD_SERVICE_UUID, byteArrayOf(), byteArrayOf())
                 .build()
         )
 
@@ -224,11 +227,27 @@ class BeaconManager(private val context: Context) {
 
     private fun processScanResult(result: ScanResult) {
         val scanRecord = result.scanRecord ?: return
-        
-        // Parse iBeacon data using utility class
+
+        // PRIORITY 1: BEAD Service Data — has major, minor AND full metadata
+        val serviceData = IBeaconParser.parseServiceData(scanRecord, result.rssi)
+        if (serviceData != null) {
+            val beacon = Beacon(
+                uuid = IBeaconParser.BEAROUND_UUID,
+                major = serviceData.major,
+                minor = serviceData.minor,
+                rssi = serviceData.rssi,
+                proximity = Beacon.Proximity.BT,
+                accuracy = -1.0,
+                timestamp = Date(),
+                metadata = serviceData.metadata,
+                txPower = null
+            )
+            processBeacon(beacon)
+            return
+        }
+
+        // PRIORITY 2: iBeacon manufacturer data — major, minor only, no metadata
         val beaconData = IBeaconParser.parse(scanRecord, result.rssi) ?: return
-        
-        // Only process BeAround beacons
         if (!IBeaconParser.isBeAroundBeacon(beaconData)) return
 
         val accuracy = calculateAccuracy(beaconData.txPower, beaconData.rssi)

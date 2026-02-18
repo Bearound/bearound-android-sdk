@@ -14,7 +14,6 @@ import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import io.bearound.sdk.interfaces.BluetoothManagerListener
-import io.bearound.sdk.models.BeaconMetadata
 import io.bearound.sdk.utilities.IBeaconParser
 
 /**
@@ -81,7 +80,7 @@ class BluetoothManager(private val context: Context) {
                 .setReportDelay(0)
                 .build()
 
-            // Scan for all devices to capture manufacturer data and names
+            // Scan for all devices (filters applied in processScanResult)
             bluetoothLeScanner?.startScan(null, settings, scanCallback)
             isScanning = true
             Log.d(TAG, "Started BLE scanning")
@@ -113,73 +112,45 @@ class BluetoothManager(private val context: Context) {
         // Check if RSSI is valid
         if (rssi == 127 || rssi == 0) return
 
-        // Parse iBeacon data using utility class
-        val beaconData = IBeaconParser.parse(scanRecord, rssi) ?: return
-        
-        // Only process BeAround beacons
-        if (!IBeaconParser.isBeAroundBeacon(beaconData)) return
+        // PRIORITY 1: BEAD Service Data — has major, minor AND full metadata
+        val serviceData = IBeaconParser.parseServiceData(scanRecord, rssi)
+        if (serviceData != null) {
+            if (!shouldProcessBeacon(serviceData.major, serviceData.minor)) return
 
-        // Check deduplication
-        if (!shouldProcessBeacon(beaconData)) return
+            val isConnectable = scanRecord.advertiseFlags and 0x02 != 0
 
-        // Check if connectable
-        val isConnectable = scanRecord.advertiseFlags and 0x02 != 0
-
-        // Parse metadata from device name if available
-        var metadata: BeaconMetadata? = null
-        val deviceName = scanRecord.deviceName
-        if (deviceName != null && deviceName.startsWith("B:")) {
-            metadata = parseBeaconMetadata(deviceName, beaconData.txPower, rssi, isConnectable)
+            listener?.onBeaconDiscovered(
+                uuid = IBeaconParser.BEAROUND_UUID,
+                major = serviceData.major,
+                minor = serviceData.minor,
+                rssi = rssi,
+                txPower = serviceData.metadata.txPower ?: -59,
+                metadata = serviceData.metadata,
+                isConnectable = isConnectable
+            )
+            return
         }
 
-        // Notify listener
+        // PRIORITY 2: iBeacon manufacturer data — major, minor only, no metadata
+        val beaconData = IBeaconParser.parse(scanRecord, rssi) ?: return
+        if (!IBeaconParser.isBeAroundBeacon(beaconData)) return
+        if (!shouldProcessBeacon(beaconData.major, beaconData.minor)) return
+
+        val isConnectable = scanRecord.advertiseFlags and 0x02 != 0
+
         listener?.onBeaconDiscovered(
             uuid = beaconData.uuid,
             major = beaconData.major,
             minor = beaconData.minor,
             rssi = rssi,
             txPower = beaconData.txPower,
-            metadata = metadata,
+            metadata = null,
             isConnectable = isConnectable
         )
     }
 
-    private fun parseBeaconMetadata(
-        name: String,
-        txPower: Int,
-        rssi: Int,
-        isConnectable: Boolean
-    ): BeaconMetadata? {
-        try {
-            // Format: B:firmware_?_battery_movements_temperature
-            // Example: B:3.2.1_0_85_120_22
-            if (!name.startsWith("B:")) return null
-
-            val parts = name.substring(2).split("_")
-            if (parts.size < 5) return null
-
-            val firmware = parts[0]
-            val battery = parts[2].toIntOrNull() ?: return null
-            val movements = parts[3].toIntOrNull() ?: return null
-            val temperature = parts[4].toIntOrNull() ?: return null
-
-            return BeaconMetadata(
-                firmwareVersion = firmware,
-                batteryLevel = battery,
-                movements = movements,
-                temperature = temperature,
-                txPower = txPower,
-                rssiFromBLE = rssi,
-                isConnectable = isConnectable
-            )
-        } catch (_: Exception) {
-            Log.w(TAG, "Failed to parse beacon metadata from name: $name")
-            return null
-        }
-    }
-
-    private fun shouldProcessBeacon(beaconData: IBeaconParser.IBeaconData): Boolean {
-        val key = "${beaconData.uuid}-${beaconData.major}-${beaconData.minor}"
+    private fun shouldProcessBeacon(major: Int, minor: Int): Boolean {
+        val key = "$major.$minor"
         val now = System.currentTimeMillis()
         
         val lastSeen = lastSeenBeacons[key]
