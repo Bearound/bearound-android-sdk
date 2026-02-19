@@ -592,39 +592,24 @@ class BeAroundSDK private constructor() {
 
             val shouldRetryFailed = shouldRetryFailedBatches()
 
-            val beaconsToSend: List<Beacon>
-            val isRetry: Boolean
-            
-            when {
-                shouldRetryFailed -> {
-                    // Load ALL batches from persistent storage and flatten into a single list
-                    val allBatches = offlineBatchStorage.loadAllBatches()
-                    val allFailedBeacons = allBatches.flatten()
-                    if (allFailedBeacons.isNotEmpty()) {
-                        beaconsToSend = allFailedBeacons
-                        isRetry = true
-                        Log.d(TAG, "Retrying all ${allBatches.size} failed batches with ${beaconsToSend.size} total beacons")
-                    } else {
-                        // No failed batches, try collected beacons
-                        beaconsToSend = beaconLock.withLock {
-                            collectedBeacons.values.filter { !it.alreadySynced }
-                        }
-                        isRetry = false
-                    }
+            // Check if we should retry failed batches
+            if (shouldRetryFailed) {
+                val allBatches = offlineBatchStorage.loadAllBatches()
+                if (allBatches.isNotEmpty()) {
+                    syncRetryBatchesInChunks(allBatches, client, info, forceBackground)
+                    return@launch
                 }
-                else -> {
-                    // Get collected beacons (skip already synced)
-                    beaconsToSend = beaconLock.withLock {
-                        collectedBeacons.values.filter { !it.alreadySynced }
-                    }
-                    isRetry = false
-                }
+            }
+
+            // Regular sync: get collected beacons (skip already synced)
+            val beaconsToSend = beaconLock.withLock {
+                collectedBeacons.values.filter { !it.alreadySynced }
             }
 
             if (beaconsToSend.isEmpty()) return@launch
 
             isSyncing = true
-            
+
             // Notify listener that sync is starting
             handler.post {
                 listener?.onSyncStarted(beaconsToSend.size)
@@ -634,7 +619,7 @@ class BeAroundSDK private constructor() {
             val bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off"
 
             val isAppInBackground = if (forceBackground) true else isInBackground
-            
+
             val userDevice = deviceInfoCollector.collectDeviceInfo(
                 locationPermission = locationPermission,
                 bluetoothState = bluetoothState,
@@ -649,45 +634,37 @@ class BeAroundSDK private constructor() {
                     onSuccess = {
                         consecutiveFailures = 0
                         lastFailureTime = null
-                        
-                        // If this was a retry, clear all batches from storage
-                        if (isRetry) {
-                            offlineBatchStorage.clearAllBatches()
-                            Log.d(TAG, "Cleared all retry batches from storage after successful sync")
-                        }
 
                         // Mark synced beacons and schedule removal after 30s
-                        if (!isRetry) {
-                            val syncedIds = beaconsToSend.map { it.identifier }
+                        val syncedIds = beaconsToSend.map { it.identifier }
+                        beaconLock.withLock {
+                            syncedIds.forEach { id ->
+                                collectedBeacons[id]?.let {
+                                    collectedBeacons[id] = it.copy(alreadySynced = true, syncedAt = java.util.Date())
+                                }
+                            }
+                        }
+                        Log.d(TAG, "Marked ${syncedIds.size} beacons as synced")
+
+                        // Notify listener so UI reflects sync state
+                        val updatedBeacons = beaconLock.withLock {
+                            collectedBeacons.values.toList()
+                        }
+                        handler.post {
+                            listener?.onBeaconsUpdated(updatedBeacons)
+                        }
+
+                        handler.postDelayed({
                             beaconLock.withLock {
                                 syncedIds.forEach { id ->
-                                    collectedBeacons[id]?.let {
-                                        collectedBeacons[id] = it.copy(alreadySynced = true, syncedAt = java.util.Date())
+                                    val beacon = collectedBeacons[id]
+                                    if (beacon?.alreadySynced == true) {
+                                        collectedBeacons.remove(id)
                                     }
                                 }
                             }
-                            Log.d(TAG, "Marked ${syncedIds.size} beacons as synced")
-
-                            // Notify listener so UI reflects sync state
-                            val updatedBeacons = beaconLock.withLock {
-                                collectedBeacons.values.toList()
-                            }
-                            handler.post {
-                                listener?.onBeaconsUpdated(updatedBeacons)
-                            }
-
-                            handler.postDelayed({
-                                beaconLock.withLock {
-                                    syncedIds.forEach { id ->
-                                        val beacon = collectedBeacons[id]
-                                        if (beacon?.alreadySynced == true) {
-                                            collectedBeacons.remove(id)
-                                        }
-                                    }
-                                }
-                                Log.d(TAG, "Removed synced beacons from cache after 30s")
-                            }, 30_000L)
-                        }
+                            Log.d(TAG, "Removed synced beacons from cache after 30s")
+                        }, 30_000L)
 
                         // Notify listener of success
                         handler.post {
@@ -696,13 +673,13 @@ class BeAroundSDK private constructor() {
                     },
                     onFailure = { error ->
                         Log.e(TAG, "Sync failed: ${error.message}")
-                        handleSyncFailure(beaconsToSend, error, isRetry)
-                        
+                        handleSyncFailure(beaconsToSend, error, isRetry = false)
+
                         // Notify listener of failure
                         handler.post {
                             listener?.onSyncCompleted(
-                                beaconsToSend.size, 
-                                success = false, 
+                                beaconsToSend.size,
+                                success = false,
                                 error = error as? Exception ?: Exception(error.message)
                             )
                         }
@@ -710,6 +687,85 @@ class BeAroundSDK private constructor() {
                 )
             }
         }
+    }
+
+    /**
+     * Sends all retry batches in chunks of 5, sequentially.
+     * Stops on the first chunk failure; successfully sent batches are removed from storage.
+     */
+    private suspend fun syncRetryBatchesInChunks(
+        allBatches: List<List<Beacon>>,
+        client: APIClient,
+        info: SDKInfo,
+        forceBackground: Boolean
+    ) {
+        isSyncing = true
+
+        val locationPermission = getLocationPermissionStatus()
+        val bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off"
+        val isAppInBackground = if (forceBackground) true else isInBackground
+
+        val userDevice = deviceInfoCollector.collectDeviceInfo(
+            locationPermission = locationPermission,
+            bluetoothState = bluetoothState,
+            appInForeground = !isAppInBackground,
+            location = beaconManager.lastLocation
+        )
+
+        val chunks = allBatches.chunked(5)
+        Log.d(TAG, "Retrying ${allBatches.size} batches in ${chunks.size} chunk(s) of up to 5")
+
+        for ((chunkIndex, chunk) in chunks.withIndex()) {
+            val beaconsInChunk = chunk.flatten()
+            if (beaconsInChunk.isEmpty()) continue
+
+            Log.d(TAG, "Sending retry chunk ${chunkIndex + 1}/${chunks.size} — ${beaconsInChunk.size} beacons from ${chunk.size} batch(es)")
+
+            handler.post {
+                listener?.onSyncStarted(beaconsInChunk.size)
+            }
+
+            var chunkResult: Result<Unit>? = null
+            client.sendBeacons(beaconsInChunk, info, userDevice, userProperties) { result ->
+                chunkResult = result
+            }
+
+            if (chunkResult?.isFailure == true) {
+                val error = chunkResult!!.exceptionOrNull()!!
+                Log.e(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} failed: ${error.message}")
+
+                consecutiveFailures++
+                lastFailureTime = System.currentTimeMillis()
+
+                handler.post {
+                    listener?.onSyncCompleted(
+                        beaconsInChunk.size,
+                        success = false,
+                        error = error as? Exception ?: Exception(error.message)
+                    )
+                    listener?.onError(error as? Exception ?: Exception(error.message))
+                }
+
+                isSyncing = false
+                return
+            }
+
+            // Chunk succeeded — remove these batches from storage (oldest first)
+            consecutiveFailures = 0
+            lastFailureTime = null
+            repeat(chunk.size) {
+                offlineBatchStorage.removeOldestBatch()
+            }
+
+            Log.d(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} succeeded — removed ${chunk.size} batch(es)")
+
+            handler.post {
+                listener?.onSyncCompleted(beaconsInChunk.size, success = true, error = null)
+            }
+        }
+
+        isSyncing = false
+        Log.d(TAG, "All retry chunks completed — storage now has ${offlineBatchStorage.getBatchCount()} batch(es)")
     }
 
     private fun handleSyncFailure(beacons: List<Beacon>, error: Throwable, isRetry: Boolean) {
