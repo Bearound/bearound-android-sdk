@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import androidx.annotation.RequiresApi
 
 /**
  * Manages background beacon scanning using:
@@ -54,6 +55,7 @@ class BackgroundScanManager(private val context: Context) {
      * Android 8+ (API 26+) - Register PendingIntent-based BLE scan
      * System will wake up the app when beacon is detected
      */
+    @RequiresApi(Build.VERSION_CODES.O)
     @SuppressLint("MissingPermission")
     private fun enableBluetoothScanBroadcast() {
         try {
@@ -111,6 +113,7 @@ class BackgroundScanManager(private val context: Context) {
         }
     }
     
+    @RequiresApi(Build.VERSION_CODES.O)
     @SuppressLint("MissingPermission")
     private fun disableBluetoothScanBroadcast() {
         try {
