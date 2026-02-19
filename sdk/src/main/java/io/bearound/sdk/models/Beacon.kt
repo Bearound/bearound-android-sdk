@@ -15,7 +15,8 @@ data class Beacon(
     val accuracy: Double,
     val timestamp: Date = Date(),
     val metadata: BeaconMetadata? = null,
-    val txPower: Int? = null
+    val txPower: Int? = null,
+    val alreadySynced: Boolean = false
 ) {
     enum class Proximity {
         IMMEDIATE,

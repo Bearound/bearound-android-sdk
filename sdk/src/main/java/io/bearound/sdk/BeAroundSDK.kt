@@ -599,27 +599,15 @@ class BeAroundSDK private constructor() {
                     } else {
                         // No failed batches, try collected beacons
                         beaconsToSend = beaconLock.withLock {
-                            if (collectedBeacons.isNotEmpty()) {
-                                val batch = collectedBeacons.values.toList()
-                                // DON'T clear - keep beacons for continuous updates
-                                batch
-                            } else {
-                                emptyList()
-                            }
+                            collectedBeacons.values.filter { !it.alreadySynced }
                         }
                         isRetry = false
                     }
                 }
                 else -> {
-                    // Get collected beacons
+                    // Get collected beacons (skip already synced)
                     beaconsToSend = beaconLock.withLock {
-                        if (collectedBeacons.isNotEmpty()) {
-                            val batch = collectedBeacons.values.toList()
-                            // DON'T clear - keep beacons for continuous updates
-                            batch
-                        } else {
-                            emptyList()
-                        }
+                        collectedBeacons.values.filter { !it.alreadySynced }
                     }
                     isRetry = false
                 }
@@ -659,7 +647,32 @@ class BeAroundSDK private constructor() {
                             offlineBatchStorage.removeOldestBatch()
                             Log.d(TAG, "Removed successful retry batch from storage")
                         }
-                        
+
+                        // Mark synced beacons and schedule removal after 30s
+                        if (!isRetry) {
+                            val syncedIds = beaconsToSend.map { it.identifier }
+                            beaconLock.withLock {
+                                syncedIds.forEach { id ->
+                                    collectedBeacons[id]?.let {
+                                        collectedBeacons[id] = it.copy(alreadySynced = true)
+                                    }
+                                }
+                            }
+                            Log.d(TAG, "Marked ${syncedIds.size} beacons as synced")
+
+                            handler.postDelayed({
+                                beaconLock.withLock {
+                                    syncedIds.forEach { id ->
+                                        val beacon = collectedBeacons[id]
+                                        if (beacon?.alreadySynced == true) {
+                                            collectedBeacons.remove(id)
+                                        }
+                                    }
+                                }
+                                Log.d(TAG, "Removed synced beacons from cache after 30s")
+                            }, 30_000L)
+                        }
+
                         // Notify listener of success
                         handler.post {
                             listener?.onSyncCompleted(beaconsToSend.size, success = true, error = null)
