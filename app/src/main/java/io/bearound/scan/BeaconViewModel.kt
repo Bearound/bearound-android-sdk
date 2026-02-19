@@ -41,7 +41,8 @@ data class BeAroundScanState(
     val backgroundInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_30,
     val maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
     val isInBackground: Boolean = false,
-    val sortOption: BeaconSortOption = BeaconSortOption.PROXIMITY
+    val sortOption: BeaconSortOption = BeaconSortOption.PROXIMITY,
+    val pinnedBeaconIds: Set<String> = emptySet()
 )
 
 class BeaconViewModel(application: Application) : AndroidViewModel(application), BeAroundSDKListener {
@@ -146,8 +147,15 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
 
     fun changeSortOption(option: BeaconSortOption) {
         _state.value = _state.value.copy(sortOption = option)
-        // Re-sort current beacons
-        val sorted = sortBeacons(_state.value.beacons, option)
+        val sorted = sortBeacons(_state.value.beacons, option, _state.value.pinnedBeaconIds)
+        _state.value = _state.value.copy(beacons = sorted)
+    }
+
+    fun togglePin(beaconId: String) {
+        val current = _state.value.pinnedBeaconIds
+        val updated = if (beaconId in current) current - beaconId else current + beaconId
+        _state.value = _state.value.copy(pinnedBeaconIds = updated)
+        val sorted = sortBeacons(_state.value.beacons, _state.value.sortOption, updated)
         _state.value = _state.value.copy(beacons = sorted)
     }
 
@@ -172,7 +180,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     
     override fun onBeaconsUpdated(beacons: List<Beacon>) {
         viewModelScope.launch {
-            val sortedBeacons = sortBeacons(beacons, _state.value.sortOption)
+            val sortedBeacons = sortBeacons(beacons, _state.value.sortOption, _state.value.pinnedBeaconIds)
             val isNowInBeaconRegion = sortedBeacons.isNotEmpty()
 
             // Detect region entry for notification
@@ -253,23 +261,28 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     
     // endregion
 
-    private fun sortBeacons(beacons: List<Beacon>, option: BeaconSortOption): List<Beacon> {
-        return when (option) {
+    private fun sortBeacons(beacons: List<Beacon>, option: BeaconSortOption, pinnedIds: Set<String> = emptySet()): List<Beacon> {
+        val baseComparator = when (option) {
             BeaconSortOption.PROXIMITY -> {
-                beacons.sortedWith(compareBy<Beacon> { beacon ->
+                compareBy<Beacon> { beacon ->
                     when (beacon.proximity) {
                         Beacon.Proximity.IMMEDIATE -> 0
                         Beacon.Proximity.NEAR -> 1
                         Beacon.Proximity.FAR -> 2
-                        Beacon.Proximity.UNKNOWN -> 3
+                        Beacon.Proximity.BT -> 3
+                        Beacon.Proximity.UNKNOWN -> 4
                     }
                 }.thenByDescending { it.rssi }
-                    .thenBy { if (it.accuracy > 0) it.accuracy else Double.MAX_VALUE })
+                    .thenBy { if (it.accuracy > 0) it.accuracy else Double.MAX_VALUE }
             }
             BeaconSortOption.ID -> {
-                beacons.sortedBy { "${it.major}.${it.minor}" }
+                compareBy { "${it.major}.${it.minor}" }
             }
         }
+        // Pinned beacons first, then sort normally within each group
+        return beacons.sortedWith(
+            compareByDescending<Beacon> { it.identifier in pinnedIds }.then(baseComparator)
+        )
     }
 
     fun updatePermissionStatus() {

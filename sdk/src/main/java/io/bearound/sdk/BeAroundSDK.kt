@@ -165,14 +165,21 @@ class BeAroundSDK private constructor() {
                 )
             }
 
-            beaconLock.withLock {
-                enrichedBeacons.forEach { beacon ->
-                    collectedBeacons[beacon.identifier] = beacon
+            val beaconsForListener = beaconLock.withLock {
+                enrichedBeacons.map { beacon ->
+                    val existing = collectedBeacons[beacon.identifier]
+                    val updated = if (existing?.syncedAt != null) {
+                        beacon.copy(syncedAt = existing.syncedAt)
+                    } else {
+                        beacon
+                    }
+                    collectedBeacons[beacon.identifier] = updated
+                    updated
                 }
             }
 
-            // Notify listener of beacon update
-            listener?.onBeaconsUpdated(enrichedBeacons)
+            // Notify listener of beacon update (with sync state preserved)
+            listener?.onBeaconsUpdated(beaconsForListener)
             
             // Notify if beacons detected in background
             if (isInBackground && enrichedBeacons.isNotEmpty()) {
@@ -654,11 +661,19 @@ class BeAroundSDK private constructor() {
                             beaconLock.withLock {
                                 syncedIds.forEach { id ->
                                     collectedBeacons[id]?.let {
-                                        collectedBeacons[id] = it.copy(alreadySynced = true)
+                                        collectedBeacons[id] = it.copy(alreadySynced = true, syncedAt = java.util.Date())
                                     }
                                 }
                             }
                             Log.d(TAG, "Marked ${syncedIds.size} beacons as synced")
+
+                            // Notify listener so UI reflects sync state
+                            val updatedBeacons = beaconLock.withLock {
+                                collectedBeacons.values.toList()
+                            }
+                            handler.post {
+                                listener?.onBeaconsUpdated(updatedBeacons)
+                            }
 
                             handler.postDelayed({
                                 beaconLock.withLock {

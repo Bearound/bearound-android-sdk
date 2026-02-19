@@ -7,7 +7,9 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -154,7 +156,12 @@ fun BeAroundScanApp(viewModel: BeaconViewModel = viewModel()) {
                 }
             } else {
                 items(state.beacons) { beacon ->
-                    BeaconCard(beacon = beacon)
+                    val isPinned = beacon.identifier in state.pinnedBeaconIds
+                    BeaconCard(
+                        beacon = beacon,
+                        isPinned = isPinned,
+                        onClick = { viewModel.togglePin(beacon.identifier) }
+                    )
                 }
             }
         }
@@ -613,25 +620,40 @@ fun EmptyBeaconsState(isScanning: Boolean) {
 }
 
 @Composable
-fun BeaconCard(beacon: Beacon) {
+fun BeaconCard(beacon: Beacon, isPinned: Boolean = false, onClick: () -> Unit = {}) {
     Card(
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth().clickable { onClick() },
+        border = if (isPinned) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            // Header: title + RSSI
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
-                    Text(
-                        text = "Beacon ${beacon.major}.${beacon.minor}",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (isPinned) {
+                            Icon(
+                                imageVector = Icons.Default.PushPin,
+                                contentDescription = "Fixado",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Text(
+                            text = "Beacon ${beacon.major}.${beacon.minor}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
 
                     Text(
                         text = beacon.uuid.toString(),
@@ -639,38 +661,6 @@ fun BeaconCard(beacon: Beacon) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1
                     )
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .background(
-                                        color = getProximityColor(beacon.proximity),
-                                        shape = CircleShape
-                                    )
-                            )
-                            Text(
-                                text = getProximityText(beacon.proximity),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        if (beacon.accuracy > 0) {
-                            Text(
-                                text = String.format("%.1fm", beacon.accuracy),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
                 }
 
                 Row(
@@ -690,7 +680,113 @@ fun BeaconCard(beacon: Beacon) {
                     )
                 }
             }
+
+            // Badges: iBeacon/Service UUID + proximity + distance
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val badgeLabel = if (beacon.proximity == Beacon.Proximity.BT) "Service UUID" else "iBeacon"
+                val badgeColor = if (beacon.proximity == Beacon.Proximity.BT) Color(0xFF2196F3) else Color(0xFF9C27B0)
+                Text(
+                    text = badgeLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White,
+                    modifier = Modifier
+                        .background(badgeColor, RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+
+                Text(
+                    text = if (beacon.alreadySynced) "Synced" else "Pending",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White,
+                    modifier = Modifier
+                        .background(
+                            if (beacon.alreadySynced) Color(0xFF4CAF50) else Color(0xFFFF9800),
+                            RoundedCornerShape(4.dp)
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+
+                beacon.syncedAt?.let { syncTime ->
+                    Text(
+                        text = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(syncTime),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(
+                                color = getProximityColor(beacon.proximity),
+                                shape = CircleShape
+                            )
+                    )
+                    Text(
+                        text = getProximityText(beacon.proximity),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                if (beacon.accuracy > 0) {
+                    Text(
+                        text = String.format("%.1fm", beacon.accuracy),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                beacon.txPower?.let { tx ->
+                    Text(
+                        text = "TX: ${tx}dB",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Metadata: battery, movements, temperature, firmware
+            beacon.metadata?.let { meta ->
+                Divider(color = MaterialTheme.colorScheme.outlineVariant)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    MetadataItem(icon = Icons.Default.BatteryFull, label = "${meta.batteryLevel}mV")
+                    MetadataItem(icon = Icons.Default.DirectionsWalk, label = "${meta.movements} mov")
+                    MetadataItem(icon = Icons.Default.Thermostat, label = "${meta.temperature}\u00B0C")
+                    MetadataItem(icon = Icons.Default.Info, label = "v${meta.firmwareVersion}")
+                }
+            }
         }
+    }
+}
+
+@Composable
+fun MetadataItem(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -718,6 +814,7 @@ fun getProximityText(proximity: Beacon.Proximity): String = when (proximity) {
     Beacon.Proximity.IMMEDIATE -> "Imediato"
     Beacon.Proximity.NEAR -> "Perto"
     Beacon.Proximity.FAR -> "Longe"
+    Beacon.Proximity.BT -> "BT"
     Beacon.Proximity.UNKNOWN -> "Desconhecido"
 }
 
@@ -725,6 +822,7 @@ fun getProximityColor(proximity: Beacon.Proximity): Color = when (proximity) {
     Beacon.Proximity.IMMEDIATE -> Color(0xFF4CAF50)
     Beacon.Proximity.NEAR -> Color(0xFFFF9800)
     Beacon.Proximity.FAR -> Color(0xFFF44336)
+    Beacon.Proximity.BT -> Color(0xFF2196F3)
     Beacon.Proximity.UNKNOWN -> Color.Gray
 }
 
