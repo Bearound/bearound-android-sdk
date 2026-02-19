@@ -597,12 +597,13 @@ class BeAroundSDK private constructor() {
             
             when {
                 shouldRetryFailed -> {
-                    // Try to load from persistent storage first (FIFO)
-                    val failedBatch = offlineBatchStorage.loadOldestBatch()
-                    if (failedBatch != null) {
-                        beaconsToSend = failedBatch
+                    // Load ALL batches from persistent storage and flatten into a single list
+                    val allBatches = offlineBatchStorage.loadAllBatches()
+                    val allFailedBeacons = allBatches.flatten()
+                    if (allFailedBeacons.isNotEmpty()) {
+                        beaconsToSend = allFailedBeacons
                         isRetry = true
-                        Log.d(TAG, "Retrying failed batch with ${beaconsToSend.size} beacons")
+                        Log.d(TAG, "Retrying all ${allBatches.size} failed batches with ${beaconsToSend.size} total beacons")
                     } else {
                         // No failed batches, try collected beacons
                         beaconsToSend = beaconLock.withLock {
@@ -649,10 +650,10 @@ class BeAroundSDK private constructor() {
                         consecutiveFailures = 0
                         lastFailureTime = null
                         
-                        // If this was a retry, remove the batch from storage
+                        // If this was a retry, clear all batches from storage
                         if (isRetry) {
-                            offlineBatchStorage.removeOldestBatch()
-                            Log.d(TAG, "Removed successful retry batch from storage")
+                            offlineBatchStorage.clearAllBatches()
+                            Log.d(TAG, "Cleared all retry batches from storage after successful sync")
                         }
 
                         // Mark synced beacons and schedule removal after 30s
@@ -773,6 +774,13 @@ class BeAroundSDK private constructor() {
      */
     val pendingBatchCount: Int
         get() = offlineBatchStorage.getBatchCount()
+
+    /**
+     * Get all pending batches
+     * Useful for debugging and retry queue visualization
+     */
+    val pendingBatches: List<List<Beacon>>
+        get() = offlineBatchStorage.loadAllBatches()
     
     /**
      * Perform background sync

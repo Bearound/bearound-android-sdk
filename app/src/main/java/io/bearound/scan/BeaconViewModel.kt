@@ -42,7 +42,9 @@ data class BeAroundScanState(
     val maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
     val isInBackground: Boolean = false,
     val sortOption: BeaconSortOption = BeaconSortOption.PROXIMITY,
-    val pinnedBeaconIds: Set<String> = emptySet()
+    val pinnedBeaconIds: Set<String> = emptySet(),
+    val retryBatches: List<List<Beacon>> = emptyList(),
+    val retryBatchCount: Int = 0
 )
 
 class BeaconViewModel(application: Application) : AndroidViewModel(application), BeAroundSDKListener {
@@ -151,6 +153,13 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         _state.value = _state.value.copy(beacons = sorted)
     }
 
+    fun refreshRetryQueue() {
+        _state.value = _state.value.copy(
+            retryBatches = sdk.pendingBatches,
+            retryBatchCount = sdk.pendingBatchCount
+        )
+    }
+
     fun togglePin(beaconId: String) {
         val current = _state.value.pinnedBeaconIds
         val updated = if (beaconId in current) current - beaconId else current + beaconId
@@ -250,6 +259,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     override fun onSyncCompleted(beaconCount: Int, success: Boolean, error: Exception?) {
         viewModelScope.launch {
             notificationManager.notifyAPISyncCompleted(beaconCount, success)
+            refreshRetryQueue()
         }
     }
     

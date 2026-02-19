@@ -13,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -22,6 +23,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -38,6 +40,14 @@ import java.util.*
 fun BeAroundScanApp(viewModel: BeaconViewModel = viewModel()) {
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
+    var selectedTab by remember { mutableIntStateOf(0) }
+
+    // Auto-refresh retry queue when switching to that tab
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == 1) {
+            viewModel.refreshRetryQueue()
+        }
+    }
 
     // Permission launcher
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -73,12 +83,12 @@ fun BeAroundScanApp(viewModel: BeaconViewModel = viewModel()) {
                 title = {
                     Column {
                         Text(
-                            text = "BeAroundScan",
+                            text = if (selectedTab == 0) "BeAroundScan" else "Retry Queue",
                             style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = state.statusMessage,
+                            text = if (selectedTab == 0) state.statusMessage else "${state.retryBatchCount} batch(es) pendente(s)",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -89,79 +99,231 @@ fun BeAroundScanApp(viewModel: BeaconViewModel = viewModel()) {
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             )
-        }
-    ) { paddingValues ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // Permissions Section
-            item {
-                PermissionsCard(state = state)
-            }
-
-            // Scan Info Section (only when scanning)
-            if (state.isScanning) {
-                item {
-                    ScanInfoCard(state = state, viewModel = viewModel)
-                }
-            }
-
-            // Controls Section
-            item {
-                ControlsCard(
-                    state = state,
-                    onStartStop = {
-                        if (state.isScanning) {
-                            viewModel.stopScanning()
-                        } else {
-                            if (!viewModel.hasRequiredPermissions()) {
-                                // Open app settings
-                                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                    data = Uri.fromParts("package", context.packageName, null)
+        },
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    icon = { Icon(Icons.Default.Sensors, contentDescription = null) },
+                    label = { Text("Beacons") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    icon = {
+                        BadgedBox(
+                            badge = {
+                                if (state.retryBatchCount > 0) {
+                                    Badge { Text("${state.retryBatchCount}") }
                                 }
-                                context.startActivity(intent)
-                            } else {
-                                viewModel.startScanning()
                             }
+                        ) {
+                            Icon(Icons.Default.SyncProblem, contentDescription = null)
                         }
                     },
-                    onConfigurationChange = { fg, bg, queue ->
-                        viewModel.updateConfiguration(fg, bg, queue)
-                    },
-                    onSortOptionChange = { viewModel.changeSortOption(it) }
+                    label = { Text("Retry Queue") }
                 )
             }
+        }
+    ) { paddingValues ->
+        if (selectedTab == 0) {
+            BeaconsContent(
+                state = state,
+                viewModel = viewModel,
+                context = context,
+                paddingValues = paddingValues
+            )
+        } else {
+            RetryQueueScreen(
+                state = state,
+                onRefresh = { viewModel.refreshRetryQueue() },
+                paddingValues = paddingValues
+            )
+        }
+    }
+}
 
-            // Last scan time
-            state.lastScanTime?.let { lastScan ->
-                item {
+@Composable
+fun BeaconsContent(
+    state: BeAroundScanState,
+    viewModel: BeaconViewModel,
+    context: android.content.Context,
+    paddingValues: PaddingValues
+) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(paddingValues)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Permissions Section
+        item {
+            PermissionsCard(state = state)
+        }
+
+        // Scan Info Section (only when scanning)
+        if (state.isScanning) {
+            item {
+                ScanInfoCard(state = state, viewModel = viewModel)
+            }
+        }
+
+        // Controls Section
+        item {
+            ControlsCard(
+                state = state,
+                onStartStop = {
+                    if (state.isScanning) {
+                        viewModel.stopScanning()
+                    } else {
+                        if (!viewModel.hasRequiredPermissions()) {
+                            // Open app settings
+                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.fromParts("package", context.packageName, null)
+                            }
+                            context.startActivity(intent)
+                        } else {
+                            viewModel.startScanning()
+                        }
+                    }
+                },
+                onConfigurationChange = { fg, bg, queue ->
+                    viewModel.updateConfiguration(fg, bg, queue)
+                },
+                onSortOptionChange = { viewModel.changeSortOption(it) }
+            )
+        }
+
+        // Last scan time
+        state.lastScanTime?.let { lastScan ->
+            item {
+                Text(
+                    text = "Última atualização: ${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(lastScan)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+
+        // Beacons List
+        if (state.beacons.isEmpty()) {
+            item {
+                EmptyBeaconsState(isScanning = state.isScanning)
+            }
+        } else {
+            items(state.beacons) { beacon ->
+                val isPinned = beacon.identifier in state.pinnedBeaconIds
+                BeaconCard(
+                    beacon = beacon,
+                    isPinned = isPinned,
+                    onClick = { viewModel.togglePin(beacon.identifier) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun RetryQueueScreen(
+    state: BeAroundScanState,
+    onRefresh: () -> Unit,
+    paddingValues: PaddingValues
+) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(paddingValues)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Refresh button
+        item {
+            Button(
+                onClick = onRefresh,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Atualizar fila")
+            }
+        }
+
+        if (state.retryBatches.isEmpty()) {
+            // Empty state
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 48.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        modifier = Modifier.size(64.dp),
+                        tint = Color(0xFF4CAF50)
+                    )
                     Text(
-                        text = "Última atualização: ${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(lastScan)}",
+                        text = "Fila vazia",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "Nenhum batch pendente de envio",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth(),
                         textAlign = TextAlign.Center
                     )
                 }
             }
+        } else {
+            // List of batches
+            itemsIndexed(state.retryBatches) { index, batch ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFFF44336).copy(alpha = 0.08f)
+                    ),
+                    border = BorderStroke(1.dp, Color(0xFFF44336).copy(alpha = 0.3f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Batch header
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Replay,
+                                contentDescription = null,
+                                tint = Color(0xFFF44336),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "Batch #${index + 1} — ${batch.size} beacon${if (batch.size == 1) "" else "s"}",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFF44336)
+                            )
+                        }
 
-            // Beacons List
-            if (state.beacons.isEmpty()) {
-                item {
-                    EmptyBeaconsState(isScanning = state.isScanning)
-                }
-            } else {
-                items(state.beacons) { beacon ->
-                    val isPinned = beacon.identifier in state.pinnedBeaconIds
-                    BeaconCard(
-                        beacon = beacon,
-                        isPinned = isPinned,
-                        onClick = { viewModel.togglePin(beacon.identifier) }
-                    )
+                        // Beacons inside the batch
+                        batch.forEach { beacon ->
+                            BeaconCard(beacon = beacon)
+                        }
+                    }
                 }
             }
         }
