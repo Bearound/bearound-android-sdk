@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-02-19
+
+### Fixed
+
+- **Lint NewApi error**: Added `@RequiresApi(Build.VERSION_CODES.O)` to `enableBluetoothScanBroadcast()` and `disableBluetoothScanBroadcast()` in `BackgroundScanManager` to fix lint errors for PendingIntent-based BLE scan methods requiring API 26+
+
+### Added
+
+- **BearoundScan app**: New sample/diagnostic app for BLE beacon scanning with Jetpack Compose UI
+
+### Changed
+
+- **Beacon structure**: Major changes to beacon data structure
+
 ## [2.2.2] - 2026-01-22
 
 ### Changed
