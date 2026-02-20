@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.6] - 2026-02-20
+
+### Added
+
+- **Retry Queue tab**: New bottom navigation tab in BeAroundScan app to visualize pending offline batches
+  - Badge with pending batch count on navigation item
+  - Batch cards with red-tinted background showing individual beacons
+  - Refresh button and empty state ("Fila vazia")
+  - Auto-refresh on tab selection
+- **`pendingBatches` property**: Exposed `List<List<Beacon>>` on `BeAroundSDK` for reading all stored offline batches
+- **`refreshRetryQueue()` method**: Added to `BeaconViewModel` to refresh retry queue state, auto-called after sync
+
+### Changed
+
+- **Chunked retry sync**: Failed batches are now sent in chunks of 5 (instead of one-by-one), sequentially — stops on first failure, successfully sent chunks are removed immediately
+- **Beacon model**: Added `getDistance()` method and distance calculation
+- **Background scanning**: Added background scanning callbacks
+- **Sync completed callback**: Added `onSyncCompleted` listener callback
+
 ## [2.3.5] - 2026-02-19
 
 ### Changed
