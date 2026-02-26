@@ -30,9 +30,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.bearound.sdk.models.Beacon
-import io.bearound.sdk.models.BackgroundScanInterval
-import io.bearound.sdk.models.ForegroundScanInterval
 import io.bearound.sdk.models.MaxQueuedPayloads
+import io.bearound.sdk.models.ScanPrecision
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -189,8 +188,8 @@ fun BeaconsContent(
                         }
                     }
                 },
-                onConfigurationChange = { fg, bg, queue ->
-                    viewModel.updateConfiguration(fg, bg, queue)
+                onConfigurationChange = { precision, queue ->
+                    viewModel.updateConfiguration(precision, queue)
                 },
                 onSortOptionChange = { viewModel.changeSortOption(it) }
             )
@@ -430,10 +429,11 @@ fun ScanInfoCard(state: BeAroundScanState, viewModel: BeaconViewModel) {
             InfoRow(label = "Estado do app:", value = if (state.isInBackground) "Background" else "Foreground")
             InfoRow(label = "Modo:", value = viewModel.scanMode)
             InfoRow(
-                label = "Intervalo ativo:",
-                value = "${state.currentSyncInterval}s (${if (state.isInBackground) "BG" else "FG"})",
+                label = "Precisão:",
+                value = state.scanPrecision.name,
                 valueColor = MaterialTheme.colorScheme.primary
             )
+            InfoRow(label = "Intervalo de sync:", value = "${state.currentSyncInterval}s")
             InfoRow(label = "Duração do scan:", value = "${viewModel.scanDuration}s")
 
             if (viewModel.pauseDuration > 0) {
@@ -441,12 +441,9 @@ fun ScanInfoCard(state: BeAroundScanState, viewModel: BeaconViewModel) {
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            
-            InfoRow(label = "FG Interval:", value = "${state.foregroundInterval.milliseconds / 1000}s")
-            InfoRow(label = "BG Interval:", value = "${state.backgroundInterval.milliseconds / 1000}s")
+
             InfoRow(label = "Fila de retry:", value = "${state.maxQueuedPayloads.value} batches")
             InfoRow(label = "Bluetooth Metadata:", value = "Automático")
-            InfoRow(label = "Scan Periódico:", value = if (state.isInBackground) "Desligado (BG)" else "Ligado (FG)")
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
@@ -509,7 +506,7 @@ fun InfoRow(label: String, value: String, valueColor: Color = MaterialTheme.colo
 fun ControlsCard(
     state: BeAroundScanState,
     onStartStop: () -> Unit,
-    onConfigurationChange: (ForegroundScanInterval, BackgroundScanInterval, MaxQueuedPayloads) -> Unit,
+    onConfigurationChange: (ScanPrecision, MaxQueuedPayloads) -> Unit,
     onSortOptionChange: (BeaconSortOption) -> Unit
 ) {
     Card(
@@ -537,104 +534,44 @@ fun ControlsCard(
                 )
             }
 
-            // Foreground Interval Selector
+            // ScanPrecision Selector
             Text(
-                text = "Configuração de Intervalos",
+                text = "Precisão do Scan",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
-            
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Foreground:",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
 
-                var expanded by remember { mutableStateOf(false) }
-
-                ExposedDropdownMenuBox(
-                    expanded = expanded,
-                    onExpandedChange = { expanded = !expanded }
+            ScanPrecision.entries.forEach { precision ->
+                val description = when (precision) {
+                    ScanPrecision.HIGH -> "Contínuo, sync a cada 15s"
+                    ScanPrecision.MEDIUM -> "3x (10s scan + 10s pausa) / min"
+                    ScanPrecision.LOW -> "1x (10s scan + 50s pausa) / min"
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onConfigurationChange(precision, state.maxQueuedPayloads) },
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    OutlinedTextField(
-                        value = "${state.foregroundInterval.milliseconds / 1000}s",
-                        onValueChange = {},
-                        readOnly = true,
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        modifier = Modifier
-                            .menuAnchor()
-                            .width(100.dp),
-                        textStyle = MaterialTheme.typography.bodyMedium
+                    RadioButton(
+                        selected = state.scanPrecision == precision,
+                        onClick = { onConfigurationChange(precision, state.maxQueuedPayloads) }
                     )
-
-                    ExposedDropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false }
-                    ) {
-                        ForegroundScanInterval.entries.forEach { interval ->
-                            DropdownMenuItem(
-                                text = { Text("${interval.milliseconds / 1000}s") },
-                                onClick = {
-                                    onConfigurationChange(interval, state.backgroundInterval, state.maxQueuedPayloads)
-                                    expanded = false
-                                }
-                            )
-                        }
+                    Column(modifier = Modifier.padding(start = 4.dp)) {
+                        Text(
+                            text = precision.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
-            
-            // Background Interval Selector
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Background:",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
 
-                var expanded by remember { mutableStateOf(false) }
-
-                ExposedDropdownMenuBox(
-                    expanded = expanded,
-                    onExpandedChange = { expanded = !expanded }
-                ) {
-                    OutlinedTextField(
-                        value = "${state.backgroundInterval.milliseconds / 1000}s",
-                        onValueChange = {},
-                        readOnly = true,
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        modifier = Modifier
-                            .menuAnchor()
-                            .width(100.dp),
-                        textStyle = MaterialTheme.typography.bodyMedium
-                    )
-
-                    ExposedDropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false }
-                    ) {
-                        BackgroundScanInterval.entries.forEach { interval ->
-                            DropdownMenuItem(
-                                text = { Text("${interval.milliseconds / 1000}s") },
-                                onClick = {
-                                    onConfigurationChange(state.foregroundInterval, interval, state.maxQueuedPayloads)
-                                    expanded = false
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-            
             // Max Queued Payloads Selector
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -683,7 +620,7 @@ fun ControlsCard(
                             DropdownMenuItem(
                                 text = { Text(label) },
                                 onClick = {
-                                    onConfigurationChange(state.foregroundInterval, state.backgroundInterval, size)
+                                    onConfigurationChange(state.scanPrecision, size)
                                     expanded = false
                                 }
                             )
@@ -691,11 +628,7 @@ fun ControlsCard(
                     }
                 }
             }
-            
-            // Note: Bluetooth Metadata and Periodic Scanning are now automatic in v2.2.0
-            // - Bluetooth: Always enabled when permissions granted
-            // - Periodic: Enabled in foreground, disabled in background
-            
+
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
             // Sort Option Selector

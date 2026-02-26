@@ -1,5 +1,6 @@
 package io.bearound.bearoundscan.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -10,9 +11,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.bearound.bearoundscan.viewmodel.BeAroundScanState
-import io.bearound.sdk.models.BackgroundScanInterval
-import io.bearound.sdk.models.ForegroundScanInterval
 import io.bearound.sdk.models.MaxQueuedPayloads
+import io.bearound.sdk.models.ScanPrecision
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -20,14 +20,12 @@ fun SettingsScreen(
     state: BeAroundScanState,
     onDismiss: () -> Unit,
     onApply: (
-        ForegroundScanInterval,
-        BackgroundScanInterval,
+        ScanPrecision,
         MaxQueuedPayloads,
         String, String, String, String
     ) -> Unit
 ) {
-    var selectedFg by remember { mutableStateOf(state.foregroundInterval) }
-    var selectedBg by remember { mutableStateOf(state.backgroundInterval) }
+    var selectedPrecision by remember { mutableStateOf(state.scanPrecision) }
     var selectedQueue by remember { mutableStateOf(state.maxQueuedPayloads) }
     var internalId by remember { mutableStateOf(state.userPropertyInternalId) }
     var email by remember { mutableStateOf(state.userPropertyEmail) }
@@ -72,7 +70,7 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Text(
-                    text = "2.3.5",
+                    text = "2.3.6",
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium
                 )
@@ -80,28 +78,43 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // Sync Intervals Section
+            // Scan Precision Section
             Text(
-                text = "Intervalos de Sync",
+                text = "Precisão do Scan",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
 
-            // Foreground Interval
-            IntervalSelector(
-                label = "Foreground",
-                currentValue = "${selectedFg.milliseconds / 1000}s",
-                options = ForegroundScanInterval.entries.map { it to "${it.milliseconds / 1000}s" },
-                onSelect = { selectedFg = it }
-            )
-
-            // Background Interval
-            IntervalSelector(
-                label = "Background",
-                currentValue = "${selectedBg.milliseconds / 1000}s",
-                options = BackgroundScanInterval.entries.map { it to "${it.milliseconds / 1000}s" },
-                onSelect = { selectedBg = it }
-            )
+            ScanPrecision.entries.forEach { precision ->
+                val description = when (precision) {
+                    ScanPrecision.HIGH -> "Contínuo, sync a cada 15s"
+                    ScanPrecision.MEDIUM -> "3x (10s scan + 10s pausa) / min"
+                    ScanPrecision.LOW -> "1x (10s scan + 50s pausa) / min"
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { selectedPrecision = precision },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = selectedPrecision == precision,
+                        onClick = { selectedPrecision = precision }
+                    )
+                    Column(modifier = Modifier.padding(start = 4.dp)) {
+                        Text(
+                            text = precision.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
 
             HorizontalDivider()
 
@@ -163,7 +176,7 @@ fun SettingsScreen(
             // Apply Button
             Button(
                 onClick = {
-                    onApply(selectedFg, selectedBg, selectedQueue, internalId, email, name, custom)
+                    onApply(selectedPrecision, selectedQueue, internalId, email, name, custom)
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -171,59 +184,6 @@ fun SettingsScreen(
                     text = "Aplicar Configurações",
                     style = MaterialTheme.typography.titleMedium
                 )
-            }
-        }
-    }
-}
-
-@Composable
-fun <T> IntervalSelector(
-    label: String,
-    currentValue: String,
-    options: List<Pair<T, String>>,
-    onSelect: (T) -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        var expanded by remember { mutableStateOf(false) }
-
-        ExposedDropdownMenuBox(
-            expanded = expanded,
-            onExpandedChange = { expanded = !expanded }
-        ) {
-            OutlinedTextField(
-                value = currentValue,
-                onValueChange = {},
-                readOnly = true,
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                modifier = Modifier
-                    .menuAnchor()
-                    .width(120.dp),
-                textStyle = MaterialTheme.typography.bodyMedium
-            )
-
-            ExposedDropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false }
-            ) {
-                options.forEach { (value, display) ->
-                    DropdownMenuItem(
-                        text = { Text(display) },
-                        onClick = {
-                            onSelect(value)
-                            expanded = false
-                        }
-                    )
-                }
             }
         }
     }

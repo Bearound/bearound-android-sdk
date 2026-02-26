@@ -34,7 +34,8 @@ class BeaconManager(private val context: Context) {
 
     private var bluetoothLeScanner: BluetoothLeScanner? = null
     var isScanning = false
-    private var isRanging = false
+    var isRanging = false
+        private set
     private var isInForeground = true
     private var isInBeaconRegion = false
     
@@ -213,6 +214,27 @@ class BeaconManager(private val context: Context) {
         if (isInForeground) {
             stopRangingRefreshTimer()
         }
+    }
+
+    /**
+     * Pause ranging without changing isScanning lifecycle.
+     * Used for duty cycle pause periods.
+     */
+    @SuppressLint("MissingPermission")
+    fun pauseRanging() {
+        if (!isScanning || !isRanging) return
+        Log.d(TAG, "pauseRanging() - pausing for duty cycle")
+        stopRanging()
+    }
+
+    /**
+     * Resume ranging without changing isScanning lifecycle.
+     * Used for duty cycle scan periods.
+     */
+    fun resumeRanging() {
+        if (!isScanning || isRanging) return
+        Log.d(TAG, "resumeRanging() - resuming for duty cycle")
+        startRanging()
     }
 
     private fun startMonitoring() {

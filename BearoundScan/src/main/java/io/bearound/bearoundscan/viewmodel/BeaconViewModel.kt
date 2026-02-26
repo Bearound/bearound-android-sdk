@@ -12,14 +12,14 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import io.bearound.bearoundscan.model.DetectionLogEntry
 import io.bearound.bearoundscan.notification.BeaconNotificationManager
 import io.bearound.sdk.BeAroundSDK
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.Beacon
-import io.bearound.sdk.models.BackgroundScanInterval
-import io.bearound.sdk.models.ForegroundScanInterval
 import io.bearound.sdk.models.MaxQueuedPayloads
+import io.bearound.sdk.models.ScanPrecision
 import io.bearound.sdk.models.UserProperties
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -40,9 +40,8 @@ data class BeAroundScanState(
     val bluetoothStatus: String = "Verificando...",
     val notificationStatus: String = "Verificando...",
     val lastScanTime: Date? = null,
-    val currentSyncInterval: Int = 15,
-    val foregroundInterval: ForegroundScanInterval = ForegroundScanInterval.SECONDS_15,
-    val backgroundInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_60,
+    val currentSyncInterval: Int = 60,
+    val scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
     val maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
     val isInBackground: Boolean = false,
     val sortOption: BeaconSortOption = BeaconSortOption.PROXIMITY,
@@ -74,6 +73,15 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     private var scanStartTime: Date? = null
     private var previousListener: BeAroundSDKListener? = null
 
+    // Detection Log
+    private val _foregroundLog = MutableStateFlow<List<DetectionLogEntry>>(emptyList())
+    val foregroundLog: StateFlow<List<DetectionLogEntry>> = _foregroundLog.asStateFlow()
+
+    private val _backgroundLog = MutableStateFlow<List<DetectionLogEntry>>(emptyList())
+    val backgroundLog: StateFlow<List<DetectionLogEntry>> = _backgroundLog.asStateFlow()
+
+    private val maxLogEntries = 50000
+
     init {
         previousListener = sdk.listener
         sdk.listener = this
@@ -84,8 +92,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         checkNotificationStatus()
 
         configureSDK(
-            _state.value.foregroundInterval,
-            _state.value.backgroundInterval,
+            _state.value.scanPrecision,
             _state.value.maxQueuedPayloads
         )
 
@@ -98,17 +105,30 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     }
 
     private fun loadSavedSettings() {
-        val fgOrdinal = prefs.getInt("fg_interval", ForegroundScanInterval.SECONDS_15.ordinal)
-        val bgOrdinal = prefs.getInt("bg_interval", BackgroundScanInterval.SECONDS_60.ordinal)
-        val queueOrdinal = prefs.getInt("queue_size", MaxQueuedPayloads.MEDIUM.ordinal)
+        // Try new scan_precision key first, then migrate from legacy
+        val precisionOrdinal = prefs.getInt("scan_precision", -1)
+        val precision = if (precisionOrdinal >= 0) {
+            ScanPrecision.entries.getOrElse(precisionOrdinal) { ScanPrecision.MEDIUM }
+        } else {
+            // Migration from legacy fg_interval/bg_interval
+            val fgOrdinal = prefs.getInt("fg_interval", -1)
+            if (fgOrdinal >= 0) {
+                // Map old FG ordinal to precision: 0-1 (5-10s) -> HIGH, 2-5 (15-30s) -> MEDIUM, 6+ (35-60s) -> LOW
+                when {
+                    fgOrdinal <= 1 -> ScanPrecision.HIGH
+                    fgOrdinal <= 5 -> ScanPrecision.MEDIUM
+                    else -> ScanPrecision.LOW
+                }
+            } else {
+                ScanPrecision.MEDIUM
+            }
+        }
 
-        val fg = ForegroundScanInterval.entries.getOrElse(fgOrdinal) { ForegroundScanInterval.SECONDS_15 }
-        val bg = BackgroundScanInterval.entries.getOrElse(bgOrdinal) { BackgroundScanInterval.SECONDS_60 }
+        val queueOrdinal = prefs.getInt("queue_size", MaxQueuedPayloads.MEDIUM.ordinal)
         val queue = MaxQueuedPayloads.entries.getOrElse(queueOrdinal) { MaxQueuedPayloads.MEDIUM }
 
         _state.value = _state.value.copy(
-            foregroundInterval = fg,
-            backgroundInterval = bg,
+            scanPrecision = precision,
             maxQueuedPayloads = queue,
             userPropertyInternalId = prefs.getString("user_internal_id", "") ?: "",
             userPropertyEmail = prefs.getString("user_email", "") ?: "",
@@ -120,25 +140,25 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     private fun saveSettings() {
         val s = _state.value
         prefs.edit()
-            .putInt("fg_interval", s.foregroundInterval.ordinal)
-            .putInt("bg_interval", s.backgroundInterval.ordinal)
+            .putInt("scan_precision", s.scanPrecision.ordinal)
             .putInt("queue_size", s.maxQueuedPayloads.ordinal)
             .putString("user_internal_id", s.userPropertyInternalId)
             .putString("user_email", s.userPropertyEmail)
             .putString("user_name", s.userPropertyName)
             .putString("user_custom", s.userPropertyCustom)
+            // Remove legacy keys
+            .remove("fg_interval")
+            .remove("bg_interval")
             .apply()
     }
 
     private fun configureSDK(
-        foreground: ForegroundScanInterval,
-        background: BackgroundScanInterval,
+        precision: ScanPrecision,
         maxQueued: MaxQueuedPayloads
     ) {
         sdk.configure(
             businessToken = "BUSINESS_TOKEN",
-            foregroundScanInterval = foreground,
-            backgroundScanInterval = background,
+            scanPrecision = precision,
             maxQueuedPayloads = maxQueued
         )
 
@@ -184,8 +204,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun applySettings(
-        foreground: ForegroundScanInterval,
-        background: BackgroundScanInterval,
+        precision: ScanPrecision,
         maxQueued: MaxQueuedPayloads,
         internalId: String,
         email: String,
@@ -199,8 +218,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         }
 
         _state.value = _state.value.copy(
-            foregroundInterval = foreground,
-            backgroundInterval = background,
+            scanPrecision = precision,
             maxQueuedPayloads = maxQueued,
             userPropertyInternalId = internalId,
             userPropertyEmail = email,
@@ -208,7 +226,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             userPropertyCustom = custom
         )
 
-        configureSDK(foreground, background, maxQueued)
+        configureSDK(precision, maxQueued)
 
         // Set user properties
         val props = UserProperties(
@@ -261,17 +279,14 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         get() = (sdk.currentScanDuration ?: 0L).toInt() / 1000
 
     val pauseDuration: Int
-        get() {
-            val interval = (sdk.currentSyncInterval ?: 0L).toInt() / 1000
-            val scan = scanDuration
-            return maxOf(0, interval - scan)
-        }
+        get() = (sdk.currentPauseDuration ?: 0L).toInt() / 1000
 
     val scanMode: String
-        get() = if (sdk.isPeriodicScanningEnabled) {
-            if (pauseDuration > 0) "Periódico" else "Contínuo"
-        } else {
-            "Contínuo"
+        get() = when (sdk.currentScanPrecision) {
+            ScanPrecision.HIGH -> "Contínuo (HIGH)"
+            ScanPrecision.MEDIUM -> "Periódico (MEDIUM)"
+            ScanPrecision.LOW -> "Periódico (LOW)"
+            null -> "---"
         }
 
     // region BeAroundSDKListener
@@ -302,6 +317,9 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
                     "${sortedBeacons.size} beacon${if (sortedBeacons.size == 1) "" else "s"}"
                 }
             )
+
+            // Record detection log
+            recordDetections(sortedBeacons, isBackground = _state.value.isInBackground)
         }
     }
 
@@ -359,6 +377,27 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         viewModelScope.launch {
             notificationManager.notifyBeaconDetected(beaconCount, isBackground = true)
         }
+    }
+
+    // endregion
+
+    // region Detection Log
+
+    private fun recordDetections(beacons: List<Beacon>, isBackground: Boolean) {
+        if (beacons.isEmpty()) return
+        val newEntries = beacons.map { DetectionLogEntry.from(it, isBackground) }
+        if (isBackground) {
+            val updated = (newEntries + _backgroundLog.value).take(maxLogEntries)
+            _backgroundLog.value = updated
+        } else {
+            val updated = (newEntries + _foregroundLog.value).take(maxLogEntries)
+            _foregroundLog.value = updated
+        }
+    }
+
+    fun clearDetectionLog() {
+        _foregroundLog.value = emptyList()
+        _backgroundLog.value = emptyList()
     }
 
     // endregion

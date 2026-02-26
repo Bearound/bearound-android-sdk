@@ -1,66 +1,43 @@
 package io.bearound.sdk.models
 
-import kotlin.math.max
-import kotlin.math.min
-
 /**
  * Configuration for the BeAround SDK
  */
 data class SDKConfiguration(
     val businessToken: String,
     val appId: String,
-    val foregroundScanInterval: ForegroundScanInterval = ForegroundScanInterval.SECONDS_15,
-    val backgroundScanInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_30,
+    val scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
     val maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM
 ) {
     val apiBaseURL: String = "https://ingest.bearound.io"
 
-    /**
-     * Get the sync interval based on app state (foreground or background)
-     * @param isInBackground Whether the app is in background
-     * @return The interval in milliseconds
-     */
-    fun syncInterval(isInBackground: Boolean): Long {
-        return if (isInBackground) {
-            backgroundScanInterval.milliseconds
-        } else {
-            foregroundScanInterval.milliseconds
+    /** Scan duration is always 10s for all precision modes */
+    val precisionScanDuration: Long = 10_000L
+
+    /** Pause duration between scans: HIGH=0, MEDIUM=10s, LOW=50s */
+    val precisionPauseDuration: Long
+        get() = when (scanPrecision) {
+            ScanPrecision.HIGH -> 0L
+            ScanPrecision.MEDIUM -> 10_000L
+            ScanPrecision.LOW -> 50_000L
         }
-    }
 
-    /**
-     * Calculate scan duration based on current sync interval (1/3 of sync interval)
-     * @param isInBackground Whether the app is in background
-     * @return The scan duration in milliseconds (min 5s, max 10s)
-     * 
-     * Special case: For 5s interval in foreground, returns full 5s (continuous mode)
-     */
-    fun scanDuration(isInBackground: Boolean): Long {
-        val interval = syncInterval(isInBackground)
-        
-        // Special case: 5s interval = continuous mode (no pause)
-        if (!isInBackground && interval == 5000L) {
-            return interval
+    /** Number of scan+pause cycles per window: HIGH=0 (continuous), MEDIUM=3, LOW=1 */
+    val precisionCycleCount: Int
+        get() = when (scanPrecision) {
+            ScanPrecision.HIGH -> 0
+            ScanPrecision.MEDIUM -> 3
+            ScanPrecision.LOW -> 1
         }
-        
-        val calculatedDuration = interval / 3
-        return max(5000L, min(calculatedDuration, 10000L))
-    }
 
-    /**
-     * Validate and adjust sync interval between 5 and 60 seconds
-     * @deprecated Use syncInterval(isInBackground) instead
-     */
-    @Deprecated("Use syncInterval(isInBackground) instead", ReplaceWith("syncInterval(false)"))
-    val validatedSyncInterval: Long
-        get() = foregroundScanInterval.milliseconds
+    /** Cycle interval (window duration) is always 60s */
+    val precisionCycleInterval: Long = 60_000L
 
-    /**
-     * Calculate scan duration based on sync interval (1/3 of sync interval)
-     * @deprecated Use scanDuration(isInBackground) instead
-     */
-    @Deprecated("Use scanDuration(isInBackground) instead", ReplaceWith("scanDuration(false)"))
-    val scanDuration: Long
-        get() = scanDuration(false)
+    /** Sync interval: HIGH=15s, MEDIUM/LOW=60s */
+    val syncInterval: Long
+        get() = when (scanPrecision) {
+            ScanPrecision.HIGH -> 15_000L
+            ScanPrecision.MEDIUM -> 60_000L
+            ScanPrecision.LOW -> 60_000L
+        }
 }
-

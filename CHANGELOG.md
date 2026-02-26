@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.7] - 2026-02-26
+
+### ⚠️ Breaking Changes
+
+- **Replaced `ForegroundScanInterval`/`BackgroundScanInterval` with `ScanPrecision`**: Single unified enum (HIGH/MEDIUM/LOW) replaces separate foreground/background interval enums for cross-platform consistency with iOS SDK
+  - `ScanPrecision.HIGH` — Continuous BLE+Beacon scan, sync every 15s
+  - `ScanPrecision.MEDIUM` — 3x (10s scan + 10s pause) per minute, sync every 60s
+  - `ScanPrecision.LOW` — 1x (10s scan + 50s pause) per minute, sync every 60s
+- **`configure()` API changed**: Now takes `scanPrecision: ScanPrecision` instead of `foregroundScanInterval`/`backgroundScanInterval`
+
+### Added
+
+- **Duty cycle system**: New scan/pause scheduling with `pauseRanging()`/`resumeRanging()` on BeaconManager and `pauseScanning()`/`resumeScanning()` on BluetoothManager
+- **Detection Log screen** (BearoundScan app): Full log of beacon detections with FG/BG mode filter, Service UUID/iBeacon type filter, detail and grouped-by-minute views
+- **Tab navigation** (BearoundScan app): Bottom navigation with Beacons and Log tabs
+- **Pending/Synced beacon sections** (BearoundScan app): Beacons split into color-coded sections by sync status
+- **Beacon age indicator** (BearoundScan app): Detection time, age in seconds (color-coded), and sync timestamp on each beacon row
+
+### Changed
+
+- **SDKConfiguration**: Replaced `foregroundScanInterval`/`backgroundScanInterval` fields with `scanPrecision`, added computed properties (`precisionScanDuration`, `precisionPauseDuration`, `precisionCycleCount`, `syncInterval`)
+- **SDKConfigStorage**: New `scan_precision` key with automatic migration from legacy `foreground_interval`/`background_interval` keys
+- **BeAroundSDK**: Rewrote `startSyncTimer()` with duty cycle support (`startHighPrecision()`/`startDutyCycle()`), new public properties `currentScanPrecision` and `currentPauseDuration`
+
 ## [2.3.6] - 2026-02-20
 
 ### Added

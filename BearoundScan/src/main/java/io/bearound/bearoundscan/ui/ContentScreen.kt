@@ -11,7 +11,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -28,14 +30,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import io.bearound.bearoundscan.viewmodel.BeaconSortOption
 import io.bearound.bearoundscan.viewmodel.BeaconViewModel
 import io.bearound.bearoundscan.viewmodel.BeAroundScanState
-import io.bearound.sdk.models.BackgroundScanInterval
-import io.bearound.sdk.models.ForegroundScanInterval
-import io.bearound.sdk.models.MaxQueuedPayloads
+import io.bearound.sdk.models.ScanPrecision
 import java.text.SimpleDateFormat
 import java.util.*
 
 @Composable
-fun ContentScreen(viewModel: BeaconViewModel = viewModel()) {
+fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: PaddingValues = PaddingValues(0.dp)) {
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
 
@@ -72,44 +72,20 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel()) {
         SettingsScreen(
             state = state,
             onDismiss = { viewModel.hideSettings() },
-            onApply = { fg, bg, queue, internalId, email, name, custom ->
-                viewModel.applySettings(fg, bg, queue, internalId, email, name, custom)
+            onApply = { precision, queue, internalId, email, name, custom ->
+                viewModel.applySettings(precision, queue, internalId, email, name, custom)
                 viewModel.hideSettings()
             }
         )
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = "BeAroundScan",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = state.statusMessage,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-            )
-        }
-    ) { paddingValues ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(paddingValues)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
             // Permissions Section
             item {
                 PermissionsCard(state = state)
@@ -246,21 +222,41 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel()) {
                 }
             }
 
-            // Beacons List
+            // Beacons List — split into Pending / Synced sections
             if (state.beacons.isEmpty()) {
                 item {
                     EmptyBeaconsState(isScanning = state.isScanning)
                 }
             } else {
-                items(state.beacons) { beacon ->
-                    BeaconRow(
-                        beacon = beacon,
-                        isPinned = state.pinnedBeaconIds.contains(beacon.identifier),
-                        onTogglePin = { viewModel.togglePinBeacon(beacon) }
-                    )
+                val pendingBeacons = state.beacons.filter { !it.alreadySynced }
+                val syncedBeacons = state.beacons.filter { it.alreadySynced }
+
+                if (pendingBeacons.isNotEmpty()) {
+                    item {
+                        BeaconSection(
+                            title = "Pending",
+                            count = pendingBeacons.size,
+                            color = Color(0xFFFF9800),
+                            beacons = pendingBeacons,
+                            pinnedIds = state.pinnedBeaconIds,
+                            onTogglePin = { viewModel.togglePinBeacon(it) }
+                        )
+                    }
+                }
+
+                if (syncedBeacons.isNotEmpty()) {
+                    item {
+                        BeaconSection(
+                            title = "Synced",
+                            count = syncedBeacons.size,
+                            color = Color(0xFF4CAF50),
+                            beacons = syncedBeacons,
+                            pinnedIds = state.pinnedBeaconIds,
+                            onTogglePin = { viewModel.togglePinBeacon(it) }
+                        )
+                    }
                 }
             }
-        }
     }
 }
 
@@ -363,10 +359,14 @@ fun ScanInfoCard(state: BeAroundScanState, viewModel: BeaconViewModel) {
 
             InfoRow(label = "Modo:", value = viewModel.scanMode)
             InfoRow(
-                label = "Intervalo:",
-                value = "${state.currentSyncInterval}s"
+                label = "Precisão:",
+                value = state.scanPrecision.name
             )
+            InfoRow(label = "Sync:", value = "${state.currentSyncInterval}s")
             InfoRow(label = "Duração:", value = "${viewModel.scanDuration}s")
+            if (viewModel.pauseDuration > 0) {
+                InfoRow(label = "Pausa:", value = "${viewModel.pauseDuration}s")
+            }
         }
     }
 }
@@ -471,6 +471,56 @@ fun EmptyBeaconsState(isScanning: Boolean) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
+        }
+    }
+}
+
+@Composable
+fun BeaconSection(
+    title: String,
+    count: Int,
+    color: Color,
+    beacons: List<io.bearound.sdk.models.Beacon>,
+    pinnedIds: Set<String>,
+    onTogglePin: (io.bearound.sdk.models.Beacon) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(color.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
+            .padding(vertical = 4.dp)
+    ) {
+        // Section header
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .background(color, CircleShape)
+            )
+            Text(
+                text = "$title ($count)",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = color
+            )
+        }
+
+        // Beacon rows
+        beacons.forEachIndexed { index, beacon ->
+            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                BeaconRow(
+                    beacon = beacon,
+                    isPinned = pinnedIds.contains(beacon.identifier),
+                    onTogglePin = { onTogglePin(beacon) }
+                )
+                if (index < beacons.size - 1) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+                }
+            }
         }
     }
 }

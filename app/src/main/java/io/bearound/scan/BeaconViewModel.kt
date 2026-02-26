@@ -14,9 +14,8 @@ import androidx.lifecycle.viewModelScope
 import io.bearound.sdk.BeAroundSDK
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.models.Beacon
-import io.bearound.sdk.models.BackgroundScanInterval
-import io.bearound.sdk.models.ForegroundScanInterval
 import io.bearound.sdk.models.MaxQueuedPayloads
+import io.bearound.sdk.models.ScanPrecision
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,9 +35,8 @@ data class BeAroundScanState(
     val bluetoothStatus: String = "Verificando...",
     val notificationStatus: String = "Verificando...",
     val lastScanTime: Date? = null,
-    val currentSyncInterval: Int = 15,
-    val foregroundInterval: ForegroundScanInterval = ForegroundScanInterval.SECONDS_15,
-    val backgroundInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_30,
+    val currentSyncInterval: Int = 60,
+    val scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
     val maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
     val isInBackground: Boolean = false,
     val sortOption: BeaconSortOption = BeaconSortOption.PROXIMITY,
@@ -71,8 +69,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         
         // Configure SDK
         configureSDK(
-            _state.value.foregroundInterval,
-            _state.value.backgroundInterval,
+            _state.value.scanPrecision,
             _state.value.maxQueuedPayloads
         )
         
@@ -88,16 +85,13 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     }
 
     private fun configureSDK(
-        foreground: ForegroundScanInterval,
-        background: BackgroundScanInterval,
+        precision: ScanPrecision,
         maxQueued: MaxQueuedPayloads
     ) {
         sdk.configure(
             businessToken = "your-business-token-here",
-            foregroundScanInterval = foreground,
-            backgroundScanInterval = background,
+            scanPrecision = precision,
             maxQueuedPayloads = maxQueued
-            // Bluetooth scanning and periodic scanning are now automatic in v2.2.0
         )
     }
 
@@ -133,14 +127,12 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun updateConfiguration(
-        foreground: ForegroundScanInterval,
-        background: BackgroundScanInterval,
+        precision: ScanPrecision,
         maxQueued: MaxQueuedPayloads
     ) {
-        configureSDK(foreground, background, maxQueued)
+        configureSDK(precision, maxQueued)
         _state.value = _state.value.copy(
-            foregroundInterval = foreground,
-            backgroundInterval = background,
+            scanPrecision = precision,
             maxQueuedPayloads = maxQueued,
             currentSyncInterval = (sdk.currentSyncInterval ?: 0L).toInt() / 1000,
             statusMessage = "Configuração atualizada"
@@ -172,17 +164,14 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         get() = (sdk.currentScanDuration ?: 0L).toInt() / 1000
 
     val pauseDuration: Int
-        get() {
-            val interval = (sdk.currentSyncInterval ?: 0L).toInt() / 1000
-            val scan = scanDuration
-            return maxOf(0, interval - scan)
-        }
+        get() = (sdk.currentPauseDuration ?: 0L).toInt() / 1000
 
     val scanMode: String
-        get() = if (sdk.isPeriodicScanningEnabled) {
-            if (pauseDuration > 0) "Periódico" else "Contínuo"
-        } else {
-            "Contínuo"
+        get() = when (sdk.currentScanPrecision) {
+            ScanPrecision.HIGH -> "Contínuo (HIGH)"
+            ScanPrecision.MEDIUM -> "Periódico (MEDIUM)"
+            ScanPrecision.LOW -> "Periódico (LOW)"
+            null -> "---"
         }
 
     // region BeAroundSDKListener Implementation

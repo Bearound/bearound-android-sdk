@@ -105,6 +105,41 @@ class BluetoothManager(private val context: Context) {
         }
     }
 
+    /**
+     * Pause BLE scanning without changing isScanning lifecycle.
+     * Used for duty cycle pause periods.
+     */
+    @SuppressLint("MissingPermission")
+    fun pauseScanning() {
+        if (!isScanning) return
+        try {
+            bluetoothLeScanner?.stopScan(scanCallback)
+            Log.d(TAG, "Paused BLE scanning for duty cycle")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to pause BLE scanning: ${e.message}")
+        }
+    }
+
+    /**
+     * Resume BLE scanning without changing isScanning lifecycle.
+     * Used for duty cycle scan periods.
+     */
+    @SuppressLint("MissingPermission")
+    fun resumeScanning() {
+        if (!isScanning) return
+        if (!checkPermissions()) return
+        try {
+            val settings = ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
+                .setReportDelay(0)
+                .build()
+            bluetoothLeScanner?.startScan(null, settings, scanCallback)
+            Log.d(TAG, "Resumed BLE scanning for duty cycle")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to resume BLE scanning: ${e.message}")
+        }
+    }
+
     private fun processScanResult(result: ScanResult) {
         val scanRecord = result.scanRecord ?: return
         val rssi = result.rssi

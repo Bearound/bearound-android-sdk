@@ -19,14 +19,13 @@ import io.bearound.sdk.background.BackgroundScheduler
 import io.bearound.sdk.background.BeaconScanService
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.interfaces.BluetoothManagerListener
-import io.bearound.sdk.models.BackgroundScanInterval
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.BeaconMetadata
 import io.bearound.sdk.models.ForegroundScanConfig
-import io.bearound.sdk.models.ForegroundScanInterval
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
+import io.bearound.sdk.models.ScanPrecision
 import io.bearound.sdk.models.UserProperties
 import io.bearound.sdk.network.APIClient
 import io.bearound.sdk.utilities.DeviceInfoCollector
@@ -87,6 +86,7 @@ class BeAroundSDK private constructor() {
     private val handler = Handler(Looper.getMainLooper())
 
     private var syncRunnable: Runnable? = null
+    private var dutyCycleRunnable: Runnable? = null
 
     private var isSyncing = false
     private lateinit var offlineBatchStorage: OfflineBatchStorage
@@ -101,13 +101,19 @@ class BeAroundSDK private constructor() {
         get() = ::beaconManager.isInitialized && beaconManager.isScanning
 
     val currentSyncInterval: Long?
-        get() = configuration?.syncInterval(isInBackground)
+        get() = configuration?.syncInterval
 
     val currentScanDuration: Long?
-        get() = configuration?.scanDuration(isInBackground)
+        get() = configuration?.precisionScanDuration
+
+    val currentScanPrecision: ScanPrecision?
+        get() = configuration?.scanPrecision
+
+    val currentPauseDuration: Long?
+        get() = configuration?.precisionPauseDuration
 
     val isPeriodicScanningEnabled: Boolean
-        get() = !isInBackground  // Periodic in foreground, continuous in background
+        get() = configuration?.scanPrecision != ScanPrecision.HIGH
 
     val isConfigured: Boolean
         get() = configuration != null && apiClient != null
@@ -277,8 +283,7 @@ class BeAroundSDK private constructor() {
 
     fun configure(
         businessToken: String,
-        foregroundScanInterval: ForegroundScanInterval = ForegroundScanInterval.SECONDS_15,
-        backgroundScanInterval: BackgroundScanInterval = BackgroundScanInterval.SECONDS_30,
+        scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
         maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM
     ) {
         if(businessToken.trim().isEmpty()){
@@ -290,11 +295,10 @@ class BeAroundSDK private constructor() {
         val config = SDKConfiguration(
             businessToken = businessToken,
             appId = appId,
-            foregroundScanInterval = foregroundScanInterval,
-            backgroundScanInterval = backgroundScanInterval,
+            scanPrecision = scanPrecision,
             maxQueuedPayloads = maxQueuedPayloads
         )
-        
+
         configuration = config
         apiClient = APIClient(config)
 
@@ -305,10 +309,10 @@ class BeAroundSDK private constructor() {
         }
 
         sdkInfo = SDKInfo(appId = appId, build = buildNumber)
-        
+
         // Update offline batch storage max count
         offlineBatchStorage.maxBatchCount = config.maxQueuedPayloads.value
-        
+
         SDKConfigStorage.saveConfiguration(context, config)
 
         if (isScanning) {
@@ -501,72 +505,102 @@ class BeAroundSDK private constructor() {
 
     private fun startSyncTimer() {
         val config = configuration ?: return
-        
-        // Capture current background state - this won't change during this timer's lifecycle
-        // When app state changes, restartSyncTimer() is called which creates a new timer
-        val backgroundMode = isInBackground
-        
+
         Log.d(TAG, "=== START SYNC TIMER ===")
-        Log.d(TAG, "isInBackground: $backgroundMode")
-        Log.d(TAG, "Scanning mode: ${if (backgroundMode) "continuous" else "periodic"}")
-        
+        Log.d(TAG, "Precision: ${config.scanPrecision}")
+        Log.d(TAG, "Sync interval: ${config.syncInterval}ms")
+
         stopSyncTimer()
 
-        val syncInterval = config.syncInterval(backgroundMode)
-        Log.d(TAG, "Sync interval to use: ${syncInterval}ms (${syncInterval/1000}s)")
-        
-        // Check if continuous mode (5s interval = no stop/start cycling)
-        val isContinuousMode = !backgroundMode && syncInterval == 5000L
-        
+        when (config.scanPrecision) {
+            ScanPrecision.HIGH -> startHighPrecision(config)
+            ScanPrecision.MEDIUM, ScanPrecision.LOW -> startDutyCycle(config)
+        }
+    }
+
+    /**
+     * HIGH precision: continuous scanning + sync every 15s
+     */
+    private fun startHighPrecision(config: SDKConfiguration) {
+        Log.d(TAG, "HIGH precision: continuous scan, sync every ${config.syncInterval / 1000}s")
+
+        beaconManager.startRanging()
+
         syncRunnable = object : Runnable {
             override fun run() {
                 syncBeacons()
-                
-                // Periodic scanning in foreground only (not in continuous mode)
-                if (!backgroundMode && !isContinuousMode) {
-                    val scanDuration = config.scanDuration(false)
-                    val delayUntilNextRanging = syncInterval - scanDuration
-                    
-                    // Only stop ranging if there's a pause period
-                    if (delayUntilNextRanging > 0) {
-                        handler.postDelayed({
-                            beaconManager.stopRanging()
-                            // DON'T clear the UI - keep showing collected beacons
-                        }, 100)
-
-                        handler.postDelayed({
-                            beaconManager.startRanging()
-                        }, delayUntilNextRanging)
-                    }
-                }
-                // In continuous mode or background: no stop/start cycle
-                
-                handler.postDelayed(this, syncInterval)
+                handler.postDelayed(this, config.syncInterval)
             }
         }
-
-        if (!backgroundMode) {
-            if (isContinuousMode) {
-                // Continuous mode: start ranging immediately, no cycling
-                beaconManager.startRanging()
-                handler.postDelayed(syncRunnable!!, syncInterval)
-            } else {
-                // Periodic scanning: delay first ranging
-                val scanDuration = config.scanDuration(false)
-                val delayUntilFirstRanging = syncInterval - scanDuration
-                
-                handler.postDelayed({
-                    beaconManager.startRanging()
-                }, delayUntilFirstRanging)
-                
-                handler.postDelayed(syncRunnable!!, syncInterval)
-            }
-        } else {
-            // Background: continuous scanning (just schedule the sync timer)
-            handler.postDelayed(syncRunnable!!, syncInterval)
-        }
+        handler.postDelayed(syncRunnable!!, config.syncInterval)
     }
-    
+
+    /**
+     * MEDIUM/LOW precision: duty cycle with scan+pause windows
+     * MEDIUM: 3 cycles of 10s scan + 10s pause per 60s window
+     * LOW: 1 cycle of 10s scan + 50s pause per 60s window
+     */
+    private fun startDutyCycle(config: SDKConfiguration) {
+        val scanDuration = config.precisionScanDuration
+        val pauseDuration = config.precisionPauseDuration
+        val cycleCount = config.precisionCycleCount
+        val cycleInterval = config.precisionCycleInterval
+
+        Log.d(TAG, "${config.scanPrecision} precision: ${cycleCount}x (${scanDuration/1000}s scan + ${pauseDuration/1000}s pause) per ${cycleInterval/1000}s window")
+
+        runDutyCycleWindow(scanDuration, pauseDuration, cycleCount, cycleInterval)
+    }
+
+    private fun runDutyCycleWindow(
+        scanDuration: Long,
+        pauseDuration: Long,
+        cycleCount: Int,
+        cycleInterval: Long
+    ) {
+        var currentCycle = 0
+
+        fun scheduleCycle() {
+            if (currentCycle >= cycleCount) {
+                // All cycles in this window done — sync and schedule next window
+                Log.d(TAG, "Duty cycle window complete — syncing and scheduling next window")
+                syncBeacons()
+
+                // Calculate remaining time until next window
+                val elapsedInWindow = cycleCount.toLong() * (scanDuration + pauseDuration)
+                val remainingDelay = maxOf(0L, cycleInterval - elapsedInWindow)
+
+                dutyCycleRunnable = Runnable {
+                    runDutyCycleWindow(scanDuration, pauseDuration, cycleCount, cycleInterval)
+                }
+                handler.postDelayed(dutyCycleRunnable!!, remainingDelay)
+                return
+            }
+
+            // Start scan phase
+            Log.d(TAG, "Duty cycle ${currentCycle + 1}/$cycleCount: starting scan (${scanDuration / 1000}s)")
+            beaconManager.resumeRanging()
+            bluetoothManager.resumeScanning()
+
+            // Schedule pause after scan duration
+            dutyCycleRunnable = Runnable {
+                Log.d(TAG, "Duty cycle ${currentCycle + 1}/$cycleCount: pausing (${pauseDuration / 1000}s)")
+                beaconManager.pauseRanging()
+                bluetoothManager.pauseScanning()
+                currentCycle++
+
+                // Schedule next cycle after pause
+                dutyCycleRunnable = Runnable {
+                    scheduleCycle()
+                }
+                handler.postDelayed(dutyCycleRunnable!!, pauseDuration)
+            }
+            handler.postDelayed(dutyCycleRunnable!!, scanDuration)
+        }
+
+        // Start first cycle immediately
+        scheduleCycle()
+    }
+
     private fun restartSyncTimer() {
         if (isScanning) {
             startSyncTimer()
@@ -576,6 +610,8 @@ class BeAroundSDK private constructor() {
     private fun stopSyncTimer() {
         syncRunnable?.let { handler.removeCallbacks(it) }
         syncRunnable = null
+        dutyCycleRunnable?.let { handler.removeCallbacks(it) }
+        dutyCycleRunnable = null
     }
 
     private fun syncBeacons(forceBackground: Boolean = false) {
