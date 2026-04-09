@@ -5,6 +5,7 @@ import android.util.Log
 import io.bearound.bearoundscan.notification.BeaconNotificationManager
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.models.Beacon
+import io.bearound.sdk.models.NotificationContent
 
 class SDKBackgroundListener(
     private val context: Context
@@ -49,5 +50,12 @@ class SDKBackgroundListener(
     override fun onBeaconDetectedInBackground(beaconCount: Int) {
         Log.d(TAG, "Beacon detected in background: $beaconCount beacons")
         notificationManager.notifyBeaconDetected(beaconCount, isBackground = true)
+    }
+
+    override fun onProvideNotificationContent(beacons: List<Beacon>): NotificationContent {
+        return NotificationContent(
+            title = "BeAroundScan",
+            text = "Encontramos promoções para você!"
+        )
     }
 }

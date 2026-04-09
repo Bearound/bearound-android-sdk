@@ -186,10 +186,18 @@ class BeAroundSDK private constructor() {
 
             // Notify listener of beacon update (with sync state preserved)
             listener?.onBeaconsUpdated(beaconsForListener)
-            
+
             // Notify if beacons detected in background
             if (isInBackground && enrichedBeacons.isNotEmpty()) {
                 listener?.onBeaconDetectedInBackground(enrichedBeacons.size)
+
+                // Update foreground notification with contextual content
+                if (BeaconScanService.isRunning) {
+                    val content = listener?.onProvideNotificationContent(beaconsForListener)
+                    if (content != null) {
+                        BeaconScanService.updateNotification(context, content.title, content.text)
+                    }
+                }
             }
         }
 
@@ -350,7 +358,7 @@ class BeAroundSDK private constructor() {
     val isForegroundScanningEnabled: Boolean
         get() = foregroundScanConfig?.enabled == true
 
-    fun startScanning() {
+    fun startScanning(foregroundScanConfig: ForegroundScanConfig? = null) {
         val config = configuration
         if (config == null) {
             val error = Exception("SDK not configured. Call configure() first.")
@@ -358,13 +366,18 @@ class BeAroundSDK private constructor() {
             return
         }
 
+        // Enable foreground service if config provided
+        if (foregroundScanConfig != null) {
+            enableForegroundScanning(foregroundScanConfig)
+        }
+
         // Scanning mode is automatic based on app state (foreground/background)
         beaconManager.startScanning()
         startSyncTimer()
-        
+
         // Enable background mechanisms (WorkManager + AlarmManager)
         backgroundScheduler.enableAll()
-        
+
         // Persist scanning state for recovery after kill/reboot
         SDKConfigStorage.saveScanningEnabled(context, true)
 

@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
+import io.bearound.sdk.utilities.IBeaconParser
 
 /**
  * Manages background beacon scanning using:
@@ -20,9 +21,6 @@ class BackgroundScanManager(private val context: Context) {
     
     companion object {
         private const val TAG = "BeAroundSDK-BgScan"
-        private const val APPLE_MANUFACTURER_ID = 0x004C
-        private val IBEACON_PREFIX = byteArrayOf(0x02, 0x15)
-        private val IBEACON_MASK = byteArrayOf(0xFF.toByte(), 0xFF.toByte())
     }
     
     private var pendingIntent: PendingIntent? = null
@@ -88,9 +86,15 @@ class BackgroundScanManager(private val context: Context) {
             val filters = listOf(
                 ScanFilter.Builder()
                     .setManufacturerData(
-                        APPLE_MANUFACTURER_ID,
-                        IBEACON_PREFIX,
-                        IBEACON_MASK
+                        IBeaconParser.BEAROUND_MANUFACTURER_ID,
+                        byteArrayOf()
+                    )
+                    .build(),
+                ScanFilter.Builder()
+                    .setServiceData(
+                        IBeaconParser.BEAD_SERVICE_UUID,
+                        byteArrayOf(),
+                        byteArrayOf()
                     )
                     .build()
             )

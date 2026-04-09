@@ -147,39 +147,18 @@ class BluetoothManager(private val context: Context) {
         // Check if RSSI is valid
         if (rssi == 127 || rssi == 0) return
 
-        // PRIORITY 1: BEAD Service Data — has major, minor AND full metadata
-        val serviceData = IBeaconParser.parseServiceData(scanRecord, rssi)
-        if (serviceData != null) {
-            if (!shouldProcessBeacon(serviceData.major, serviceData.minor)) return
-
-            val isConnectable = scanRecord.advertiseFlags and 0x02 != 0
-
-            listener?.onBeaconDiscovered(
-                uuid = IBeaconParser.BEAROUND_UUID,
-                major = serviceData.major,
-                minor = serviceData.minor,
-                rssi = rssi,
-                txPower = serviceData.metadata.txPower ?: -59,
-                metadata = serviceData.metadata,
-                isConnectable = isConnectable
-            )
-            return
-        }
-
-        // PRIORITY 2: iBeacon manufacturer data — major, minor only, no metadata
-        val beaconData = IBeaconParser.parse(scanRecord, rssi) ?: return
-        if (!IBeaconParser.isBeAroundBeacon(beaconData)) return
-        if (!shouldProcessBeacon(beaconData.major, beaconData.minor)) return
+        val serviceData = IBeaconParser.parseServiceData(scanRecord, rssi) ?: return
+        if (!shouldProcessBeacon(serviceData.major, serviceData.minor)) return
 
         val isConnectable = scanRecord.advertiseFlags and 0x02 != 0
 
         listener?.onBeaconDiscovered(
-            uuid = beaconData.uuid,
-            major = beaconData.major,
-            minor = beaconData.minor,
+            uuid = IBeaconParser.BEAROUND_UUID,
+            major = serviceData.major,
+            minor = serviceData.minor,
             rssi = rssi,
-            txPower = beaconData.txPower,
-            metadata = null,
+            txPower = serviceData.metadata.txPower ?: -59,
+            metadata = serviceData.metadata,
             isConnectable = isConnectable
         )
     }

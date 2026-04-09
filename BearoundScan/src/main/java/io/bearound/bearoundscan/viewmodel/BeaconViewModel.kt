@@ -16,9 +16,10 @@ import io.bearound.bearoundscan.model.DetectionLogEntry
 import io.bearound.bearoundscan.notification.BeaconNotificationManager
 import io.bearound.sdk.BeAroundSDK
 import io.bearound.sdk.interfaces.BeAroundSDKListener
-import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.Beacon
+import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.MaxQueuedPayloads
+import io.bearound.sdk.models.NotificationContent
 import io.bearound.sdk.models.ScanPrecision
 import io.bearound.sdk.models.UserProperties
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -55,6 +56,11 @@ data class BeAroundScanState(
     val userPropertyEmail: String = "",
     val userPropertyName: String = "",
     val userPropertyCustom: String = "",
+    // Foreground service config
+    val foregroundServiceEnabled: Boolean = true,
+    val foregroundNotificationTitle: String = "",
+    val foregroundNotificationText: String = "Encontrando promoções",
+    val foregroundContextualText: String = "Encontramos promoções para você!",
     // Settings sheet
     val showSettings: Boolean = false,
     // Pinned beacons
@@ -133,7 +139,11 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             userPropertyInternalId = prefs.getString("user_internal_id", "") ?: "",
             userPropertyEmail = prefs.getString("user_email", "") ?: "",
             userPropertyName = prefs.getString("user_name", "") ?: "",
-            userPropertyCustom = prefs.getString("user_custom", "") ?: ""
+            userPropertyCustom = prefs.getString("user_custom", "") ?: "",
+            foregroundServiceEnabled = prefs.getBoolean("fg_service_enabled", true),
+            foregroundNotificationTitle = prefs.getString("fg_notification_title", "") ?: "",
+            foregroundNotificationText = prefs.getString("fg_notification_text", "Encontrando promoções") ?: "Encontrando promoções",
+            foregroundContextualText = prefs.getString("fg_contextual_text", "Encontramos promoções para você!") ?: "Encontramos promoções para você!"
         )
     }
 
@@ -146,6 +156,10 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             .putString("user_email", s.userPropertyEmail)
             .putString("user_name", s.userPropertyName)
             .putString("user_custom", s.userPropertyCustom)
+            .putBoolean("fg_service_enabled", s.foregroundServiceEnabled)
+            .putString("fg_notification_title", s.foregroundNotificationTitle)
+            .putString("fg_notification_text", s.foregroundNotificationText)
+            .putString("fg_contextual_text", s.foregroundContextualText)
             // Remove legacy keys
             .remove("fg_interval")
             .remove("bg_interval")
@@ -161,15 +175,6 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             scanPrecision = precision,
             maxQueuedPayloads = maxQueued
         )
-
-        // Enable background scanning via ForegroundService
-        sdk.enableForegroundScanning(
-            ForegroundScanConfig(
-                enabled = true,
-                notificationTitle = "BeAroundSDK",
-                notificationText = "Escaneando beacons em segundo plano"
-            )
-        )
     }
 
     fun startScanning() {
@@ -181,7 +186,14 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             return
         }
 
-        sdk.startScanning()
+        val s = _state.value
+        val fgConfig = if (s.foregroundServiceEnabled) {
+            ForegroundScanConfig(
+                notificationTitle = s.foregroundNotificationTitle,
+                notificationText = s.foregroundNotificationText
+            )
+        } else null
+        sdk.startScanning(fgConfig)
         scanStartTime = Date()
         wasInBeaconRegion = false
 
@@ -209,7 +221,11 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         internalId: String,
         email: String,
         name: String,
-        custom: String
+        custom: String,
+        fgEnabled: Boolean,
+        fgTitle: String,
+        fgText: String,
+        fgContextual: String
     ) {
         val wasScanning = _state.value.isScanning
 
@@ -223,10 +239,19 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             userPropertyInternalId = internalId,
             userPropertyEmail = email,
             userPropertyName = name,
-            userPropertyCustom = custom
+            userPropertyCustom = custom,
+            foregroundServiceEnabled = fgEnabled,
+            foregroundNotificationTitle = fgTitle,
+            foregroundNotificationText = fgText,
+            foregroundContextualText = fgContextual
         )
 
         configureSDK(precision, maxQueued)
+
+        // Disable foreground service if toggled off
+        if (!fgEnabled) {
+            sdk.disableForegroundScanning()
+        }
 
         // Set user properties
         val props = UserProperties(
@@ -249,7 +274,10 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         )
 
         if (wasScanning) {
-            sdk.startScanning()
+            val fgConfig = if (fgEnabled) {
+                ForegroundScanConfig(notificationTitle = fgTitle, notificationText = fgText)
+            } else null
+            sdk.startScanning(fgConfig)
             _state.value = _state.value.copy(isScanning = true, statusMessage = "Scaneando...")
         }
     }
@@ -377,6 +405,14 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         viewModelScope.launch {
             notificationManager.notifyBeaconDetected(beaconCount, isBackground = true)
         }
+    }
+
+    override fun onProvideNotificationContent(beacons: List<Beacon>): NotificationContent {
+        val s = _state.value
+        return NotificationContent(
+            title = s.foregroundNotificationTitle.ifEmpty { "BeAroundScan" },
+            text = s.foregroundContextualText
+        )
     }
 
     // endregion

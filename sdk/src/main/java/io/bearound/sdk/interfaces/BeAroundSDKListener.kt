@@ -1,6 +1,7 @@
 package io.bearound.sdk.interfaces
 
 import io.bearound.sdk.models.Beacon
+import io.bearound.sdk.models.NotificationContent
 
 /**
  * Listener interface for SDK events and updates
@@ -53,6 +54,20 @@ interface BeAroundSDKListener {
      * @param beaconCount Number of beacons detected
      */
     fun onBeaconDetectedInBackground(beaconCount: Int) {}
-    
+
+    // endregion
+
+    // region Contextual Notification (v2.4)
+
+    /**
+     * Called when beacons are detected in background with foreground service active.
+     * Return a [NotificationContent] to update the notification with contextual info
+     * (e.g., "Você está perto de [local]"), or null to keep the default text.
+     *
+     * @param beacons Currently detected beacons
+     * @return Custom notification content, or null to keep defaults from [ForegroundScanConfig]
+     */
+    fun onProvideNotificationContent(beacons: List<Beacon>): NotificationContent? = null
+
     // endregion
 }

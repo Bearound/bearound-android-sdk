@@ -30,6 +30,7 @@ class BeaconManager(private val context: Context) {
         private const val WATCHDOG_INTERVAL = 30000L
         private const val RANGING_REFRESH_INTERVAL = 120000L
         private const val MAX_RESTARTS_PER_MINUTE = 3
+        private const val DEFAULT_TX_POWER = -59
     }
 
     private var bluetoothLeScanner: BluetoothLeScanner? = null
@@ -170,9 +171,8 @@ class BeaconManager(private val context: Context) {
         val filters = listOf(
             ScanFilter.Builder()
                 .setManufacturerData(
-                    IBeaconParser.APPLE_MANUFACTURER_ID,
-                    IBeaconParser.IBEACON_PREFIX,
-                    IBeaconParser.IBEACON_MASK
+                    IBeaconParser.BEAROUND_MANUFACTURER_ID,
+                    byteArrayOf()
                 )
                 .build(),
             ScanFilter.Builder()
@@ -250,43 +250,23 @@ class BeaconManager(private val context: Context) {
     private fun processScanResult(result: ScanResult) {
         val scanRecord = result.scanRecord ?: return
 
-        // PRIORITY 1: BEAD Service Data — has major, minor AND full metadata
-        val serviceData = IBeaconParser.parseServiceData(scanRecord, result.rssi)
-        if (serviceData != null) {
-            val beacon = Beacon(
-                uuid = IBeaconParser.BEAROUND_UUID,
-                major = serviceData.major,
-                minor = serviceData.minor,
-                rssi = serviceData.rssi,
-                proximity = Beacon.Proximity.BT,
-                accuracy = -1.0,
-                timestamp = Date(),
-                metadata = serviceData.metadata,
-                txPower = null
-            )
-            processBeacon(beacon)
-            return
-        }
+        val serviceData = IBeaconParser.parseServiceData(scanRecord, result.rssi) ?: return
 
-        // PRIORITY 2: iBeacon manufacturer data — major, minor only, no metadata
-        val beaconData = IBeaconParser.parse(scanRecord, result.rssi) ?: return
-        if (!IBeaconParser.isBeAroundBeacon(beaconData)) return
-
-        val accuracy = calculateAccuracy(beaconData.txPower, beaconData.rssi)
+        val txPower = serviceData.metadata.txPower ?: DEFAULT_TX_POWER
+        val accuracy = calculateAccuracy(txPower, serviceData.rssi)
         val proximity = calculateProximity(accuracy)
 
         val beacon = Beacon(
-            uuid = beaconData.uuid,
-            major = beaconData.major,
-            minor = beaconData.minor,
-            rssi = beaconData.rssi,
+            uuid = IBeaconParser.BEAROUND_UUID,
+            major = serviceData.major,
+            minor = serviceData.minor,
+            rssi = serviceData.rssi,
             proximity = proximity,
             accuracy = accuracy,
             timestamp = Date(),
-            metadata = null,
-            txPower = beaconData.txPower
+            metadata = serviceData.metadata,
+            txPower = txPower
         )
-
         processBeacon(beacon)
     }
 
@@ -331,7 +311,7 @@ class BeaconManager(private val context: Context) {
 
     private fun calculateAccuracy(txPower: Int, rssi: Int): Double {
         if (rssi == 0) return -1.0
-        
+
         val ratio = rssi * 1.0 / txPower
         return if (ratio < 1.0) {
             ratio.pow(10.0)

@@ -20,9 +20,9 @@ fun SettingsScreen(
     state: BeAroundScanState,
     onDismiss: () -> Unit,
     onApply: (
-        ScanPrecision,
-        MaxQueuedPayloads,
-        String, String, String, String
+        ScanPrecision, MaxQueuedPayloads,
+        String, String, String, String,
+        Boolean, String, String, String
     ) -> Unit
 ) {
     var selectedPrecision by remember { mutableStateOf(state.scanPrecision) }
@@ -31,6 +31,10 @@ fun SettingsScreen(
     var email by remember { mutableStateOf(state.userPropertyEmail) }
     var name by remember { mutableStateOf(state.userPropertyName) }
     var custom by remember { mutableStateOf(state.userPropertyCustom) }
+    var fgEnabled by remember { mutableStateOf(state.foregroundServiceEnabled) }
+    var fgTitle by remember { mutableStateOf(state.foregroundNotificationTitle) }
+    var fgText by remember { mutableStateOf(state.foregroundNotificationText) }
+    var fgContextual by remember { mutableStateOf(state.foregroundContextualText) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -132,6 +136,65 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            // Foreground Service Section
+            Text(
+                text = "Foreground Service",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Notificação persistente",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = if (fgEnabled) "Ativo — mantém scan em OEMs agressivos"
+                               else "Desativado — scan silencioso via PendingIntent",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = fgEnabled,
+                    onCheckedChange = { fgEnabled = it }
+                )
+            }
+
+            if (fgEnabled) {
+                OutlinedTextField(
+                    value = fgTitle,
+                    onValueChange = { fgTitle = it },
+                    label = { Text("Título da notificação") },
+                    placeholder = { Text("Vazio = nome do app") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = fgText,
+                    onValueChange = { fgText = it },
+                    label = { Text("Texto padrão (enquanto busca)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = fgContextual,
+                    onValueChange = { fgContextual = it },
+                    label = { Text("Texto contextual (ao detectar beacons)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+            }
+
+            HorizontalDivider()
+
             // User Properties Section
             Text(
                 text = "Propriedades do Usuário",
@@ -176,7 +239,11 @@ fun SettingsScreen(
             // Apply Button
             Button(
                 onClick = {
-                    onApply(selectedPrecision, selectedQueue, internalId, email, name, custom)
+                    onApply(
+                        selectedPrecision, selectedQueue,
+                        internalId, email, name, custom,
+                        fgEnabled, fgTitle, fgText, fgContextual
+                    )
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {

@@ -72,8 +72,12 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
         SettingsScreen(
             state = state,
             onDismiss = { viewModel.hideSettings() },
-            onApply = { precision, queue, internalId, email, name, custom ->
-                viewModel.applySettings(precision, queue, internalId, email, name, custom)
+            onApply = { precision, queue, internalId, email, name, custom,
+                        fgEnabled, fgTitle, fgText, fgContextual ->
+                viewModel.applySettings(
+                    precision, queue, internalId, email, name, custom,
+                    fgEnabled, fgTitle, fgText, fgContextual
+                )
                 viewModel.hideSettings()
             }
         )

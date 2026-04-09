@@ -49,12 +49,31 @@ class BeaconScanService : Service() {
             context.stopService(Intent(context, BeaconScanService::class.java))
         }
 
+        fun updateNotification(context: Context, title: String, text: String) {
+            if (!isRunning) return
+            val intent = Intent(context, BeaconScanService::class.java).apply {
+                putExtra(EXTRA_TITLE, title)
+                putExtra(EXTRA_TEXT, text)
+                putExtra(EXTRA_UPDATE_ONLY, true)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
         private const val EXTRA_TITLE = "title"
         private const val EXTRA_TEXT = "text"
         private const val EXTRA_ICON = "icon"
         private const val EXTRA_CHANNEL_ID = "channel_id"
         private const val EXTRA_CHANNEL_NAME = "channel_name"
+        private const val EXTRA_UPDATE_ONLY = "update_only"
     }
+
+    private var currentIcon: Int? = null
+    private var currentChannelId: String? = null
+    private var currentChannelName: String = "Serviço de monitoramento da região"
 
     override fun onCreate() {
         super.onCreate()
@@ -63,11 +82,26 @@ class BeaconScanService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "Monitorando região"
-        val text = intent?.getStringExtra(EXTRA_TEXT) ?: "Verificando região em background"
+        val rawTitle = intent?.getStringExtra(EXTRA_TITLE) ?: ""
+        val title = rawTitle.ifEmpty { resolveAppName() }
+        val text = intent?.getStringExtra(EXTRA_TEXT) ?: "Encontrando promoções"
+        val isUpdateOnly = intent?.getBooleanExtra(EXTRA_UPDATE_ONLY, false) ?: false
+
+        if (isUpdateOnly) {
+            val nm = getSystemService(NotificationManager::class.java)
+            val notification = buildNotification(title, text, currentIcon, currentChannelId, currentChannelName)
+            nm.notify(NOTIFICATION_ID, notification)
+            Log.d(TAG, "Notification updated: $title — $text")
+            return START_STICKY
+        }
+
         val icon = intent?.getIntExtra(EXTRA_ICON, 0)?.takeIf { it != 0 }
         val channelId = intent?.getStringExtra(EXTRA_CHANNEL_ID)
         val channelName = intent?.getStringExtra(EXTRA_CHANNEL_NAME) ?: "Serviço de monitoramento da região"
+
+        currentIcon = icon
+        currentChannelId = channelId
+        currentChannelName = channelName
 
         val notification = buildNotification(title, text, icon, channelId, channelName)
 
@@ -94,6 +128,14 @@ class BeaconScanService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun resolveAppName(): String {
+        return try {
+            applicationInfo.loadLabel(packageManager).toString()
+        } catch (_: Exception) {
+            "Bearound"
+        }
+    }
 
     private fun buildNotification(
         title: String,
