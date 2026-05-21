@@ -499,30 +499,26 @@ class BeAroundSDK private constructor() {
                 return
             }
         }
-        
+
         val isAppInForeground = isAppInForeground()
-        
+
         Log.d(TAG, "Processing ${scanResults.size} broadcast results (app in foreground: $isAppInForeground)")
-        
-        if (isAppInForeground) {
-            Log.d(TAG, "Ignoring broadcast results - app in foreground (using regular ranging)")
-            return
-        }
-        
-        val beaconsBeforeBroadcast = beaconLock.withLock { collectedBeacons.size }
-        
+
+        // v2.5 — Broadcast results MUST be processed in any app state. They are the
+        // only signal that fires the region-rising-edge while we are outside the region
+        // (active ranging is gated by isInBeaconRegion, so it can't bootstrap itself).
+        // Active ranging dedupes by identifier in processBeacon so re-processing is safe.
         scanResults.forEach { result ->
             beaconManager.processExternalScanResult(result)
         }
-        
+
         val beaconsAfterBroadcast = beaconLock.withLock { collectedBeacons.size }
         val timerIsActive = (syncRunnable != null)
-        
-        if (!timerIsActive && beaconsAfterBroadcast > 0) {
-            Log.d(TAG, "Broadcast detected beacons but no timer active - syncing immediately")
+
+        // Only force-sync from broadcast when in background (foreground has its own sync timer).
+        if (!isAppInForeground && !timerIsActive && beaconsAfterBroadcast > 0) {
+            Log.d(TAG, "Broadcast detected beacons in background - syncing immediately")
             syncBeacons(forceBackground = true)
-        } else {
-            Log.d(TAG, "Beacons collected from broadcast - will sync on next timer cycle")
         }
     }
     
