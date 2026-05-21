@@ -26,6 +26,11 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -45,6 +50,15 @@ fun GeofenceDebugCard(
     onClearLog: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Tick once per second so we can render live "X seg atrás" ages.
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(1000)
+            nowMs = System.currentTimeMillis()
+        }
+    }
+
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -115,9 +129,11 @@ fun GeofenceDebugCard(
             }
 
             state.lastCaptureCompletedAt?.let { ts ->
+                val ageSec = ((nowMs - ts.time) / 1000).coerceAtLeast(0)
+                val ageLabel = formatAge(ageSec)
                 DetailRow(
                     "Concluído em:",
-                    SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(ts)
+                    "${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(ts)}  ($ageLabel)"
                 )
             }
 
@@ -133,12 +149,18 @@ fun GeofenceDebugCard(
 
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     state.geofenceEvents.take(10).forEach { event ->
-                        GeofenceEventRow(event)
+                        GeofenceEventRow(event, nowMs = nowMs)
                     }
                 }
             }
         }
     }
+}
+
+private fun formatAge(ageSec: Long): String = when {
+    ageSec < 60 -> "${ageSec}s atrás"
+    ageSec < 3600 -> "${ageSec / 60}min ${ageSec % 60}s atrás"
+    else -> "${ageSec / 3600}h ${(ageSec % 3600) / 60}min atrás"
 }
 
 @Composable
@@ -197,7 +219,8 @@ private fun DetailRow(label: String, value: String) {
 }
 
 @Composable
-private fun GeofenceEventRow(event: GeofenceEvent) {
+private fun GeofenceEventRow(event: GeofenceEvent, nowMs: Long) {
+    val ageSec = ((nowMs - event.timestamp.time) / 1000).coerceAtLeast(0)
     val (color, title) = when (event.kind) {
         GeofenceEvent.Kind.REGION_ENTER -> Color(0xFF2E7D32) to "ENTROU NA ZONA"
         GeofenceEvent.Kind.REGION_EXIT -> Color(0xFFE65100) to "SAIU DA ZONA"
@@ -232,7 +255,7 @@ private fun GeofenceEventRow(event: GeofenceEvent) {
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    text = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(event.timestamp),
+                    text = "${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(event.timestamp)} · ${formatAge(ageSec)}",
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
