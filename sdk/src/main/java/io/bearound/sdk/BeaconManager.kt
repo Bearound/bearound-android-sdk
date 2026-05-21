@@ -13,7 +13,9 @@ import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
 import io.bearound.sdk.models.Beacon
+import io.bearound.sdk.models.RssiStats
 import io.bearound.sdk.utilities.IBeaconParser
+import io.bearound.sdk.utilities.RssiFilterRegistry
 import java.util.Date
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -25,12 +27,13 @@ import kotlin.math.pow
 class BeaconManager(private val context: Context) {
     companion object {
         private const val TAG = "BeAroundSDK-BeaconM"
-        private const val BEACON_TIMEOUT_FOREGROUND = 5000L
-        private const val BEACON_TIMEOUT_BACKGROUND = 10000L
+        private const val BEACON_TIMEOUT_DEFAULT = 5000L
         private const val WATCHDOG_INTERVAL = 30000L
         private const val RANGING_REFRESH_INTERVAL = 120000L
         private const val MAX_RESTARTS_PER_MINUTE = 3
         private const val DEFAULT_TX_POWER = -59
+        /** Past this gap with no packet, the beacon is rendered as stale (faded) but kept. */
+        private const val STALE_THRESHOLD_MS = 5000L
     }
 
     private var bluetoothLeScanner: BluetoothLeScanner? = null
@@ -52,6 +55,16 @@ class BeaconManager(private val context: Context) {
     private val detectedBeacons = mutableMapOf<String, Beacon>()
     private val beaconLastSeen = mutableMapOf<String, Long>()
     private val beaconLock = ReentrantLock()
+
+    // RSSI smoothing + per-window sample accumulation
+    private val rssiFilter = RssiFilterRegistry()
+    private val rssiAccumulators = mutableMapOf<String, RssiStats.Accumulator>()
+
+    /**
+     * Effective beacon removal timeout (ms). Should be set by the SDK to cover
+     * scan + pause + buffer for the active precision mode (5s HIGH, 25s MEDIUM, 65s LOW).
+     */
+    private var beaconTimeoutMs: Long = BEACON_TIMEOUT_DEFAULT
     
     private var lastBeaconUpdate: Long? = null
     private var emptyBeaconCount = 0
@@ -65,7 +78,16 @@ class BeaconManager(private val context: Context) {
     private var backgroundRangingRunnable: Runnable? = null
 
     private val beaconTimeout: Long
-        get() = if (isInForeground) BEACON_TIMEOUT_FOREGROUND else BEACON_TIMEOUT_BACKGROUND
+        get() = beaconTimeoutMs
+
+    /**
+     * Set how long a beacon stays in the detected map after the last packet.
+     * Should be set to cover the worst-case gap between packets for the active
+     * scan precision (scan + pause + buffer).
+     */
+    fun setBeaconTimeout(timeoutMs: Long) {
+        beaconTimeoutMs = timeoutMs.coerceAtLeast(BEACON_TIMEOUT_DEFAULT)
+    }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -154,8 +176,10 @@ class BeaconManager(private val context: Context) {
         beaconLock.withLock {
             detectedBeacons.clear()
             beaconLastSeen.clear()
+            rssiAccumulators.clear()
             lastLocation = null
         }
+        rssiFilter.clear()
 
         isInBeaconRegion = false
         emptyBeaconCount = 0
@@ -253,40 +277,78 @@ class BeaconManager(private val context: Context) {
         val serviceData = IBeaconParser.parseServiceData(scanRecord, result.rssi) ?: return
 
         val txPower = serviceData.metadata.txPower ?: DEFAULT_TX_POWER
-        val accuracy = calculateAccuracy(txPower, serviceData.rssi)
+        val identifier = "${serviceData.major}.${serviceData.minor}"
+        val rawRssi = serviceData.rssi
+        val nowMs = System.currentTimeMillis()
+
+        val smoothedRssi = rssiFilter.smooth(identifier, rawRssi)
+
+        val statsSnapshot = beaconLock.withLock {
+            val accumulator = rssiAccumulators.getOrPut(identifier) { RssiStats.Accumulator() }
+            accumulator.add(rawRssi, nowMs)
+            accumulator.snapshot()
+        }
+
+        val accuracy = calculateAccuracy(txPower, smoothedRssi)
         val proximity = calculateProximity(accuracy)
 
         val beacon = Beacon(
             uuid = IBeaconParser.BEAROUND_UUID,
             major = serviceData.major,
             minor = serviceData.minor,
-            rssi = serviceData.rssi,
+            rssi = smoothedRssi,
             proximity = proximity,
             accuracy = accuracy,
-            timestamp = Date(),
+            timestamp = Date(nowMs),
             metadata = serviceData.metadata,
-            txPower = txPower
+            txPower = txPower,
+            rssiRaw = rawRssi,
+            rssiSamples = statsSnapshot,
+            isStale = false
         )
         processBeacon(beacon)
     }
 
+    /**
+     * Snapshot per-beacon stats accumulated since the last reset, then reset accumulators.
+     * Used by the SDK right before a sync to attach window stats to outgoing payloads and
+     * start a fresh accumulation window.
+     */
+    fun consumeRssiStats(identifiers: Collection<String>): Map<String, RssiStats> {
+        return beaconLock.withLock {
+            val result = mutableMapOf<String, RssiStats>()
+            for (id in identifiers) {
+                val acc = rssiAccumulators[id] ?: continue
+                acc.snapshot()?.let { result[id] = it }
+                acc.reset()
+            }
+            result
+        }
+    }
+
     private fun processBeacon(beacon: Beacon) {
-        lastBeaconUpdate = System.currentTimeMillis()
+        val now = System.currentTimeMillis()
+        lastBeaconUpdate = now
         emptyBeaconCount = 0
         isInBeaconRegion = true
 
         beaconLock.withLock {
             val identifier = beacon.identifier
             detectedBeacons[identifier] = beacon
-            beaconLastSeen[identifier] = System.currentTimeMillis()
+            beaconLastSeen[identifier] = now
         }
 
         cleanupExpiredBeacons()
 
+        // Refresh stale flag for every beacon in the snapshot — emit reflects current freshness
         val currentBeacons = beaconLock.withLock {
-            detectedBeacons.values.toList()
+            detectedBeacons.values.map { b ->
+                val lastSeen = beaconLastSeen[b.identifier] ?: now
+                val staleNow = (now - lastSeen) > STALE_THRESHOLD_MS
+                if (staleNow != b.isStale) b.copy(isStale = staleNow) else b
+            }
         }
-        
+
         if (currentBeacons.isNotEmpty()) {
             onBeaconsUpdated?.invoke(currentBeacons)
         }
@@ -299,12 +361,14 @@ class BeaconManager(private val context: Context) {
             val now = System.currentTimeMillis()
             val expiredKeys = beaconLastSeen.filter { (_, lastSeen) ->
                 now - lastSeen > beaconTimeout
-            }.keys
+            }.keys.toList()
 
             expiredKeys.forEach { key ->
                 Log.d(TAG, "Beacon $key expired (timeout: ${beaconTimeout}ms)")
                 detectedBeacons.remove(key)
                 beaconLastSeen.remove(key)
+                rssiFilter.remove(key)
+                rssiAccumulators.remove(key)
             }
         }
     }

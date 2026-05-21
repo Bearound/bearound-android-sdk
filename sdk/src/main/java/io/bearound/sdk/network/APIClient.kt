@@ -112,6 +112,20 @@ class APIClient(private val configuration: SDKConfiguration) {
                 put("timestamp", beacon.timestamp.time)
 
                 beacon.txPower?.let { put("txPower", it) }
+                beacon.rssiRaw?.let { put("rssiRaw", it) }
+
+                beacon.rssiSamples?.let { stats ->
+                    val statsObj = JSONObject().apply {
+                        put("count", stats.count)
+                        put("min", stats.min)
+                        put("max", stats.max)
+                        put("avg", stats.avg)
+                        put("stdDev", stats.stdDev)
+                        put("firstSeen", stats.firstSeen)
+                        put("lastSeen", stats.lastSeen)
+                    }
+                    put("rssiSamples", statsObj)
+                }
 
                 beacon.metadata?.let { metadata ->
                     val metadataObj = JSONObject().apply {

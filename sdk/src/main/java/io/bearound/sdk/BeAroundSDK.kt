@@ -525,6 +525,11 @@ class BeAroundSDK private constructor() {
 
         stopSyncTimer()
 
+        // Adaptive beacon timeout: cover scan + pause + 5s buffer so beacons don't expire mid-duty-cycle
+        val beaconTimeout = config.precisionScanDuration + config.precisionPauseDuration + 5_000L
+        beaconManager.setBeaconTimeout(beaconTimeout)
+        Log.d(TAG, "Beacon timeout set to ${beaconTimeout}ms")
+
         when (config.scanPrecision) {
             ScanPrecision.HIGH -> startHighPrecision(config)
             ScanPrecision.MEDIUM, ScanPrecision.LOW -> startDutyCycle(config)
@@ -651,11 +656,19 @@ class BeAroundSDK private constructor() {
             }
 
             // Regular sync: get collected beacons (skip already synced)
-            val beaconsToSend = beaconLock.withLock {
+            val rawBeaconsToSend = beaconLock.withLock {
                 collectedBeacons.values.filter { !it.alreadySynced }
             }
 
-            if (beaconsToSend.isEmpty()) return@launch
+            if (rawBeaconsToSend.isEmpty()) return@launch
+
+            // Snapshot + reset per-beacon RSSI accumulators so the payload carries the
+            // FULL window stats and the next window starts fresh.
+            val freshStats = beaconManager.consumeRssiStats(rawBeaconsToSend.map { it.identifier })
+            val beaconsToSend = rawBeaconsToSend.map { b ->
+                val stats = freshStats[b.identifier] ?: b.rssiSamples
+                if (stats != b.rssiSamples) b.copy(rssiSamples = stats) else b
+            }
 
             isSyncing = true
 

@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -26,15 +27,17 @@ import java.util.*
 @Composable
 fun BeaconRow(beacon: Beacon, isPinned: Boolean = false, onTogglePin: () -> Unit = {}) {
     val dateFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+    val rowAlpha = if (beacon.isStale) 0.5f else 1.0f
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onTogglePin() }
-            .padding(vertical = 8.dp),
+            .padding(vertical = 8.dp)
+            .alpha(rowAlpha),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // Header: Beacon ID + pin + RSSI
+        // Header: Beacon ID + pin + RSSI (smoothed + raw)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -57,9 +60,20 @@ fun BeaconRow(beacon: Beacon, isPinned: Boolean = false, onTogglePin: () -> Unit
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
+                if (beacon.isStale) {
+                    Text(
+                        text = "STALE",
+                        modifier = Modifier
+                            .background(Color(0xFF9E9E9E), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp),
+                        color = Color.White,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
 
-            // RSSI
+            // RSSI: smoothed (primary) + raw (small)
             Row(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -72,9 +86,17 @@ fun BeaconRow(beacon: Beacon, isPinned: Boolean = false, onTogglePin: () -> Unit
                 )
                 Text(
                     text = "${beacon.rssi}dB",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
                 )
+                beacon.rssiRaw?.let { raw ->
+                    Text(
+                        text = "(raw ${raw})",
+                        fontSize = 9.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
 
@@ -138,6 +160,23 @@ fun BeaconRow(beacon: Beacon, isPinned: Boolean = false, onTogglePin: () -> Unit
                 MetadataChip(label = "Temp", value = "${meta.temperature}\u00B0C")
                 MetadataChip(label = "Mov", value = "${meta.movements}")
                 MetadataChip(label = "FW", value = "v${meta.firmwareVersion}")
+            }
+        }
+
+        // RSSI window stats \u2014 visible quality of the smoothed signal
+        beacon.rssiSamples?.let { stats ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFFEDF7EE), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                MetadataChip(label = "n", value = "${stats.count}")
+                MetadataChip(label = "min", value = "${stats.min}")
+                MetadataChip(label = "max", value = "${stats.max}")
+                MetadataChip(label = "avg", value = String.format("%.1f", stats.avg))
+                MetadataChip(label = "\u03C3", value = String.format("%.1f", stats.stdDev))
             }
         }
 

@@ -8,6 +8,7 @@ import com.google.gson.annotations.SerializedName
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.BeaconMetadata
 import io.bearound.sdk.models.MaxQueuedPayloads
+import io.bearound.sdk.models.RssiStats
 import java.io.File
 import java.util.Date
 import java.util.UUID
@@ -54,7 +55,9 @@ class OfflineBatchStorage(private val context: Context) {
         @SerializedName("accuracy") val accuracy: Double,
         @SerializedName("timestamp") val timestamp: Long,
         @SerializedName("metadata") val metadata: StoredBeaconMetadata?,
-        @SerializedName("txPower") val txPower: Int?
+        @SerializedName("txPower") val txPower: Int?,
+        @SerializedName("rssiRaw") val rssiRaw: Int? = null,
+        @SerializedName("rssiSamples") val rssiSamples: StoredRssiStats? = null
     ) {
         companion object {
             fun fromBeacon(beacon: Beacon): StoredBeacon {
@@ -67,18 +70,20 @@ class OfflineBatchStorage(private val context: Context) {
                     accuracy = beacon.accuracy,
                     timestamp = beacon.timestamp.time,
                     metadata = beacon.metadata?.let { StoredBeaconMetadata.fromBeaconMetadata(it) },
-                    txPower = beacon.txPower
+                    txPower = beacon.txPower,
+                    rssiRaw = beacon.rssiRaw,
+                    rssiSamples = beacon.rssiSamples?.let { StoredRssiStats.fromRssiStats(it) }
                 )
             }
         }
-        
+
         fun toBeacon(): Beacon {
             val beaconProximity = try {
                 Beacon.Proximity.valueOf(proximity)
             } catch (e: IllegalArgumentException) {
                 Beacon.Proximity.UNKNOWN
             }
-            
+
             return Beacon(
                 uuid = UUID.fromString(uuid),
                 major = major,
@@ -88,9 +93,43 @@ class OfflineBatchStorage(private val context: Context) {
                 accuracy = accuracy,
                 timestamp = Date(timestamp),
                 metadata = metadata?.toBeaconMetadata(),
-                txPower = txPower
+                txPower = txPower,
+                rssiRaw = rssiRaw,
+                rssiSamples = rssiSamples?.toRssiStats()
             )
         }
+    }
+
+    private data class StoredRssiStats(
+        @SerializedName("count") val count: Int,
+        @SerializedName("min") val min: Int,
+        @SerializedName("max") val max: Int,
+        @SerializedName("avg") val avg: Double,
+        @SerializedName("stdDev") val stdDev: Double,
+        @SerializedName("firstSeen") val firstSeen: Long,
+        @SerializedName("lastSeen") val lastSeen: Long
+    ) {
+        companion object {
+            fun fromRssiStats(stats: RssiStats) = StoredRssiStats(
+                count = stats.count,
+                min = stats.min,
+                max = stats.max,
+                avg = stats.avg,
+                stdDev = stats.stdDev,
+                firstSeen = stats.firstSeen,
+                lastSeen = stats.lastSeen
+            )
+        }
+
+        fun toRssiStats() = RssiStats(
+            count = count,
+            min = min,
+            max = max,
+            avg = avg,
+            stdDev = stdDev,
+            firstSeen = firstSeen,
+            lastSeen = lastSeen
+        )
     }
     
     private data class StoredBeaconMetadata(
