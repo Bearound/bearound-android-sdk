@@ -19,10 +19,23 @@ android {
         multiDexEnabled = true
     }
 
+    signingConfigs {
+        // Reuses the standard Android debug keystore so the release variant can be
+        // installed directly on a developer device without provisioning a key. Do NOT
+        // ship a real production release this way — the debug keystore is public.
+        create("debugRelease") {
+            storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("debugRelease")
         }
     }
 

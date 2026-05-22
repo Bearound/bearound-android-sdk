@@ -37,12 +37,8 @@ class LocationCaptureManager(private val context: Context) {
         const val WINDOW_BACKGROUND_MS = 15_000L
         /** Accept the fix and close the window when accuracy is ≤ this many meters. */
         const val ACCEPT_ACCURACY_M = 30.0f
-        /**
-         * Re-trigger capture if [lastLocation] is older than this (ms).
-         * v2.5: 2 min during initial rollout so the UI shows a fresh fix often
-         * enough to be useful for debugging. Production tuning later.
-         */
-        const val STALE_THRESHOLD_MS = 2 * 60_000L
+        /** Re-trigger capture if [lastLocation] is older than this (ms). */
+        const val STALE_THRESHOLD_MS = 10 * 60_000L
         /** Maximum acceptable horizontalAccuracy to store as lastLocation (filter junk). */
         private const val MAX_ACCURACY_M = 100.0f
         /** Maximum acceptable age of a delivered fix when first received (ms). */

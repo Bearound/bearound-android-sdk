@@ -190,16 +190,6 @@ class BeAroundSDK private constructor() {
             // Notify listener of beacon update (with sync state preserved)
             listener?.onBeaconsUpdated(beaconsForListener)
 
-            // v2.5 — Stale-refresh: re-pulse GPS if beacons are present and our fix has
-            // aged past LocationCaptureManager.STALE_THRESHOLD_MS. start() is idempotent
-            // so it's safe to call on every scan tick.
-            if (enrichedBeacons.isNotEmpty()
-                && !locationCaptureManager.isCapturing
-                && locationCaptureManager.isLocationStale()
-            ) {
-                locationCaptureManager.start(reason = "stale_refresh")
-            }
-
             // Notify if beacons detected in background
             if (isInBackground && enrichedBeacons.isNotEmpty()) {
                 listener?.onBeaconDetectedInBackground(enrichedBeacons.size)
