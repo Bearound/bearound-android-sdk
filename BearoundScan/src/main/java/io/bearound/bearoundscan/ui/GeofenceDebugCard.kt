@@ -94,6 +94,22 @@ fun GeofenceDebugCard(
                 color = if (state.isInBeaconRegion) Color(0xFF2E7D32) else Color.Gray
             )
 
+            // Entered/exited timestamps with live age (poll via nowMs 1Hz)
+            state.lastEnteredRegionAt?.let { ts ->
+                val ageSec = ((nowMs - ts.time) / 1000).coerceAtLeast(0)
+                DetailRow(
+                    "Entrou às:",
+                    "${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(ts)}  (${formatAge(ageSec)})"
+                )
+            }
+            state.lastExitedRegionAt?.let { ts ->
+                val ageSec = ((nowMs - ts.time) / 1000).coerceAtLeast(0)
+                DetailRow(
+                    "Saiu às:",
+                    "${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(ts)}  (${formatAge(ageSec)})"
+                )
+            }
+
             StatusRow(
                 icon = { Icon(Icons.Default.Wifi, contentDescription = null,
                     tint = if (state.isActiveScanRunning) Color(0xFF2E7D32) else Color.Gray) },

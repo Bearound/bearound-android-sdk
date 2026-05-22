@@ -87,6 +87,8 @@ data class BeAroundScanState(
     val pinnedBeaconIds: Set<String> = emptySet(),
     // Geofence Debug (v2.5)
     val isInBeaconRegion: Boolean = false,
+    val lastEnteredRegionAt: Date? = null,
+    val lastExitedRegionAt: Date? = null,
     val isActiveScanRunning: Boolean = false,
     val isCapturingLocation: Boolean = false,
     val lastCaptureOpenReason: String = "—",
@@ -448,15 +450,23 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
 
     override fun onEnterBeaconRegion() {
         viewModelScope.launch {
+            val now = Date()
             appendGeofenceEvent(GeofenceEvent.Kind.REGION_ENTER, "Entrou em uma zona de beacon (BLE)")
-            _state.value = _state.value.copy(isInBeaconRegion = true)
+            _state.value = _state.value.copy(
+                isInBeaconRegion = true,
+                lastEnteredRegionAt = now
+            )
         }
     }
 
     override fun onExitBeaconRegion() {
         viewModelScope.launch {
+            val now = Date()
             appendGeofenceEvent(GeofenceEvent.Kind.REGION_EXIT, "Saiu da zona de beacon (timeout)")
-            _state.value = _state.value.copy(isInBeaconRegion = false)
+            _state.value = _state.value.copy(
+                isInBeaconRegion = false,
+                lastExitedRegionAt = now
+            )
         }
     }
 
