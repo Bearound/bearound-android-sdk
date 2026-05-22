@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-05-22
+
+### Changed
+
+- **Location is now strictly beacon-gated.** GPS (`LocationCaptureManager`) and active iBeacon ranging (`BluetoothLeScanner.startScan`) only run while the device is inside a beacon region. Outside the region, only the kernel-level filter scan (`BackgroundScanManager`'s `PendingIntent`) stays on — effectively zero battery cost.
+- **Active BLE central scan is gated by region presence.** `bluetoothManager.startScanning()` no longer fires on `BeAroundSDK.startScanning()`; it activates on the rising edge in `BeaconManager.processBeacon` and stops on the falling edge in `cleanupExpiredBeacons`.
+- **`processBroadcastResults` now runs in any app state.** Previously dropped foreground broadcast events on the assumption that the duty cycle would see them; with the new region gating that created a circular dependency where the duty cycle couldn't bootstrap the region without already being in it.
+
+### Added
+
+- `BeAroundSDKListener.onEnterBeaconRegion()` — fires on rising edge (first beacon detected after empty).
+- `BeAroundSDKListener.onExitBeaconRegion()` — fires on falling edge (last beacon expired).
+- `BeAroundSDKListener.onActiveScanStateChanged(isActive: Boolean)` — fires when ranging+BLE active scanning toggles.
+- `BeAroundSDKListener.onStartLocationCapture(reason: String)` — fires when a beacon-triggered GPS pulse opens.
+- `BeAroundSDKListener.onCompleteLocationCapture(result: LocationCaptureResult)` — fires when the GPS window closes.
+- New public model `LocationCaptureResult(reason, location?, outcome, timestamp)` with `hasFix: Boolean`.
+- All new listener methods ship with default no-op implementations — no breaking change for existing integrators.
+- `LocationCaptureManager` — one-shot capture window with `STALE_THRESHOLD_MS = 10min`, `WINDOW_FOREGROUND_MS = 30s`, `WINDOW_BACKGROUND_MS = 15s`, `ACCEPT_ACCURACY_M = 30f`.
+- `BeaconManager.isInBeaconRegion: Boolean` (public read-only) so host apps can query state directly.
+
+### Fixed
+
+- Duty-cycle timer no longer resumes ranging outside the beacon region. `resumeRanging()` and `startRanging()` now guard on `isInBeaconRegion`, preventing the CoreLocation indicator from staying lit when no beacon is nearby.
+- `BeaconManager` now emits a falling-edge event when the last beacon expires via the new `cleanupExpiredBeacons` periodic timer at `REGION_CLEANUP_INTERVAL_MS = 2s` — previously the region state could get stuck at `true` after beacons disappeared.
+
+### Battery impact
+
+For an app that spends most of its time outside any beacon region, this release drops CoreLocation + BLE active duty cycle to ~0 outside the region. Expect noticeable battery savings on users who carry the app but rarely encounter beacons.
+
 ## [2.3.7] - 2026-02-26
 
 ### ⚠️ Breaking Changes
