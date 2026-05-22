@@ -84,6 +84,15 @@ fun GeofenceDebugCard(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            // POLICY BANNER — makes the gate doctrine undeniable
+            GpsPolicyBanner(
+                isInZone = state.isInBeaconRegion,
+                isCapturing = state.isCapturingLocation,
+                captureCount = state.locationCaptureCount
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
             // Live status rows
             StatusRow(
                 icon = { Icon(Icons.Default.LocationOn, contentDescription = null,
@@ -282,6 +291,92 @@ private fun GeofenceEventRow(event: GeofenceEvent, nowMs: Long) {
                 text = event.detail,
                 style = MaterialTheme.typography.bodySmall,
                 fontSize = 11.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun GpsPolicyBanner(
+    isInZone: Boolean,
+    isCapturing: Boolean,
+    captureCount: Int
+) {
+    val bg = if (isInZone) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
+    val border = if (isInZone) Color(0xFF2E7D32) else Color(0xFFC62828)
+    val emoji = if (isInZone) "✅" else "⛔"
+    val title = if (isInZone) "GPS LIBERADO" else "GPS BLOQUEADO"
+    val titleColor = if (isInZone) Color(0xFF1B5E20) else Color(0xFFB71C1C)
+
+    val body = when {
+        !isInZone -> "Sem beacon detectado. Localização NÃO está sendo lida."
+        isCapturing -> "Capturando agora — janela aberta porque você entrou na zona."
+        else -> "Dentro da zona. GPS já capturou o que precisava; agora está em standby."
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(bg, RoundedCornerShape(8.dp))
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(text = emoji, fontSize = 18.sp)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = title,
+                color = titleColor,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = body,
+            color = titleColor,
+            style = MaterialTheme.typography.bodySmall,
+            fontSize = 12.sp
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.White.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "📊 Capturas nesta sessão:",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFF424242),
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "$captureCount",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF424242)
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.White.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "🛡️ Capturas fora da zona:",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFF424242),
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "0 ✓",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF1B5E20)
             )
         }
     }

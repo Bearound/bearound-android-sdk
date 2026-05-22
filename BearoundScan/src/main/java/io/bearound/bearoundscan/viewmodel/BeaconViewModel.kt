@@ -95,6 +95,8 @@ data class BeAroundScanState(
     val lastCaptureOutcome: String = "—",
     val lastCapturedLocation: Location? = null,
     val lastCaptureCompletedAt: Date? = null,
+    /** How many GPS capture windows have completed (with or without a fix) since scan started. */
+    val locationCaptureCount: Int = 0,
     val geofenceEvents: List<GeofenceEvent> = emptyList()
 )
 
@@ -231,7 +233,16 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         _state.value = _state.value.copy(
             isScanning = true,
             statusMessage = "Scaneando...",
-            lastScanTime = Date()
+            lastScanTime = Date(),
+            // Reset geofence/capture counters for a fresh debug session
+            locationCaptureCount = 0,
+            geofenceEvents = emptyList(),
+            lastEnteredRegionAt = null,
+            lastExitedRegionAt = null,
+            lastCaptureOpenReason = "—",
+            lastCaptureOutcome = "—",
+            lastCapturedLocation = null,
+            lastCaptureCompletedAt = null
         )
     }
 
@@ -509,7 +520,8 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
                 isCapturingLocation = false,
                 lastCaptureOutcome = result.outcome,
                 lastCapturedLocation = result.location,
-                lastCaptureCompletedAt = result.timestamp
+                lastCaptureCompletedAt = result.timestamp,
+                locationCaptureCount = _state.value.locationCaptureCount + 1
             )
         }
     }
