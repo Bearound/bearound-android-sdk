@@ -18,10 +18,12 @@ import io.bearound.sdk.BeAroundSDK
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.ForegroundScanConfig
+import io.bearound.sdk.models.LocationCaptureResult
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.NotificationContent
 import io.bearound.sdk.models.ScanPrecision
 import io.bearound.sdk.models.UserProperties
+import android.location.Location
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,6 +33,24 @@ import java.util.Date
 enum class BeaconSortOption(val displayName: String) {
     PROXIMITY("Proximidade"),
     ID("ID")
+}
+
+/** A single entry in the geofence/capture debug log. */
+data class GeofenceEvent(
+    val id: Long = System.nanoTime(),
+    val kind: Kind,
+    val timestamp: Date,
+    val detail: String
+) {
+    enum class Kind {
+        REGION_ENTER,
+        REGION_EXIT,
+        SCAN_ACTIVE,
+        SCAN_PAUSED,
+        CAPTURE_STARTED,
+        CAPTURE_FIX,
+        CAPTURE_NO_FIX
+    }
 }
 
 data class BeAroundScanState(
@@ -64,7 +84,20 @@ data class BeAroundScanState(
     // Settings sheet
     val showSettings: Boolean = false,
     // Pinned beacons
-    val pinnedBeaconIds: Set<String> = emptySet()
+    val pinnedBeaconIds: Set<String> = emptySet(),
+    // Geofence Debug (v2.5)
+    val isInBeaconRegion: Boolean = false,
+    val lastEnteredRegionAt: Date? = null,
+    val lastExitedRegionAt: Date? = null,
+    val isActiveScanRunning: Boolean = false,
+    val isCapturingLocation: Boolean = false,
+    val lastCaptureOpenReason: String = "—",
+    val lastCaptureOutcome: String = "—",
+    val lastCapturedLocation: Location? = null,
+    val lastCaptureCompletedAt: Date? = null,
+    /** How many GPS capture windows have completed (with or without a fix) since scan started. */
+    val locationCaptureCount: Int = 0,
+    val geofenceEvents: List<GeofenceEvent> = emptyList()
 )
 
 class BeaconViewModel(application: Application) : AndroidViewModel(application), BeAroundSDKListener {
@@ -200,7 +233,16 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         _state.value = _state.value.copy(
             isScanning = true,
             statusMessage = "Scaneando...",
-            lastScanTime = Date()
+            lastScanTime = Date(),
+            // Reset geofence/capture counters for a fresh debug session
+            locationCaptureCount = 0,
+            geofenceEvents = emptyList(),
+            lastEnteredRegionAt = null,
+            lastExitedRegionAt = null,
+            lastCaptureOpenReason = "—",
+            lastCaptureOutcome = "—",
+            lastCapturedLocation = null,
+            lastCaptureCompletedAt = null
         )
     }
 
@@ -413,6 +455,85 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             title = s.foregroundNotificationTitle.ifEmpty { "BeAroundScan" },
             text = s.foregroundContextualText
         )
+    }
+
+    // v2.5 — Geofence + location capture lifecycle
+
+    override fun onEnterBeaconRegion() {
+        viewModelScope.launch {
+            val now = Date()
+            appendGeofenceEvent(GeofenceEvent.Kind.REGION_ENTER, "Entrou em uma zona de beacon (BLE)")
+            _state.value = _state.value.copy(
+                isInBeaconRegion = true,
+                lastEnteredRegionAt = now
+            )
+        }
+    }
+
+    override fun onExitBeaconRegion() {
+        viewModelScope.launch {
+            val now = Date()
+            appendGeofenceEvent(GeofenceEvent.Kind.REGION_EXIT, "Saiu da zona de beacon (timeout)")
+            _state.value = _state.value.copy(
+                isInBeaconRegion = false,
+                lastExitedRegionAt = now
+            )
+        }
+    }
+
+    override fun onActiveScanStateChanged(isActive: Boolean) {
+        viewModelScope.launch {
+            appendGeofenceEvent(
+                if (isActive) GeofenceEvent.Kind.SCAN_ACTIVE else GeofenceEvent.Kind.SCAN_PAUSED,
+                if (isActive) "Scan ativo (BLE + duty cycle) LIGADO"
+                else "Scan ativo PAUSADO — só PendingIntent scan rodando"
+            )
+            _state.value = _state.value.copy(isActiveScanRunning = isActive)
+        }
+    }
+
+    override fun onStartLocationCapture(reason: String) {
+        viewModelScope.launch {
+            appendGeofenceEvent(GeofenceEvent.Kind.CAPTURE_STARTED, "Janela GPS aberta — motivo: $reason")
+            _state.value = _state.value.copy(
+                isCapturingLocation = true,
+                lastCaptureOpenReason = reason
+            )
+        }
+    }
+
+    override fun onCompleteLocationCapture(result: LocationCaptureResult) {
+        viewModelScope.launch {
+            val detail: String
+            val kind: GeofenceEvent.Kind
+            if (result.location != null) {
+                val loc = result.location!!
+                val accuracy = if (loc.hasAccuracy()) loc.accuracy.toInt() else -1
+                detail = "Fix: ${"%.5f".format(loc.latitude)}, ${"%.5f".format(loc.longitude)} ±${accuracy}m | abriu: ${result.reason} | fechou: ${result.outcome}"
+                kind = GeofenceEvent.Kind.CAPTURE_FIX
+            } else {
+                detail = "Sem fix — abriu: ${result.reason} | fechou: ${result.outcome}"
+                kind = GeofenceEvent.Kind.CAPTURE_NO_FIX
+            }
+            appendGeofenceEvent(kind, detail)
+            _state.value = _state.value.copy(
+                isCapturingLocation = false,
+                lastCaptureOutcome = result.outcome,
+                lastCapturedLocation = result.location,
+                lastCaptureCompletedAt = result.timestamp,
+                locationCaptureCount = _state.value.locationCaptureCount + 1
+            )
+        }
+    }
+
+    private fun appendGeofenceEvent(kind: GeofenceEvent.Kind, detail: String) {
+        val event = GeofenceEvent(kind = kind, timestamp = Date(), detail = detail)
+        val updated = (listOf(event) + _state.value.geofenceEvents).take(30)
+        _state.value = _state.value.copy(geofenceEvents = updated)
+    }
+
+    fun clearGeofenceLog() {
+        _state.value = _state.value.copy(geofenceEvents = emptyList())
     }
 
     // endregion

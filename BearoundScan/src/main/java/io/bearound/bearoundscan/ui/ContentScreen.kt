@@ -105,6 +105,14 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
                 item {
                     SyncInfoCard(state = state)
                 }
+
+                // Geofence Debug Card (v2.5)
+                item {
+                    GeofenceDebugCard(
+                        state = state,
+                        onClearLog = { viewModel.clearGeofenceLog() }
+                    )
+                }
             }
 
             // Controls Section

@@ -41,8 +41,15 @@ class BeaconManager(private val context: Context) {
     var isRanging = false
         private set
     private var isInForeground = true
-    private var isInBeaconRegion = false
-    
+    /**
+     * True while at least one beacon is currently detected (after rising edge in [processBeacon]
+     * and before falling edge in [cleanupExpiredBeacons]). Active scanning is gated by this
+     * flag — outside the region only [io.bearound.sdk.background.BackgroundScanManager]'s
+     * PendingIntent-based scan runs (kernel-managed, low power).
+     */
+    var isInBeaconRegion: Boolean = false
+        private set
+
     var lastLocation: Location? = null
 
     // Callbacks
@@ -50,6 +57,16 @@ class BeaconManager(private val context: Context) {
     var onError: ((Exception) -> Unit)? = null
     var onScanningStateChanged: ((Boolean) -> Unit)? = null
     var onBackgroundRangingComplete: (() -> Unit)? = null
+
+    // v2.5 — Region transition + active-scan gating callbacks
+    /** Fired when the first beacon is detected (rising edge: empty → ≥1). */
+    var onRegionEnter: (() -> Unit)? = null
+    /** Fired when the last beacon expires (falling edge: ≥1 → empty). */
+    var onRegionExit: (() -> Unit)? = null
+    /** Fired alongside [onRegionEnter] — host should start BLE scan + duty cycle. */
+    var onActiveScanShouldStart: (() -> Unit)? = null
+    /** Fired alongside [onRegionExit] — host should stop BLE scan + duty cycle. */
+    var onActiveScanShouldStop: (() -> Unit)? = null
 
     // Beacon tracking
     private val detectedBeacons = mutableMapOf<String, Beacon>()
@@ -76,6 +93,9 @@ class BeaconManager(private val context: Context) {
     private var watchdogRunnable: Runnable? = null
     private var rangingRefreshRunnable: Runnable? = null
     private var backgroundRangingRunnable: Runnable? = null
+    /** Periodically cleans expired beacons so the falling-edge fires when the last beacon goes stale. */
+    private var regionCleanupRunnable: Runnable? = null
+    private val REGION_CLEANUP_INTERVAL_MS = 2_000L
 
     private val beaconTimeout: Long
         get() = beaconTimeoutMs
@@ -167,7 +187,8 @@ class BeaconManager(private val context: Context) {
         Log.d(TAG, "Stopping beacon scanning")
         stopWatchdog()
         stopRangingRefreshTimer()
-        
+        stopRegionCleanupTimer()
+
         if (isRanging) {
             bluetoothLeScanner?.stopScan(scanCallback)
             isRanging = false
@@ -191,6 +212,14 @@ class BeaconManager(private val context: Context) {
     fun startRanging() {
         if (!isScanning) return
         if (isRanging) return
+        // Doctrine: active ranging only runs inside a beacon region. Outside, only
+        // BackgroundScanManager's PendingIntent-based filter scan is active (low-power,
+        // kernel-managed). The first beacon match wakes us via the broadcast receiver and
+        // processBeacon will fire the rising edge → onActiveScanShouldStart → resumeRanging.
+        if (!isInBeaconRegion) {
+            Log.d(TAG, "startRanging skipped — not inside beacon region")
+            return
+        }
 
         val filters = listOf(
             ScanFilter.Builder()
@@ -257,6 +286,10 @@ class BeaconManager(private val context: Context) {
      */
     fun resumeRanging() {
         if (!isScanning || isRanging) return
+        if (!isInBeaconRegion) {
+            Log.d(TAG, "resumeRanging skipped — not inside beacon region")
+            return
+        }
         Log.d(TAG, "resumeRanging() - resuming for duty cycle")
         startRanging()
     }
@@ -330,6 +363,9 @@ class BeaconManager(private val context: Context) {
         val now = System.currentTimeMillis()
         lastBeaconUpdate = now
         emptyBeaconCount = 0
+
+        // Rising-edge detection: were we OUT of region before this beacon arrived?
+        val wasOutOfRegion = !isInBeaconRegion
         isInBeaconRegion = true
 
         beaconLock.withLock {
@@ -337,6 +373,15 @@ class BeaconManager(private val context: Context) {
             detectedBeacons[identifier] = beacon
             beaconLastSeen[identifier] = now
         }
+
+        if (wasOutOfRegion) {
+            Log.d(TAG, "REGION ENTER — first beacon detected (${beacon.identifier})")
+            onRegionEnter?.invoke()
+            onActiveScanShouldStart?.invoke()
+        }
+
+        // Ensure the periodic cleanup timer is running so we eventually detect the falling edge.
+        startRegionCleanupTimer()
 
         cleanupExpiredBeacons()
 
@@ -357,7 +402,8 @@ class BeaconManager(private val context: Context) {
     }
 
     private fun cleanupExpiredBeacons() {
-        beaconLock.withLock {
+        val (hadBeaconsBefore, hasBeaconsAfter) = beaconLock.withLock {
+            val before = detectedBeacons.isNotEmpty()
             val now = System.currentTimeMillis()
             val expiredKeys = beaconLastSeen.filter { (_, lastSeen) ->
                 now - lastSeen > beaconTimeout
@@ -370,7 +416,39 @@ class BeaconManager(private val context: Context) {
                 rssiFilter.remove(key)
                 rssiAccumulators.remove(key)
             }
+            Pair(before, detectedBeacons.isNotEmpty())
         }
+
+        // Falling-edge detection: last beacon expired → fire region exit and stop active scan.
+        if (hadBeaconsBefore && !hasBeaconsAfter && isInBeaconRegion) {
+            isInBeaconRegion = false
+            Log.d(TAG, "REGION EXIT — last beacon expired, falling back to background broadcast scan")
+            onRegionExit?.invoke()
+            onActiveScanShouldStop?.invoke()
+            stopRegionCleanupTimer()
+        }
+    }
+
+    private fun startRegionCleanupTimer() {
+        if (regionCleanupRunnable != null) return
+        regionCleanupRunnable = object : Runnable {
+            override fun run() {
+                if (!isScanning) {
+                    stopRegionCleanupTimer()
+                    return
+                }
+                cleanupExpiredBeacons()
+                if (regionCleanupRunnable != null) {
+                    handler.postDelayed(this, REGION_CLEANUP_INTERVAL_MS)
+                }
+            }
+        }
+        handler.postDelayed(regionCleanupRunnable!!, REGION_CLEANUP_INTERVAL_MS)
+    }
+
+    private fun stopRegionCleanupTimer() {
+        regionCleanupRunnable?.let { handler.removeCallbacks(it) }
+        regionCleanupRunnable = null
     }
 
     private fun calculateAccuracy(txPower: Int, rssi: Int): Double {

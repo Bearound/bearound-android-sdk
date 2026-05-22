@@ -22,6 +22,7 @@ import io.bearound.sdk.interfaces.BluetoothManagerListener
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.BeaconMetadata
 import io.bearound.sdk.models.ForegroundScanConfig
+import io.bearound.sdk.models.LocationCaptureResult
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
@@ -74,6 +75,7 @@ class BeAroundSDK private constructor() {
     private lateinit var deviceInfoCollector: DeviceInfoCollector
     private lateinit var beaconManager: BeaconManager
     private lateinit var bluetoothManager: BluetoothManager
+    private lateinit var locationCaptureManager: LocationCaptureManager
     private lateinit var backgroundScanManager: BackgroundScanManager
     private lateinit var backgroundScheduler: BackgroundScheduler
     private var apiClient: APIClient? = null
@@ -149,6 +151,7 @@ class BeAroundSDK private constructor() {
         deviceInfoCollector = DeviceInfoCollector(context, isColdStart)
         beaconManager = BeaconManager(context)
         bluetoothManager = BluetoothManager(context)
+        locationCaptureManager = LocationCaptureManager(context)
         backgroundScanManager = BackgroundScanManager(context)
         backgroundScheduler = BackgroundScheduler.getInstance(context)
         offlineBatchStorage = OfflineBatchStorage(context)
@@ -213,6 +216,50 @@ class BeAroundSDK private constructor() {
             syncBeacons()
         }
 
+        // v2.5 — region transitions: gate active BLE scan + drive location capture
+        beaconManager.onRegionEnter = {
+            handler.post { listener?.onEnterBeaconRegion() }
+        }
+
+        beaconManager.onRegionExit = {
+            handler.post { listener?.onExitBeaconRegion() }
+        }
+
+        beaconManager.onActiveScanShouldStart = {
+            Log.d(TAG, "Active scan START — region entered, starting BLE central scan + duty cycle")
+            // Bluetooth metadata scan ON only while inside a region.
+            bluetoothManager.startScanning()
+            // Trigger location capture if our fix is missing/stale.
+            if (locationCaptureManager.isLocationStale()) {
+                locationCaptureManager.start(reason = "beacon_rising_edge")
+            }
+            handler.post { listener?.onActiveScanStateChanged(true) }
+        }
+
+        beaconManager.onActiveScanShouldStop = {
+            Log.d(TAG, "Active scan STOP — region exited, stopping BLE central scan + location capture")
+            bluetoothManager.stopScanning()
+            locationCaptureManager.stop(outcome = "beacons_lost")
+            handler.post { listener?.onActiveScanStateChanged(false) }
+        }
+
+        locationCaptureManager.onCaptureStarted = { reason ->
+            handler.post { listener?.onStartLocationCapture(reason) }
+        }
+
+        locationCaptureManager.onCaptureCompleted = { location, openingReason, outcome ->
+            // Propagate the freshest fix to BeaconManager.lastLocation so sync payloads carry it.
+            if (location != null) {
+                beaconManager.lastLocation = location
+            }
+            val result = LocationCaptureResult(
+                reason = openingReason,
+                location = location,
+                outcome = outcome
+            )
+            handler.post { listener?.onCompleteLocationCapture(result) }
+        }
+
         bluetoothManager.listener = object : BluetoothManagerListener {
             override fun onBeaconDiscovered(
                 uuid: UUID,
@@ -260,12 +307,13 @@ class BeAroundSDK private constructor() {
         }
 
         beaconManager.setForegroundState(true)
+        locationCaptureManager.setForegroundState(true)
         // Periodic scanning in foreground is automatic (controlled by sync timer)
-        
+
         if (isScanning) {
             restartSyncTimer()
         }
-        
+
         listener?.onAppStateChanged(isInBackground = false)
     }
 
@@ -274,6 +322,7 @@ class BeAroundSDK private constructor() {
         Log.d(TAG, "App backgrounded")
 
         beaconManager.setForegroundState(false)
+        locationCaptureManager.setForegroundState(false)
         backgroundScanManager.enableBackgroundScanning()
 
         // Start foreground service if opted-in and scanning is active
@@ -378,16 +427,24 @@ class BeAroundSDK private constructor() {
         // Enable background mechanisms (WorkManager + AlarmManager)
         backgroundScheduler.enableAll()
 
+        // v2.5 — Always enable PendingIntent-based filter scan (low power, kernel-managed).
+        // This is what wakes us when a beacon enters range — regardless of app state.
+        // Equivalent in spirit to iOS's CLBeaconRegion monitoring.
+        backgroundScanManager.enableBackgroundScanning()
+
         // Persist scanning state for recovery after kill/reboot
         SDKConfigStorage.saveScanningEnabled(context, true)
 
-        // Bluetooth metadata scanning: always attempt to start
-        bluetoothManager.startScanning()
+        // v2.5 — Bluetooth metadata scanning is gated by beacon region presence. It will
+        // be started inside onActiveScanShouldStart when the first beacon is detected, and
+        // stopped on region exit. BackgroundScanManager.enableBackgroundScanning() (above)
+        // already runs the low-power filter scan that wakes us when a beacon appears.
     }
 
     fun stopScanning() {
         beaconManager.stopScanning()
         bluetoothManager.stopScanning()
+        locationCaptureManager.stop(outcome = "stop_scanning")
         backgroundScanManager.disableBackgroundScanning()
         backgroundScheduler.disableAll()
         stopSyncTimer()
@@ -442,30 +499,26 @@ class BeAroundSDK private constructor() {
                 return
             }
         }
-        
+
         val isAppInForeground = isAppInForeground()
-        
+
         Log.d(TAG, "Processing ${scanResults.size} broadcast results (app in foreground: $isAppInForeground)")
-        
-        if (isAppInForeground) {
-            Log.d(TAG, "Ignoring broadcast results - app in foreground (using regular ranging)")
-            return
-        }
-        
-        val beaconsBeforeBroadcast = beaconLock.withLock { collectedBeacons.size }
-        
+
+        // v2.5 — Broadcast results MUST be processed in any app state. They are the
+        // only signal that fires the region-rising-edge while we are outside the region
+        // (active ranging is gated by isInBeaconRegion, so it can't bootstrap itself).
+        // Active ranging dedupes by identifier in processBeacon so re-processing is safe.
         scanResults.forEach { result ->
             beaconManager.processExternalScanResult(result)
         }
-        
+
         val beaconsAfterBroadcast = beaconLock.withLock { collectedBeacons.size }
         val timerIsActive = (syncRunnable != null)
-        
-        if (!timerIsActive && beaconsAfterBroadcast > 0) {
-            Log.d(TAG, "Broadcast detected beacons but no timer active - syncing immediately")
+
+        // Only force-sync from broadcast when in background (foreground has its own sync timer).
+        if (!isAppInForeground && !timerIsActive && beaconsAfterBroadcast > 0) {
+            Log.d(TAG, "Broadcast detected beacons in background - syncing immediately")
             syncBeacons(forceBackground = true)
-        } else {
-            Log.d(TAG, "Beacons collected from broadcast - will sync on next timer cycle")
         }
     }
     
