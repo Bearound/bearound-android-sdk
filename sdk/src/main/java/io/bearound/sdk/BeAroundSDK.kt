@@ -270,9 +270,39 @@ class BeAroundSDK private constructor() {
                 metadata: BeaconMetadata?,
                 isConnectable: Boolean
             ) {
-                // Bluetooth scanning is always enabled in v2.2.0+
                 metadata?.let {
                     metadataCache["$major.$minor"] = it
+                }
+
+                // Surface beacon to UI even when BeaconManager is not ranging.
+                // Builds a Beacon and emits the current collected set through the SDK listener.
+                val beacon = Beacon(
+                    uuid = uuid,
+                    major = major,
+                    minor = minor,
+                    rssi = rssi,
+                    proximity = Beacon.Proximity.BT,
+                    accuracy = -1.0,
+                    timestamp = java.util.Date(),
+                    metadata = metadata,
+                    txPower = if (txPower != 0) txPower else null
+                )
+
+                val beaconsForListener = beaconLock.withLock {
+                    val existing = collectedBeacons[beacon.identifier]
+                    val updated = if (existing?.syncedAt != null) {
+                        beacon.copy(syncedAt = existing.syncedAt)
+                    } else {
+                        beacon
+                    }
+                    collectedBeacons[beacon.identifier] = updated
+                    collectedBeacons.values.toList()
+                }
+
+                listener?.onBeaconsUpdated(beaconsForListener)
+
+                if (isInBackground) {
+                    listener?.onBeaconDetectedInBackground(beaconsForListener.size)
                 }
             }
 

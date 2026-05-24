@@ -41,11 +41,13 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
+    ) { _ ->
         viewModel.updatePermissionStatus()
         viewModel.checkBluetoothStatus()
         viewModel.checkNotificationStatus()
-        if (permissions.values.all { it }) {
+        // Start scanning if Bluetooth permissions are granted, even if location was denied.
+        // BLUETOOTH_SCAN uses neverForLocation, and BEAROUND_SVC filter works without location.
+        if (viewModel.hasRequiredPermissions()) {
             viewModel.startScanning()
         }
     }
