@@ -4,6 +4,14 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.0"
 }
 
+// Read BUSINESS_TOKEN from local.properties (gitignored) or env var.
+def localProps = new Properties()
+def localPropsFile = rootProject.file("local.properties")
+if (localPropsFile.exists()) {
+    localProps.load(new FileInputStream(localPropsFile))
+}
+def businessToken = localProps.getProperty("BUSINESS_TOKEN", System.getenv("BUSINESS_TOKEN") ?: "")
+
 android {
     namespace = "io.bearound.scan"
     compileSdk = 36
@@ -19,6 +27,8 @@ android {
 
         // Dexing optimization
         multiDexEnabled = true
+
+        buildConfigField "String", "BUSINESS_TOKEN", "\"${businessToken}\""
     }
 
     buildTypes {
@@ -35,6 +45,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     
     composeOptions {
