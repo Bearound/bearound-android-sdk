@@ -180,7 +180,7 @@ class BluetoothManager(private val context: Context) {
     }
 
     private fun checkPermissions(): Boolean {
-        val bluetoothScanPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.BLUETOOTH_SCAN
@@ -188,16 +188,5 @@ class BluetoothManager(private val context: Context) {
         } else {
             true
         }
-
-        val bluetoothConnectPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.BLUETOOTH_CONNECT
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
-
-        return bluetoothScanPermission && bluetoothConnectPermission
     }
 }

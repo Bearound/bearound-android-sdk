@@ -64,3 +64,4 @@ build/
 
 # Keep the release directory structure
 !release/.gitkeep
+.claude/
