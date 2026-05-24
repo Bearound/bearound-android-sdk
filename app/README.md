@@ -54,6 +54,17 @@ O app usa **Jetpack Compose** (equivalente ao SwiftUI do iOS) para uma interface
 - 🌓 Suporte a tema claro/escuro
 - 📱 Material Design 3
 
+## 🔑 Configuração do Business Token
+
+O app lê o `BUSINESS_TOKEN` de `local.properties` (gitignored) via `BuildConfig`. Antes de rodar:
+
+```properties
+# local.properties
+BUSINESS_TOKEN=seu-business-token-aqui
+```
+
+Alternativamente, defina via variável de ambiente `BUSINESS_TOKEN` antes do build.
+
 ## 🚀 Funcionalidades do SDK Demonstradas
 
 ### Inicialização e Configuração
@@ -62,7 +73,7 @@ val sdk = BeAroundSDK.getInstance(context)
 sdk.delegate = this
 
 sdk.configure(
-    businessToken = "your-business-token",
+    businessToken = BuildConfig.BUSINESS_TOKEN,
     foregroundScanInterval = ForegroundScanInterval.SECONDS_15,
     backgroundScanInterval = BackgroundScanInterval.SECONDS_30,
     maxQueuedPayloads = MaxQueuedPayloads.MEDIUM

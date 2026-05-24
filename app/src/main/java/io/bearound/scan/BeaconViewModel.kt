@@ -89,7 +89,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         maxQueued: MaxQueuedPayloads
     ) {
         sdk.configure(
-            businessToken = "your-business-token-here",
+            businessToken = BuildConfig.BUSINESS_TOKEN,
             scanPrecision = precision,
             maxQueuedPayloads = maxQueued
         )
