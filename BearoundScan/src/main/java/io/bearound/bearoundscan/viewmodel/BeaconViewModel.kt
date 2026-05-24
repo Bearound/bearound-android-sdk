@@ -644,20 +644,13 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     fun hasRequiredPermissions(): Boolean {
         val context = getApplication<Application>()
 
-        val locationGranted = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val bluetoothScanGranted = ContextCompat.checkSelfPermission(
+            return ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.BLUETOOTH_SCAN
             ) == PackageManager.PERMISSION_GRANTED
-
-            return locationGranted && bluetoothScanGranted
         }
 
-        return locationGranted
+        return true
     }
 }
