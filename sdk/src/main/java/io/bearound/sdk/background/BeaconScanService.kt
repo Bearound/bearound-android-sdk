@@ -73,7 +73,7 @@ class BeaconScanService : Service() {
 
     private var currentIcon: Int? = null
     private var currentChannelId: String? = null
-    private var currentChannelName: String = "Serviço de monitoramento da região"
+    private var currentChannelName: String = "Region monitoring service"
 
     override fun onCreate() {
         super.onCreate()
@@ -84,7 +84,7 @@ class BeaconScanService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val rawTitle = intent?.getStringExtra(EXTRA_TITLE) ?: ""
         val title = rawTitle.ifEmpty { resolveAppName() }
-        val text = intent?.getStringExtra(EXTRA_TEXT) ?: "Encontrando promoções"
+        val text = intent?.getStringExtra(EXTRA_TEXT) ?: "Scanning for nearby content"
         val isUpdateOnly = intent?.getBooleanExtra(EXTRA_UPDATE_ONLY, false) ?: false
 
         if (isUpdateOnly) {
@@ -97,7 +97,7 @@ class BeaconScanService : Service() {
 
         val icon = intent?.getIntExtra(EXTRA_ICON, 0)?.takeIf { it != 0 }
         val channelId = intent?.getStringExtra(EXTRA_CHANNEL_ID)
-        val channelName = intent?.getStringExtra(EXTRA_CHANNEL_NAME) ?: "Serviço de monitoramento da região"
+        val channelName = intent?.getStringExtra(EXTRA_CHANNEL_NAME) ?: "Region monitoring service"
 
         currentIcon = icon
         currentChannelId = channelId

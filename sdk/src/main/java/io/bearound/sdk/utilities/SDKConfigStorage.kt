@@ -153,11 +153,11 @@ object SDKConfigStorage {
 
         return ForegroundScanConfig(
             enabled = prefs.getBoolean(KEY_FG_SCAN_ENABLED, false),
-            notificationTitle = prefs.getString(KEY_FG_SCAN_TITLE, "Monitorando região") ?: "Monitorando região",
-            notificationText = prefs.getString(KEY_FG_SCAN_TEXT, "Verificando região em background") ?: "Verificando região em background",
+            notificationTitle = prefs.getString(KEY_FG_SCAN_TITLE, "Monitoring region") ?: "Monitoring region",
+            notificationText = prefs.getString(KEY_FG_SCAN_TEXT, "Checking region in background") ?: "Checking region in background",
             notificationIcon = icon,
             notificationChannelId = prefs.getString(KEY_FG_SCAN_CHANNEL_ID, null),
-            notificationChannelName = prefs.getString(KEY_FG_SCAN_CHANNEL_NAME, "Serviço de monitoramento da região") ?: "Serviço de monitoramento da região"
+            notificationChannelName = prefs.getString(KEY_FG_SCAN_CHANNEL_NAME, "Region monitoring service") ?: "Region monitoring service"
         )
     }
 }

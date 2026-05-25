@@ -63,7 +63,7 @@ interface BeAroundSDKListener {
     /**
      * Called when beacons are detected in background with foreground service active.
      * Return a [NotificationContent] to update the notification with contextual info
-     * (e.g., "Você está perto de [local]"), or null to keep the default text.
+     * (e.g., "You're near [location]"), or null to keep the default text.
      *
      * @param beacons Currently detected beacons
      * @return Custom notification content, or null to keep defaults from [ForegroundScanConfig]

@@ -8,11 +8,11 @@ package io.bearound.sdk.models
  * Use this to show contextual, user-friendly messages instead of
  * a generic "scanning" text. Be creative! Examples:
  *
- * - title = "Loja ABC"          , text = "Ofertas exclusivas esperando por você!"
- * - title = "Shopping Center"   , text = "Descubra promoções neste andar"
- * - title = "Evento XYZ"        , text = "Bem-vindo! Confira a programação"
- * - title = "Farmácia Popular"  , text = "Descontos especiais perto de você"
- * - title = "Restaurante Sabor" , text = "Cardápio do dia disponível!"
+ * - title = "Store ABC"           , text = "Exclusive offers waiting for you!"
+ * - title = "Shopping Center"     , text = "Discover deals on this floor"
+ * - title = "Event XYZ"           , text = "Welcome! Check the schedule"
+ * - title = "Local Pharmacy"      , text = "Special discounts nearby"
+ * - title = "Restaurant Flavor"   , text = "Today's menu is ready!"
  *
  * Return `null` from [onProvideNotificationContent] to keep the default
  * text defined in [ForegroundScanConfig].
@@ -20,6 +20,6 @@ package io.bearound.sdk.models
 data class NotificationContent(
     /** Notification title — e.g., the app or location name. */
     val title: String,
-    /** Notification body — e.g., "Encontramos promoções para você!" */
+    /** Notification body — e.g., "We found offers for you!" */
     val text: String
 )
