@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-05-27
+
+Mirrors the iOS SDK v3.0.0 hybrid wake-up model. This is a **major release** because the public Bluetooth permission surface changes (`BLUETOOTH_CONNECT` is no longer requested by the SDK manifest) and the default user-facing strings are now in English. Both are observable in production and require host-app awareness.
+
+### ⚠️ Breaking Changes
+
+- **`BLUETOOTH_CONNECT` is no longer declared by the SDK manifest.** The SDK only needs `BLUETOOTH_SCAN` (with `usesPermissionFlags="neverForLocation"`) to detect beacons. Host apps that previously relied on the SDK to pull in `BLUETOOTH_CONNECT` must add it to their own manifest if they use it for unrelated purposes — the SDK itself no longer requests it.
+- **Default user-facing strings shipped by the SDK are now English.** Foreground service notification title/text/channel name, `ForegroundScanConfig` defaults, and `SDKConfigStorage` fallbacks were Portuguese. Host apps that override these via `ForegroundScanConfig` / `NotificationContent` are unaffected. Apps that relied on the Portuguese defaults must override to keep the previous copy. Localized resources under `values-pt` / `values-es` are unchanged.
+
+### Added
+
+- **Hybrid wake-up architecture (parity with iOS SDK 3.0.0).** Documented end-to-end in README under "Terminated App Detection": kernel-registered `PendingIntent` BLE scan + `ScanWatchdogReceiver` + optional `BeaconScanService` foreground service. Force-stop and swipe-from-recents now survive on Android 14+ without any host-side code change.
+- **`Beacon.Proximity.BT` detection surface.** `BluetoothManager` callbacks now build a `Beacon` and emit it through `BeAroundSDKListener.onBeaconsUpdated`/`onBeaconDetectedInBackground` even when `BeaconManager` is not actively ranging. This is the foundation for the "always-on background detection" promise.
+- **OEM caveat matrix** in README — explicit guidance for Samsung One UI 6+, Xiaomi MIUI/HyperOS, Huawei/Honor EMUI/HarmonyOS and OnePlus OxygenOS, including the `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` mitigation.
+
+### Changed
+
+- **`AndroidManifest.xml` (SDK):** `BLUETOOTH_SCAN` now ships with `android:usesPermissionFlags="neverForLocation"`. Apps that need beacon scanning without Location authorization on Android 12+ benefit automatically.
+- **Default SDK copy is English.** Foreground service notification title ("Scanning beacons"), text, channel name, `ForegroundScanConfig` defaults, and `SDKConfigStorage` fallback strings are now English.
+- **`CHANGES.md` and remaining KDoc examples** translated to English.
+
+### Notes for integrators
+
+- If your manifest already declares `BLUETOOTH_CONNECT` for your own reasons (e.g. GATT writes), keep it. The SDK no longer pulls it in transitively, that's all.
+- If you were depending on Portuguese default notification copy, switch to passing a `ForegroundScanConfig(notification = NotificationContent(...))` with your localized strings.
+- No code changes required for the hybrid wake-up improvements — they apply automatically to existing integrations.
+
 ## [2.4.0] - 2026-05-22
 
 ### Changed

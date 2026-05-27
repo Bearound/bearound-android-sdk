@@ -6,9 +6,9 @@
 
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by BeAround.
 
-## Version 2.3.7
+## Version 3.0.0
 
-Latest version with precision-based scanning, duty-cycle architecture, foreground service support, and simplified API. Automatic Bluetooth scanning, smart periodic scanning based on app state, WorkManager integration, and AlarmManager watchdog.
+Hybrid wake-up parity with iOS SDK 3.0.0: kernel-registered `PendingIntent` BLE scan survives force-stop and swipe-from-recents on Android 14+ without a foreground service. `BLUETOOTH_SCAN` is declared with `neverForLocation`, so beacon detection no longer implies Location authorization. Default SDK user-facing strings are now English; precision-based scanning, duty-cycle architecture, foreground service support, and beacon-gated GPS from 2.4.0 are preserved.
 
 ## Features
 
@@ -63,7 +63,7 @@ dependencyResolutionManagement {
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:v2.3.7'
+    implementation 'com.github.Bearound:bearound-android-sdk:v3.0.0'
 }
 ```
 
@@ -84,8 +84,11 @@ Add these permissions to your `AndroidManifest.xml`:
 <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
 
 <!-- Bluetooth (Android 12+) -->
-<uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+<!-- BLUETOOTH_CONNECT is NOT required by the SDK as of v3.0.0.
+     Declare it only if your own app uses GATT operations. -->
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+    android:usesPermissionFlags="neverForLocation"
+    tools:targetApi="s" />
 
 <!-- Location -->
 <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
@@ -159,8 +162,9 @@ private fun requestPermissions() {
     )
     
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        // Only BLUETOOTH_SCAN is required by the SDK (v3.0.0+).
+        // Declared with neverForLocation, so it does not imply Location authorization.
         permissions.add(Manifest.permission.BLUETOOTH_SCAN)
-        permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
     }
     
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -594,8 +598,8 @@ Version 2.0.x introduces breaking changes. Follow these steps to migrate:
 // OLD (v1.x)
 implementation 'com.github.Bearound:bearound-android-sdk:1.3.2'
 
-// NEW (v2.3+)
-implementation 'com.github.Bearound:bearound-android-sdk:v2.3.7'
+// NEW (v3.0+)
+implementation 'com.github.Bearound:bearound-android-sdk:v3.0.0'
 ```
 
 ### 2. Update AndroidManifest.xml
@@ -735,7 +739,22 @@ Due to Android system restrictions and manufacturer-specific behaviors, the foll
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 
-### Version 2.3.7 (Latest)
+### Version 3.0.0 (Latest)
+
+- 🆕 **Hybrid wake-up parity with iOS SDK 3.0.0**: kernel-registered `PendingIntent` BLE scan survives force-stop and swipe-from-recents on Android 14+ without a foreground service
+- 🆕 **`BLUETOOTH_SCAN` with `neverForLocation`**: beacon detection no longer implies Location authorization on Android 12+
+- 🆕 **Surface BT detections via listener**: `BluetoothManager` now feeds `onBeaconsUpdated` / `onBeaconDetectedInBackground` even when the SDK is not actively ranging, with `Beacon.Proximity.BT`
+- 🆕 **OEM caveat matrix** in README (Samsung, Xiaomi, Huawei, OnePlus) + `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` mitigation
+- ⚠️ **Breaking**: SDK manifest no longer declares `BLUETOOTH_CONNECT` — host apps that need it must declare it themselves
+- ⚠️ **Breaking**: default user-facing SDK strings (foreground service notification, `ForegroundScanConfig`, `SDKConfigStorage` fallbacks) are now English — override via `ForegroundScanConfig`/`NotificationContent` if you need a specific locale
+
+### Version 2.4.0 (2026-05-22)
+
+- 🆕 **Beacon-gated GPS + active BLE scan**: only run while inside a beacon region (kernel filter scan stays on, ~0 battery outside)
+- 🆕 **Listener surface**: `onEnterBeaconRegion`, `onExitBeaconRegion`, `onActiveScanStateChanged`, `onStartLocationCapture`, `onCompleteLocationCapture`
+- 🆕 **`LocationCaptureResult` public model** + `BeaconManager.isInBeaconRegion`
+
+### Version 2.3.7 (2026-02-26)
 
 - 🆕 **Scan Precision**: Replaced `foregroundScanInterval`/`backgroundScanInterval` with `ScanPrecision` enum (HIGH, MEDIUM, LOW)
 - 🆕 **Duty Cycle Architecture**: Scan/pause cycle model for battery-efficient scanning
