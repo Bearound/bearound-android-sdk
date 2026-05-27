@@ -1,11 +1,11 @@
-# CHANGES — Migração para Service Data (UUID 0xBEAD)
+# CHANGES — Migration to Service Data (UUID 0xBEAD)
 
 ## IBeaconParser.kt
 
-### Novo: `BEAD_SERVICE_UUID`
-Constante `ParcelUuid` para o UUID 16-bit `0xBEAD` em formato 128-bit (`0000BEAD-0000-1000-8000-00805F9B34FB`).
+### New: `BEAD_SERVICE_UUID`
+A `ParcelUuid` constant for the 16-bit `0xBEAD` UUID expressed in 128-bit form (`0000BEAD-0000-1000-8000-00805F9B34FB`).
 
-### Nova data class: `BeadServiceData`
+### New data class: `BeadServiceData`
 ```kotlin
 data class BeadServiceData(
     val major: Int,
@@ -15,10 +15,10 @@ data class BeadServiceData(
 )
 ```
 
-### Novo método: `parseServiceData(scanRecord, rssi)`
-Parseia o payload binário de 11 bytes (Little-Endian) do Service Data com UUID `0xBEAD` via `ScanRecord.getServiceData()`:
+### New method: `parseServiceData(scanRecord, rssi)`
+Parses the 11-byte (little-endian) Service Data payload under UUID `0xBEAD` via `ScanRecord.getServiceData()`:
 
-| Offset | Bytes | Campo       | Tipo      |
+| Offset | Bytes | Field       | Type      |
 |--------|-------|-------------|-----------|
 | 0-1    | 2     | Firmware    | uint16 LE |
 | 2-3    | 2     | Major       | uint16 LE |
@@ -27,46 +27,46 @@ Parseia o payload binário de 11 bytes (Little-Endian) do Service Data com UUID 
 | 8      | 1     | Temperature | int8      |
 | 9-10   | 2     | Battery mV  | uint16 LE |
 
-Retorna `BeadServiceData` com `BeaconMetadata` preenchido, ou `null` se não presente/inválido.
+Returns `BeadServiceData` with a populated `BeaconMetadata`, or `null` if the data is missing or invalid.
 
 ---
 
 ## BeaconManager.kt
 
-### Atualizado: `startRanging()`
-Adicionado segundo `ScanFilter` para BEAD Service Data:
+### Updated: `startRanging()`
+Added a second `ScanFilter` for BEAD Service Data:
 ```kotlin
 ScanFilter.Builder()
     .setServiceData(IBeaconParser.BEAD_SERVICE_UUID, byteArrayOf(), byteArrayOf())
     .build()
 ```
-Os filtros funcionam como OR — um scan result que case com qualquer um dos dois (iBeacon OU BEAD Service Data) será entregue.
+The filters are combined with OR semantics — a scan result that matches either path (iBeacon OR BEAD Service Data) is delivered.
 
-### Reescrito: `processScanResult()`
-Nova lógica de prioridade:
-1. **BEAD Service Data** → major, minor E metadata completa
-2. **iBeacon manufacturer data** → major, minor sem metadata (fallback)
+### Rewritten: `processScanResult()`
+New priority logic:
+1. **BEAD Service Data** → major, minor AND full metadata
+2. **iBeacon manufacturer data** → major, minor without metadata (fallback)
 
 ---
 
 ## BluetoothManager.kt
 
-### Reescrito: `processScanResult()`
-Mesma lógica de prioridade do BeaconManager:
-1. **BEAD Service Data** → major, minor E metadata completa
-2. **iBeacon manufacturer data** → major, minor sem metadata (fallback)
+### Rewritten: `processScanResult()`
+Same priority logic as BeaconManager:
+1. **BEAD Service Data** → major, minor AND full metadata
+2. **iBeacon manufacturer data** → major, minor without metadata (fallback)
 
-### Removido: `parseBeaconMetadata()`
-Parsing do nome `"B:firmware_?_battery_movements_temperature"` foi removido.
+### Removed: `parseBeaconMetadata()`
+Parsing of the name-based `"B:firmware_?_battery_movements_temperature"` payload was removed.
 
-### Simplificada deduplicação
-`shouldProcessBeacon()` agora usa chave `"major.minor"` em vez de `"uuid-major-minor"`.
+### Simplified deduplication
+`shouldProcessBeacon()` now keys on `"major.minor"` instead of `"uuid-major-minor"`.
 
 ---
 
-## Mudanças nos campos
-- **battery**: agora recebe millivolts (ex: 3269) em vez de porcentagem (0-100)
-- **firmware**: agora recebe integer como string (ex: "1") em vez de versão semântica (ex: "2.1.0")
+## Field changes
+- **battery**: now reported in millivolts (e.g., `3269`) instead of a 0-100 percentage
+- **firmware**: now reported as an integer-as-string (e.g., `"1"`) instead of a semantic version (e.g., `"2.1.0"`)
 
 ## Backward compatibility
-Beacons com firmware antigo (Name-based) **não serão mais detectados** — intencional.
+Beacons running the old name-based firmware **will no longer be detected** — intentional.

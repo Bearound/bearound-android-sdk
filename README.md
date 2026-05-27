@@ -244,16 +244,57 @@ class MainActivity : AppCompatActivity(), BeAroundSDKListener {
 ```
 
 **How it works:**
-- System automatically wakes up the app when iBeacon is detected
+- System automatically wakes up the app when an iBeacon is detected
 - No notification required
 - Real-time detection
-- No foreground service required
+- No foreground service required for Android 14+
 
 **Important Notes:**
 - Background scanning requires `ACCESS_BACKGROUND_LOCATION` permission
-- WorkManager minimum interval is 15 minutes (Android limitation)
+- WorkManager's minimum interval is 15 minutes (Android limitation)
 - Android may delay scans in battery saver mode
-- Background scanning continues even after device reboot
+- Background scanning continues even after device reboot via `BOOT_COMPLETED`
+
+### Terminated App Detection
+
+The SDK is designed to survive every state where the app is not running — including a user **force-stop** or **swipe from recents** — without any code change on the host side. This is the same posture the iOS SDK delivers only when the user opts into the Location eye; on Android it is the default.
+
+| Scenario | Detection still works? | Mechanism |
+|---|---|---|
+| App in foreground | ✅ | `BluetoothLeScanner` with `ScanCallback` |
+| App in background | ✅ | Same callback, OS keeps process alive briefly |
+| App killed by **system** (memory / battery pressure) | ✅ | `PendingIntent` broadcast scan → `BluetoothScanReceiver` wakes a fresh process |
+| App killed by **user** (swipe from recents) | ✅ on **Android 14+** | Same `PendingIntent` scan — kernel-registered, survives swipe |
+| App **force-stopped** in Settings | ✅ on **Android 14+** | Same `PendingIntent` scan, re-registered on next interaction |
+| After device reboot | ✅ | `BOOT_COMPLETED` → `ScanWatchdogReceiver` re-arms the scan |
+
+**Architecture under the hood:**
+
+- **`BluetoothScanReceiver`** — wakes the app via `PendingIntent` when a matching iBeacon is observed by the OS scanner. Equivalent to iOS's `CLBeaconRegion` `didEnterRegion` callback, but **does not require Location authorization beyond `ACCESS_BACKGROUND_LOCATION`** (which is required for any BLE scan in background on Android).
+- **`ScanWatchdogReceiver`** — `AlarmManager` heartbeat every 15 min, plus `BOOT_COMPLETED` listener. Re-registers the BLE scan filter if it ever gets evicted by the OS.
+- **`BeaconScanService`** — optional foreground service for apps targeting Android 13 or below, or for apps that need a visible "scanning" indicator. Not needed on Android 14+.
+
+#### Android version baseline
+
+| Android version | Force-stop survival without foreground service |
+|---|---|
+| 14+ (API 34+) | ✅ Default behavior |
+| 8 – 13 (API 26 – 33) | Partial — recommend enabling the foreground service (`enableForegroundScanning(...)`) |
+| < 8 (API < 26) | Not supported — the SDK requires API 26+ |
+
+#### OEM caveat (the part not in the docs of any beacon SDK)
+
+Stock Android (Pixel) honors the `PendingIntent` scan exactly as documented. Several OEMs ship aggressive battery managers that kill third-party `PendingIntent` and broadcast receivers regardless of Android version:
+
+| OEM | Behavior | Mitigation |
+|---|---|---|
+| Samsung (One UI 6+) | Generally honors the scan; some restrictions on apps marked "Sleeping" | Ask user to add app to "Never sleeping apps" |
+| Xiaomi / Redmi (MIUI / HyperOS) | Aggressively kills background broadcast receivers | Ask user to enable "Autostart" + lock app in recents |
+| Huawei / Honor (EMUI / HarmonyOS) | Same as Xiaomi | "Manage manually" in battery settings |
+| OnePlus (OxygenOS 11+) | Less aggressive but still restricts | Disable "Deep optimization" for the app |
+| Pixel / Stock | Honors PendingIntent scan | No action |
+
+For any of these vendors, the host app should request `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` and link to the relevant settings page. Without that, the OEM's killer can evict the SDK even on Android 14+. See [dontkillmyapp.com](https://dontkillmyapp.com) for the full per-vendor matrix.
 
 ## Configuration Options
 
