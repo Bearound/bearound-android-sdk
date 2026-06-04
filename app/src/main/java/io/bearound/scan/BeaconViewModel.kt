@@ -348,7 +348,10 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
                 Manifest.permission.BLUETOOTH_SCAN
             ) == PackageManager.PERMISSION_GRANTED
 
-            return locationGranted && bluetoothScanGranted
+            // anyOf: o SDK escaneia com Location OU Bluetooth concedida (ver
+            // BluetoothManager.checkPermissions). Exigir ambas re-solicitava
+            // permissão mesmo com o anyOf já satisfeito.
+            return locationGranted || bluetoothScanGranted
         }
 
         return locationGranted

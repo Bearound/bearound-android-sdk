@@ -5,7 +5,6 @@ import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.PackageManager
-import android.location.Location
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
@@ -18,10 +17,7 @@ import android.util.DisplayMetrics
 import android.view.WindowManager
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import io.bearound.sdk.models.DeviceLocation
 import io.bearound.sdk.models.UserDevice
-import kotlinx.coroutines.runBlocking
-import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
@@ -37,13 +33,11 @@ class DeviceInfoCollector(
     fun collectDeviceInfo(
         locationPermission: String,
         bluetoothState: String,
-        appInForeground: Boolean,
-        location: Location? = null
+        appInForeground: Boolean
     ): UserDevice {
-        val deviceLocation = location?.let { createDeviceLocation(it) }
-
         return UserDevice(
-            deviceId = DeviceIdentifier.getDeviceId(),
+            deviceId = DeviceIdentifier.getDeviceId(context),
+            pushToken = PushTokenStore.unsyncedToken(),
             manufacturer = Build.MANUFACTURER,
             model = Build.MODEL,
             osVersion = Build.VERSION.RELEASE,
@@ -60,17 +54,14 @@ class DeviceInfoCollector(
             ramAvailableMb = getRamAvailableMb(),
             screenWidth = getScreenWidth(),
             screenHeight = getScreenHeight(),
-            adTrackingEnabled = DeviceIdentifier.isAdTrackingEnabled(),
             appInForeground = appInForeground,
             appUptimeMs = System.currentTimeMillis() - appStartTime,
             coldStart = isColdStart,
-            advertisingId = runBlocking { DeviceIdentifier.getAdvertisingId(context) },
             lowPowerMode = isLowPowerMode(),
             locationAccuracy = getLocationAccuracy(locationPermission),
             wifiSSID = getWifiSSID(),
             connectionMetered = isConnectionMetered(),
             connectionExpensive = isConnectionExpensive(),
-            deviceLocation = deviceLocation,
             deviceName = getDeviceName(),
             carrierName = getCarrierName(),
             availableStorageMb = getAvailableStorageMb(),
@@ -78,29 +69,6 @@ class DeviceInfoCollector(
             thermalState = getThermalState(),
             systemUptimeMs = SystemClock.elapsedRealtime(),
             sdkVersion = Build.VERSION.SDK_INT
-        )
-    }
-
-    private fun createDeviceLocation(location: Location): DeviceLocation {
-        return DeviceLocation(
-            latitude = location.latitude,
-            longitude = location.longitude,
-            accuracy = if (location.hasAccuracy()) location.accuracy.toDouble() else null,
-            altitude = if (location.hasAltitude()) location.altitude else null,
-            altitudeAccuracy = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && location.hasVerticalAccuracy()) {
-                location.verticalAccuracyMeters.toDouble()
-            } else null,
-            heading = if (location.hasBearing()) location.bearing.toDouble() else null,
-            speed = if (location.hasSpeed()) location.speed.toDouble() else null,
-            speedAccuracy = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && location.hasSpeedAccuracy()) {
-                location.speedAccuracyMetersPerSecond.toDouble()
-            } else null,
-            bearing = if (location.hasBearing()) location.bearing.toDouble() else null,
-            bearingAccuracy = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && location.hasBearingAccuracy()) {
-                location.bearingAccuracyDegrees.toDouble()
-            } else null,
-            timestamp = Date(location.time),
-            provider = location.provider
         )
     }
 

@@ -16,7 +16,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -82,15 +81,6 @@ fun GeofenceDebugCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // POLICY BANNER — makes the gate doctrine undeniable
-            GpsPolicyBanner(
-                isInZone = state.isInBeaconRegion,
-                isCapturing = state.isCapturingLocation,
-                captureCount = state.locationCaptureCount
-            )
-
             Spacer(modifier = Modifier.height(12.dp))
 
             // Live status rows
@@ -128,41 +118,9 @@ fun GeofenceDebugCard(
                 color = if (state.isActiveScanRunning) Color(0xFF2E7D32) else Color.Gray
             )
 
-            StatusRow(
-                icon = { Icon(Icons.Default.MyLocation, contentDescription = null,
-                    tint = if (state.isCapturingLocation) Color(0xFF1565C0) else Color.Gray) },
-                label = "Captura GPS:",
-                value = if (state.isCapturingLocation) "EM ANDAMENTO…" else "idle",
-                emphasized = state.isCapturingLocation,
-                color = if (state.isCapturingLocation) Color(0xFF1565C0) else Color.Gray
-            )
-
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-
-            DetailRow("Última abertura:", state.lastCaptureOpenReason)
-            DetailRow("Último fechamento:", state.lastCaptureOutcome)
-
-            val lastLoc = state.lastCapturedLocation
-            if (lastLoc != null) {
-                val acc = if (lastLoc.hasAccuracy()) lastLoc.accuracy.toInt() else -1
-                DetailRow(
-                    "Última coord:",
-                    "%.5f, %.5f ±%dm".format(lastLoc.latitude, lastLoc.longitude, acc)
-                )
-            } else {
-                DetailRow("Última coord:", "—")
-            }
-
-            state.lastCaptureCompletedAt?.let { ts ->
-                val ageSec = ((nowMs - ts.time) / 1000).coerceAtLeast(0)
-                val ageLabel = formatAge(ageSec)
-                DetailRow(
-                    "Concluído em:",
-                    "${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(ts)}  ($ageLabel)"
-                )
-            }
-
             if (state.geofenceEvents.isNotEmpty()) {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = "Eventos recentes",
@@ -251,9 +209,6 @@ private fun GeofenceEventRow(event: GeofenceEvent, nowMs: Long) {
         GeofenceEvent.Kind.REGION_EXIT -> Color(0xFFE65100) to "SAIU DA ZONA"
         GeofenceEvent.Kind.SCAN_ACTIVE -> Color(0xFF00897B) to "SCAN LIGADO"
         GeofenceEvent.Kind.SCAN_PAUSED -> Color(0xFF616161) to "SCAN PAUSADO"
-        GeofenceEvent.Kind.CAPTURE_STARTED -> Color(0xFF1565C0) to "GPS DISPARADO"
-        GeofenceEvent.Kind.CAPTURE_FIX -> Color(0xFF2E7D32) to "FIX OK"
-        GeofenceEvent.Kind.CAPTURE_NO_FIX -> Color(0xFFC62828) to "SEM FIX"
     }
 
     Row(
@@ -291,92 +246,6 @@ private fun GeofenceEventRow(event: GeofenceEvent, nowMs: Long) {
                 text = event.detail,
                 style = MaterialTheme.typography.bodySmall,
                 fontSize = 11.sp
-            )
-        }
-    }
-}
-
-@Composable
-private fun GpsPolicyBanner(
-    isInZone: Boolean,
-    isCapturing: Boolean,
-    captureCount: Int
-) {
-    val bg = if (isInZone) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
-    val border = if (isInZone) Color(0xFF2E7D32) else Color(0xFFC62828)
-    val emoji = if (isInZone) "✅" else "⛔"
-    val title = if (isInZone) "GPS LIBERADO" else "GPS BLOQUEADO"
-    val titleColor = if (isInZone) Color(0xFF1B5E20) else Color(0xFFB71C1C)
-
-    val body = when {
-        !isInZone -> "Sem beacon detectado. Localização NÃO está sendo lida."
-        isCapturing -> "Capturando agora — janela aberta porque você entrou na zona."
-        else -> "Dentro da zona. GPS já capturou o que precisava; agora está em standby."
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(bg, RoundedCornerShape(8.dp))
-            .padding(12.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(text = emoji, fontSize = 18.sp)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = title,
-                color = titleColor,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = body,
-            color = titleColor,
-            style = MaterialTheme.typography.bodySmall,
-            fontSize = 12.sp
-        )
-        Spacer(modifier = Modifier.height(6.dp))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.White.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "📊 Capturas nesta sessão:",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFF424242),
-                modifier = Modifier.weight(1f)
-            )
-            Text(
-                text = "$captureCount",
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF424242)
-            )
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color.White.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "🛡️ Capturas fora da zona:",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFF424242),
-                modifier = Modifier.weight(1f)
-            )
-            Text(
-                text = "0 ✓",
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF1B5E20)
             )
         }
     }

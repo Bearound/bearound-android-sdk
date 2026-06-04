@@ -22,7 +22,6 @@ import io.bearound.sdk.interfaces.BluetoothManagerListener
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.BeaconMetadata
 import io.bearound.sdk.models.ForegroundScanConfig
-import io.bearound.sdk.models.LocationCaptureResult
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
@@ -31,6 +30,7 @@ import io.bearound.sdk.models.UserProperties
 import io.bearound.sdk.network.APIClient
 import io.bearound.sdk.utilities.DeviceInfoCollector
 import io.bearound.sdk.utilities.OfflineBatchStorage
+import io.bearound.sdk.utilities.PushTokenStore
 import io.bearound.sdk.utilities.SDKConfigStorage
 import io.bearound.sdk.utilities.SecureStorage
 import kotlinx.coroutines.CoroutineScope
@@ -75,7 +75,6 @@ class BeAroundSDK private constructor() {
     private lateinit var deviceInfoCollector: DeviceInfoCollector
     private lateinit var beaconManager: BeaconManager
     private lateinit var bluetoothManager: BluetoothManager
-    private lateinit var locationCaptureManager: LocationCaptureManager
     private lateinit var backgroundScanManager: BackgroundScanManager
     private lateinit var backgroundScheduler: BackgroundScheduler
     private var apiClient: APIClient? = null
@@ -151,7 +150,6 @@ class BeAroundSDK private constructor() {
         deviceInfoCollector = DeviceInfoCollector(context, isColdStart)
         beaconManager = BeaconManager(context)
         bluetoothManager = BluetoothManager(context)
-        locationCaptureManager = LocationCaptureManager(context)
         backgroundScanManager = BackgroundScanManager(context)
         backgroundScheduler = BackgroundScheduler.getInstance(context)
         offlineBatchStorage = OfflineBatchStorage(context)
@@ -216,7 +214,7 @@ class BeAroundSDK private constructor() {
             syncBeacons()
         }
 
-        // v2.5 — region transitions: gate active BLE scan + drive location capture
+        // v2.5 — region transitions: gate active BLE scan
         beaconManager.onRegionEnter = {
             handler.post { listener?.onEnterBeaconRegion() }
         }
@@ -229,35 +227,13 @@ class BeAroundSDK private constructor() {
             Log.d(TAG, "Active scan START — region entered, starting BLE central scan + duty cycle")
             // Bluetooth metadata scan ON only while inside a region.
             bluetoothManager.startScanning()
-            // Trigger location capture if our fix is missing/stale.
-            if (locationCaptureManager.isLocationStale()) {
-                locationCaptureManager.start(reason = "beacon_rising_edge")
-            }
             handler.post { listener?.onActiveScanStateChanged(true) }
         }
 
         beaconManager.onActiveScanShouldStop = {
-            Log.d(TAG, "Active scan STOP — region exited, stopping BLE central scan + location capture")
+            Log.d(TAG, "Active scan STOP — region exited, stopping BLE central scan")
             bluetoothManager.stopScanning()
-            locationCaptureManager.stop(outcome = "beacons_lost")
             handler.post { listener?.onActiveScanStateChanged(false) }
-        }
-
-        locationCaptureManager.onCaptureStarted = { reason ->
-            handler.post { listener?.onStartLocationCapture(reason) }
-        }
-
-        locationCaptureManager.onCaptureCompleted = { location, openingReason, outcome ->
-            // Propagate the freshest fix to BeaconManager.lastLocation so sync payloads carry it.
-            if (location != null) {
-                beaconManager.lastLocation = location
-            }
-            val result = LocationCaptureResult(
-                reason = openingReason,
-                location = location,
-                outcome = outcome
-            )
-            handler.post { listener?.onCompleteLocationCapture(result) }
         }
 
         bluetoothManager.listener = object : BluetoothManagerListener {
@@ -337,7 +313,6 @@ class BeAroundSDK private constructor() {
         }
 
         beaconManager.setForegroundState(true)
-        locationCaptureManager.setForegroundState(true)
         // Periodic scanning in foreground is automatic (controlled by sync timer)
 
         if (isScanning) {
@@ -352,7 +327,6 @@ class BeAroundSDK private constructor() {
         Log.d(TAG, "App backgrounded")
 
         beaconManager.setForegroundState(false)
-        locationCaptureManager.setForegroundState(false)
         backgroundScanManager.enableBackgroundScanning()
 
         // Start foreground service if opted-in and scanning is active
@@ -409,6 +383,15 @@ class BeAroundSDK private constructor() {
 
     fun setUserProperties(properties: UserProperties) {
         userProperties = properties
+    }
+
+    /**
+     * Registers the device's push token (FCM/APNs) so the backend can target this device
+     * for push. Sent once with the next sync; re-sent only if the token changes.
+     */
+    fun setPushToken(token: String) {
+        PushTokenStore.setToken(token)
+        Log.d(TAG, "Push token registered (will sync on next request)")
     }
 
     fun clearUserProperties() {
@@ -474,7 +457,6 @@ class BeAroundSDK private constructor() {
     fun stopScanning() {
         beaconManager.stopScanning()
         bluetoothManager.stopScanning()
-        locationCaptureManager.stop(outcome = "stop_scanning")
         backgroundScanManager.disableBackgroundScanning()
         backgroundScheduler.disableAll()
         stopSyncTimer()
@@ -768,8 +750,7 @@ class BeAroundSDK private constructor() {
             val userDevice = deviceInfoCollector.collectDeviceInfo(
                 locationPermission = locationPermission,
                 bluetoothState = bluetoothState,
-                appInForeground = !isAppInBackground,
-                location = beaconManager.lastLocation
+                appInForeground = !isAppInBackground
             )
 
             client.sendBeacons(beaconsToSend, info, userDevice, userProperties) { result ->
@@ -812,6 +793,7 @@ class BeAroundSDK private constructor() {
                         }, 30_000L)
 
                         // Notify listener of success
+                        PushTokenStore.markSynced()
                         handler.post {
                             listener?.onSyncCompleted(beaconsToSend.size, success = true, error = null)
                         }
@@ -853,8 +835,7 @@ class BeAroundSDK private constructor() {
         val userDevice = deviceInfoCollector.collectDeviceInfo(
             locationPermission = locationPermission,
             bluetoothState = bluetoothState,
-            appInForeground = !isAppInBackground,
-            location = beaconManager.lastLocation
+            appInForeground = !isAppInBackground
         )
 
         val chunks = allBatches.chunked(5)
@@ -904,6 +885,7 @@ class BeAroundSDK private constructor() {
 
             Log.d(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} succeeded — removed ${chunk.size} batch(es)")
 
+            PushTokenStore.markSynced()
             handler.post {
                 listener?.onSyncCompleted(beaconsInChunk.size, success = true, error = null)
             }

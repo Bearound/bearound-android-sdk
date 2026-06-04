@@ -169,6 +169,7 @@ class APIClient(private val configuration: SDKConfiguration) {
         val payload = JSONObject()
 
         payload.put("deviceId", device.deviceId)
+        device.pushToken?.let { payload.put("pushToken", it) }
         payload.put("timestamp", device.timestamp)
         payload.put("timezone", device.timezone)
 
@@ -210,8 +211,6 @@ class APIClient(private val configuration: SDKConfiguration) {
             put("notifications", device.notificationsPermission)
             put("bluetooth", device.bluetoothState)
             device.locationAccuracy?.let { put("locationAccuracy", it) }
-            device.advertisingId?.let { put("advertisingId", it) }
-            put("adTrackingEnabled", device.adTrackingEnabled)
         }
         payload.put("permissions", permissions)
 
@@ -237,25 +236,6 @@ class APIClient(private val configuration: SDKConfiguration) {
 
         device.carrierName?.let { payload.put("carrierName", it) }
         device.availableStorageMb?.let { payload.put("availableStorageMb", it) }
-
-        // Device location
-        device.deviceLocation?.let { location ->
-            val locationObj = JSONObject().apply {
-                put("latitude", location.latitude)
-                put("longitude", location.longitude)
-                put("timestamp", location.timestamp.time)
-                location.accuracy?.let { put("accuracy", it) }
-                location.altitude?.let { put("altitude", it) }
-                location.altitudeAccuracy?.let { put("altitudeAccuracy", it) }
-                location.heading?.let { put("heading", it) }
-                location.speed?.let { put("speed", it) }
-                location.speedAccuracy?.let { put("speedAccuracy", it) }
-                location.bearing?.let { put("bearing", it) }
-                location.bearingAccuracy?.let { put("bearingAccuracy", it) }
-                location.provider?.let { put("provider", it) }
-            }
-            payload.put("deviceLocation", locationObj)
-        }
 
         return payload
     }

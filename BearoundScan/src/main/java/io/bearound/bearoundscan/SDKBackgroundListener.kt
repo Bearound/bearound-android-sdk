@@ -55,7 +55,7 @@ class SDKBackgroundListener(
     override fun onProvideNotificationContent(beacons: List<Beacon>): NotificationContent {
         return NotificationContent(
             title = "BeAroundScan",
-            text = "Encontramos promoções para você!"
+            text = "Beacon detectado por perto"
         )
     }
 }

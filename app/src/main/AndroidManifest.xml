@@ -9,11 +9,13 @@
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
     
-    <!-- Location permissions -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-    
+    <!-- Location permissions — legacy only: required to run a BLE scan on API ≤ 30.
+         On API 31+ BLUETOOTH_SCAN (neverForLocation) covers scanning, so location is not requested. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
+        android:maxSdkVersion="30" />
+
     <!-- Internet for API communication -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

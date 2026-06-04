@@ -6,7 +6,6 @@ import android.bluetooth.le.*
 import android.bluetooth.le.ScanCallback.*
 import android.content.Context
 import android.content.pm.PackageManager
-import android.location.Location
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -27,7 +26,10 @@ import kotlin.math.pow
 class BeaconManager(private val context: Context) {
     companion object {
         private const val TAG = "BeAroundSDK-BeaconM"
-        private const val BEACON_TIMEOUT_DEFAULT = 5000L
+        // Grace period before a beacon is considered "gone". Long enough to
+        // absorb BLE radio dropouts while the device is stationary inside the
+        // zone — short values caused enter/exit flicker (5s → 30s).
+        private const val BEACON_TIMEOUT_DEFAULT = 30000L
         private const val WATCHDOG_INTERVAL = 30000L
         private const val RANGING_REFRESH_INTERVAL = 120000L
         private const val MAX_RESTARTS_PER_MINUTE = 3
@@ -49,8 +51,6 @@ class BeaconManager(private val context: Context) {
      */
     var isInBeaconRegion: Boolean = false
         private set
-
-    var lastLocation: Location? = null
 
     // Callbacks
     var onBeaconsUpdated: ((List<Beacon>) -> Unit)? = null
@@ -152,7 +152,7 @@ class BeaconManager(private val context: Context) {
         }
 
         if (!checkPermissions()) {
-            val error = Exception("Location or Bluetooth permissions not granted")
+            val error = Exception("Neither Location nor Bluetooth permission granted — at least one is required to scan")
             onError?.invoke(error)
             return
         }
@@ -198,7 +198,6 @@ class BeaconManager(private val context: Context) {
             detectedBeacons.clear()
             beaconLastSeen.clear()
             rssiAccumulators.clear()
-            lastLocation = null
         }
         rssiFilter.clear()
 
@@ -554,10 +553,19 @@ class BeaconManager(private val context: Context) {
     }
 
     private fun checkPermissions(): Boolean {
-        val locationPermission = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
+        // Two "eyes": Location and Bluetooth. Scan should proceed if AT LEAST ONE is granted.
+        // - Android 12+: BLUETOOTH_SCAN alone is sufficient (manifest uses neverForLocation).
+        // - Android <12: ACCESS_FINE/COARSE_LOCATION alone is sufficient (legacy BLE scan model;
+        //   BLUETOOTH/BLUETOOTH_ADMIN are normal permissions, auto-granted at install).
+        val locationPermission =
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
 
         val bluetoothScanPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(
@@ -565,9 +573,11 @@ class BeaconManager(private val context: Context) {
                 Manifest.permission.BLUETOOTH_SCAN
             ) == PackageManager.PERMISSION_GRANTED
         } else {
+            // Pre-Android-12, BLUETOOTH/BLUETOOTH_ADMIN are install-time normal permissions.
+            // Treat as available so that location-only grants still unlock the scan.
             true
         }
 
-        return locationPermission && bluetoothScanPermission
+        return locationPermission || bluetoothScanPermission
     }
 }

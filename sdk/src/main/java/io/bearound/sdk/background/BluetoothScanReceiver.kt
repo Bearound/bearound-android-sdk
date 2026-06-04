@@ -64,18 +64,27 @@ class BluetoothScanReceiver : BroadcastReceiver() {
     }
 
     private fun hasRequiredPermissions(context: Context): Boolean {
-        // Only BLUETOOTH_SCAN is required to process scan results on Android 12+.
-        // Location is not needed because BLUETOOTH_SCAN uses usesPermissionFlags="neverForLocation".
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        // Two "eyes": Location and Bluetooth. Accept results if AT LEAST ONE is granted.
+        val hasLocation =
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+        val hasBluetoothScan = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.BLUETOOTH_SCAN
             ) == PackageManager.PERMISSION_GRANTED
         } else {
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
+            // Pre-Android-12: BLUETOOTH/BLUETOOTH_ADMIN are install-time normal permissions.
+            true
         }
+
+        return hasLocation || hasBluetoothScan
     }
 }

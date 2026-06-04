@@ -1,7 +1,6 @@
 package io.bearound.sdk.interfaces
 
 import io.bearound.sdk.models.Beacon
-import io.bearound.sdk.models.LocationCaptureResult
 import io.bearound.sdk.models.NotificationContent
 
 /**
@@ -72,20 +71,19 @@ interface BeAroundSDKListener {
 
     // endregion
 
-    // region Beacon Region + Location Capture (v2.5)
+    // region Beacon Region (v2.5)
 
     /**
      * Called when the first beacon is detected after being out of region (rising edge).
      * This is the canonical "the user is in a beacon zone" signal on Android — when this
      * fires, the SDK switches from low-power background filter scan to active duty-cycle
-     * scanning and triggers a location capture.
+     * scanning.
      */
     fun onEnterBeaconRegion() {}
 
     /**
      * Called when the last beacon expires after the timeout window (falling edge). The
-     * SDK is now back to low-power background filter scanning only — active BLE scan and
-     * GPS are OFF.
+     * SDK is now back to low-power background filter scanning only — active BLE scan is OFF.
      */
     fun onExitBeaconRegion() {}
 
@@ -95,19 +93,6 @@ interface BeAroundSDKListener {
      * @param isActive true when active scanning is running, false when paused
      */
     fun onActiveScanStateChanged(isActive: Boolean) {}
-
-    /**
-     * Called when the SDK opens a one-shot GPS capture window triggered by a beacon.
-     * @param reason short tag describing why the window opened (e.g. "beacon_rising_edge")
-     */
-    fun onStartLocationCapture(reason: String) {}
-
-    /**
-     * Called when the GPS capture window closes — either with an acceptable fix or by
-     * timeout. Inspect [LocationCaptureResult.hasFix] to know whether a coordinate was
-     * acquired during this specific window.
-     */
-    fun onCompleteLocationCapture(result: LocationCaptureResult) {}
 
     // endregion
 }

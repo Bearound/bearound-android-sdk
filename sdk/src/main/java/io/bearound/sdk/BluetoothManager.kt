@@ -180,10 +180,20 @@ class BluetoothManager(private val context: Context) {
     }
 
     private fun checkPermissions(): Boolean {
-        // BLUETOOTH_SCAN is the only permission needed for BluetoothLeScanner.startScan().
-        // BLUETOOTH_CONNECT is for GATT connections (not used here).
-        // Location is not required because BLUETOOTH_SCAN uses usesPermissionFlags="neverForLocation".
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        // Two "eyes": Location and Bluetooth. Scan proceeds if AT LEAST ONE is granted.
+        // - Android 12+ (neverForLocation flag): BLUETOOTH_SCAN alone is sufficient.
+        // - Android <12: ACCESS_FINE/COARSE_LOCATION alone is sufficient (legacy BLE).
+        val hasLocation =
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+        val hasBluetoothScan = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.BLUETOOTH_SCAN
@@ -191,5 +201,7 @@ class BluetoothManager(private val context: Context) {
         } else {
             true
         }
+
+        return hasLocation || hasBluetoothScan
     }
 }

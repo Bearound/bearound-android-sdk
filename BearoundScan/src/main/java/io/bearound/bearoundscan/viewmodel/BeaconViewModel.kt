@@ -18,12 +18,10 @@ import io.bearound.sdk.BeAroundSDK
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.ForegroundScanConfig
-import io.bearound.sdk.models.LocationCaptureResult
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.NotificationContent
 import io.bearound.sdk.models.ScanPrecision
 import io.bearound.sdk.models.UserProperties
-import android.location.Location
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,10 +44,7 @@ data class GeofenceEvent(
         REGION_ENTER,
         REGION_EXIT,
         SCAN_ACTIVE,
-        SCAN_PAUSED,
-        CAPTURE_STARTED,
-        CAPTURE_FIX,
-        CAPTURE_NO_FIX
+        SCAN_PAUSED
     }
 }
 
@@ -79,8 +74,8 @@ data class BeAroundScanState(
     // Foreground service config
     val foregroundServiceEnabled: Boolean = true,
     val foregroundNotificationTitle: String = "",
-    val foregroundNotificationText: String = "Encontrando promoções",
-    val foregroundContextualText: String = "Encontramos promoções para você!",
+    val foregroundNotificationText: String = "Procurando beacons",
+    val foregroundContextualText: String = "Beacon detectado por perto",
     // Settings sheet
     val showSettings: Boolean = false,
     // Pinned beacons
@@ -90,13 +85,6 @@ data class BeAroundScanState(
     val lastEnteredRegionAt: Date? = null,
     val lastExitedRegionAt: Date? = null,
     val isActiveScanRunning: Boolean = false,
-    val isCapturingLocation: Boolean = false,
-    val lastCaptureOpenReason: String = "—",
-    val lastCaptureOutcome: String = "—",
-    val lastCapturedLocation: Location? = null,
-    val lastCaptureCompletedAt: Date? = null,
-    /** How many GPS capture windows have completed (with or without a fix) since scan started. */
-    val locationCaptureCount: Int = 0,
     val geofenceEvents: List<GeofenceEvent> = emptyList()
 )
 
@@ -175,8 +163,8 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             userPropertyCustom = prefs.getString("user_custom", "") ?: "",
             foregroundServiceEnabled = prefs.getBoolean("fg_service_enabled", true),
             foregroundNotificationTitle = prefs.getString("fg_notification_title", "") ?: "",
-            foregroundNotificationText = prefs.getString("fg_notification_text", "Encontrando promoções") ?: "Encontrando promoções",
-            foregroundContextualText = prefs.getString("fg_contextual_text", "Encontramos promoções para você!") ?: "Encontramos promoções para você!"
+            foregroundNotificationText = prefs.getString("fg_notification_text", "Procurando beacons") ?: "Procurando beacons",
+            foregroundContextualText = prefs.getString("fg_contextual_text", "Beacon detectado por perto") ?: "Beacon detectado por perto"
         )
     }
 
@@ -204,7 +192,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         maxQueued: MaxQueuedPayloads
     ) {
         sdk.configure(
-            businessToken = "BUSINESS_TOKEN",
+            businessToken = "ee2ec9c46d2b2ad99bddcdd0afe224e6",
             scanPrecision = precision,
             maxQueuedPayloads = maxQueued
         )
@@ -234,15 +222,10 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             isScanning = true,
             statusMessage = "Scaneando...",
             lastScanTime = Date(),
-            // Reset geofence/capture counters for a fresh debug session
-            locationCaptureCount = 0,
+            // Reset geofence counters for a fresh debug session
             geofenceEvents = emptyList(),
             lastEnteredRegionAt = null,
-            lastExitedRegionAt = null,
-            lastCaptureOpenReason = "—",
-            lastCaptureOutcome = "—",
-            lastCapturedLocation = null,
-            lastCaptureCompletedAt = null
+            lastExitedRegionAt = null
         )
     }
 
@@ -489,40 +472,6 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
                 else "Scan ativo PAUSADO — só PendingIntent scan rodando"
             )
             _state.value = _state.value.copy(isActiveScanRunning = isActive)
-        }
-    }
-
-    override fun onStartLocationCapture(reason: String) {
-        viewModelScope.launch {
-            appendGeofenceEvent(GeofenceEvent.Kind.CAPTURE_STARTED, "Janela GPS aberta — motivo: $reason")
-            _state.value = _state.value.copy(
-                isCapturingLocation = true,
-                lastCaptureOpenReason = reason
-            )
-        }
-    }
-
-    override fun onCompleteLocationCapture(result: LocationCaptureResult) {
-        viewModelScope.launch {
-            val detail: String
-            val kind: GeofenceEvent.Kind
-            if (result.location != null) {
-                val loc = result.location!!
-                val accuracy = if (loc.hasAccuracy()) loc.accuracy.toInt() else -1
-                detail = "Fix: ${"%.5f".format(loc.latitude)}, ${"%.5f".format(loc.longitude)} ±${accuracy}m | abriu: ${result.reason} | fechou: ${result.outcome}"
-                kind = GeofenceEvent.Kind.CAPTURE_FIX
-            } else {
-                detail = "Sem fix — abriu: ${result.reason} | fechou: ${result.outcome}"
-                kind = GeofenceEvent.Kind.CAPTURE_NO_FIX
-            }
-            appendGeofenceEvent(kind, detail)
-            _state.value = _state.value.copy(
-                isCapturingLocation = false,
-                lastCaptureOutcome = result.outcome,
-                lastCapturedLocation = result.location,
-                lastCaptureCompletedAt = result.timestamp,
-                locationCaptureCount = _state.value.locationCaptureCount + 1
-            )
         }
     }
 
