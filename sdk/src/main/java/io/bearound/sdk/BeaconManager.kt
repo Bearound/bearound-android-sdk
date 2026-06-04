@@ -232,8 +232,9 @@ class BeaconManager(private val context: Context) {
                 .build()
         )
 
+        // Foreground service is active -> BALANCED (not LOW_POWER) for faster detection; Android throttles anyway without a FG service.
         val scanMode = if (isInForeground) ScanSettings.SCAN_MODE_LOW_LATENCY
-                       else ScanSettings.SCAN_MODE_LOW_POWER
+                       else ScanSettings.SCAN_MODE_BALANCED
 
         val settings = ScanSettings.Builder()
             .setScanMode(scanMode)
