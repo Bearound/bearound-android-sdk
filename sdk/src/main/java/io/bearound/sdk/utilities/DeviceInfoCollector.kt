@@ -37,7 +37,7 @@ class DeviceInfoCollector(
     ): UserDevice {
         return UserDevice(
             deviceId = DeviceIdentifier.getDeviceId(context),
-            pushToken = PushTokenStore.unsyncedToken(),
+            pushToken = PushTokenStore.tokenForPayload(),
             manufacturer = Build.MANUFACTURER,
             model = Build.MODEL,
             osVersion = Build.VERSION.RELEASE,
