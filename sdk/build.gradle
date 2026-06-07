@@ -136,4 +136,8 @@ dependencies {
     
     // Gson for JSON serialization (offline batch storage)
     implementation 'com.google.code.gson:gson:2.13.2'
+
+    // Firebase Cloud Messaging — soft dependency (compileOnly, not bundled). See tryAutoCollectFcmToken.
+    compileOnly 'com.google.firebase:firebase-messaging:24.0.0'
+    compileOnly 'com.google.firebase:firebase-common:21.0.0'
 }
