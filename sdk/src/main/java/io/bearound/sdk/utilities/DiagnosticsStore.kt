@@ -1,12 +1,6 @@
 package io.bearound.sdk.utilities
 
-/**
- * In-memory, thread-safe store of recent SDK activity for observability.
- *
- * Holds the last scan/sync outcomes and a small ring buffer of recent errors so a
- * snapshot can be assembled (see [io.bearound.sdk.models.BeAroundDiagnostics]) without
- * pulling device files. State is process-lifetime only — it resets when the process dies.
- */
+/** In-memory, thread-safe store of recent SDK activity for diagnostics. Resets on process death. */
 object DiagnosticsStore {
     private const val MAX_ERRORS = 10
 
@@ -55,6 +49,5 @@ object DiagnosticsStore {
 
     fun lastScanBeaconCount(): Int? = synchronized(lock) { lastScanBeaconCount }
 
-    /** Returns a copy of the recent-errors ring buffer, oldest first. */
     fun recentErrors(): List<String> = synchronized(lock) { recentErrors.toList() }
 }
