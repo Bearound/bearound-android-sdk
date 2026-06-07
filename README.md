@@ -449,6 +449,14 @@ val isForegroundScanningEnabled: Boolean = sdk.isForegroundScanningEnabled
 val pendingBatchCount: Int = sdk.pendingBatchCount
 ```
 
+### Push Notifications (FCM)
+
+If your app ships Firebase, `configure(...)` auto-collects the FCM token and sends it on the next sync. Firebase is a soft dependency (`compileOnly`): apps without it are unaffected. If you don't use Firebase, provide the token yourself:
+
+```kotlin
+sdk.setPushToken(token)
+```
+
 ### BeAroundSDKListener
 
 Implement this interface to receive SDK events:

@@ -345,6 +345,7 @@ class BeAroundSDK private constructor() {
         listener?.onAppStateChanged(isInBackground = true)
     }
 
+    /** Configures and activates the SDK. Auto-collects the FCM token if Firebase is present (see [tryAutoCollectFcmToken]). */
     fun configure(
         businessToken: String,
         scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
@@ -379,8 +380,27 @@ class BeAroundSDK private constructor() {
 
         SDKConfigStorage.saveConfiguration(context, config)
 
+        tryAutoCollectFcmToken(context)
+
         if (isScanning) {
             startSyncTimer()
+        }
+    }
+
+    /** Best-effort FCM token fetch. Firebase is compileOnly, so guard against it being absent at runtime; falls back to [setPushToken]. */
+    private fun tryAutoCollectFcmToken(context: Context) {
+        try {
+            if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) return
+            com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                .addOnSuccessListener { token ->
+                    if (!token.isNullOrEmpty()) {
+                        PushTokenStore.setToken(token)
+                        Log.i(TAG, "FCM token auto-collected")
+                    }
+                }
+                .addOnFailureListener { e -> Log.w(TAG, "FCM token fetch failed: ${e.message}") }
+        } catch (t: Throwable) {
+            Log.i(TAG, "Firebase not available; client must call setPushToken() to provide the FCM token")
         }
     }
 
