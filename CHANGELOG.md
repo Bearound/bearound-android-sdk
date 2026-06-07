@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-06-07
+
+### Changed
+
+- **`setUserProperties` now merges** instead of replacing — a later partial update (adding `email`/`name`) no longer wipes a previously-set `internalId`. Call it right after `configure()` to attach the user's identity at startup.
+
+### Added
+
+- User identity (`internalId` and other user properties) is now **persisted** and restored after an app kill / reboot, so background events stay attributed to the user.
+
 ## [3.0.0] - 2026-05-27
 
 Mirrors the iOS SDK v3.0.0 hybrid wake-up model. This is a **major release** because the public Bluetooth permission surface changes (`BLUETOOTH_CONNECT` is no longer requested by the SDK manifest) and the default user-facing strings are now in English. Both are observable in production and require host-app awareness.

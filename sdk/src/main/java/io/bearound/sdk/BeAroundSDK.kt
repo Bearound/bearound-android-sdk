@@ -140,6 +140,12 @@ class BeAroundSDK private constructor() {
             
             // Update offline batch storage max count
             offlineBatchStorage.maxBatchCount = savedConfig.maxQueuedPayloads.value
+
+            SDKConfigStorage.loadInternalId(context)?.let { savedId ->
+                if (userProperties?.internalId == null) {
+                    userProperties = (userProperties ?: UserProperties()).mergedWith(UserProperties(internalId = savedId))
+                }
+            }
         } else {
             Log.w(TAG, "Failed to restore configuration")
         }
@@ -405,7 +411,8 @@ class BeAroundSDK private constructor() {
     }
 
     fun setUserProperties(properties: UserProperties) {
-        userProperties = properties
+        userProperties = (userProperties ?: UserProperties()).mergedWith(properties)
+        userProperties?.internalId?.let { SDKConfigStorage.saveInternalId(context, it) }
     }
 
     /**
@@ -419,6 +426,7 @@ class BeAroundSDK private constructor() {
 
     fun clearUserProperties() {
         userProperties = null
+        SDKConfigStorage.saveInternalId(context, null)
     }
 
     fun enableForegroundScanning(config: ForegroundScanConfig) {

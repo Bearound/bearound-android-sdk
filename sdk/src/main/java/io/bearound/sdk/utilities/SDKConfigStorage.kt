@@ -17,6 +17,7 @@ object SDKConfigStorage {
     private const val KEY_MAX_QUEUED_PAYLOADS = "max_queued_payloads"
     private const val KEY_IS_CONFIGURED = "is_configured"
     private const val KEY_SCANNING_ENABLED = "scanning_enabled"
+    private const val KEY_INTERNAL_ID = "internal_id"
     // Legacy keys for migration
     private const val KEY_FOREGROUND_INTERVAL = "foreground_interval"
     private const val KEY_BACKGROUND_INTERVAL = "background_interval"
@@ -159,5 +160,17 @@ object SDKConfigStorage {
             notificationChannelId = prefs.getString(KEY_FG_SCAN_CHANNEL_ID, null),
             notificationChannelName = prefs.getString(KEY_FG_SCAN_CHANNEL_NAME, "Region monitoring service") ?: "Region monitoring service"
         )
+    }
+
+    /** Persists (or clears, when null) the client-provided user id so it survives background relaunch. */
+    fun saveInternalId(context: Context, internalId: String?) {
+        getPrefs(context).edit().apply {
+            if (internalId != null) putString(KEY_INTERNAL_ID, internalId) else remove(KEY_INTERNAL_ID)
+            apply()
+        }
+    }
+
+    fun loadInternalId(context: Context): String? {
+        return getPrefs(context).getString(KEY_INTERNAL_ID, null)
     }
 }
