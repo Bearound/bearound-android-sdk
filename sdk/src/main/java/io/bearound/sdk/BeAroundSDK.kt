@@ -20,6 +20,7 @@ import io.bearound.sdk.background.BeaconScanService
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.interfaces.BluetoothManagerListener
 import io.bearound.sdk.models.Beacon
+import io.bearound.sdk.models.BeAroundDiagnostics
 import io.bearound.sdk.models.BeaconMetadata
 import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.MaxQueuedPayloads
@@ -28,7 +29,9 @@ import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.ScanPrecision
 import io.bearound.sdk.models.UserProperties
 import io.bearound.sdk.network.APIClient
+import io.bearound.sdk.utilities.DeviceIdentifier
 import io.bearound.sdk.utilities.DeviceInfoCollector
+import io.bearound.sdk.utilities.DiagnosticsStore
 import io.bearound.sdk.utilities.OfflineBatchStorage
 import io.bearound.sdk.utilities.PushTokenStore
 import io.bearound.sdk.utilities.SDKConfigStorage
@@ -342,6 +345,7 @@ class BeAroundSDK private constructor() {
         listener?.onAppStateChanged(isInBackground = true)
     }
 
+    /** Configures and activates the SDK. Auto-collects the FCM token if Firebase is present (see [tryAutoCollectFcmToken]). */
     fun configure(
         businessToken: String,
         scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
@@ -376,8 +380,27 @@ class BeAroundSDK private constructor() {
 
         SDKConfigStorage.saveConfiguration(context, config)
 
+        tryAutoCollectFcmToken(context)
+
         if (isScanning) {
             startSyncTimer()
+        }
+    }
+
+    /** Best-effort FCM token fetch. Firebase is compileOnly, so guard against it being absent at runtime; falls back to [setPushToken]. */
+    private fun tryAutoCollectFcmToken(context: Context) {
+        try {
+            if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) return
+            com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                .addOnSuccessListener { token ->
+                    if (!token.isNullOrEmpty()) {
+                        PushTokenStore.setToken(token)
+                        Log.i(TAG, "FCM token auto-collected")
+                    }
+                }
+                .addOnFailureListener { e -> Log.w(TAG, "FCM token fetch failed: ${e.message}") }
+        } catch (t: Throwable) {
+            Log.i(TAG, "Firebase not available; client must call setPushToken() to provide the FCM token")
         }
     }
 
@@ -735,6 +758,9 @@ class BeAroundSDK private constructor() {
                 if (stats != b.rssiSamples) b.copy(rssiSamples = stats) else b
             }
 
+            // Record the scan result (beacons collected from scanning this window).
+            DiagnosticsStore.recordScan(beaconsToSend.size)
+
             isSyncing = true
 
             // Notify listener that sync is starting
@@ -793,7 +819,8 @@ class BeAroundSDK private constructor() {
                         }, 30_000L)
 
                         // Notify listener of success
-                        PushTokenStore.markSynced()
+                        PushTokenStore.markSent()
+                        DiagnosticsStore.recordSync(success = true, beaconCount = beaconsToSend.size)
                         handler.post {
                             listener?.onSyncCompleted(beaconsToSend.size, success = true, error = null)
                         }
@@ -801,6 +828,8 @@ class BeAroundSDK private constructor() {
                     onFailure = { error ->
                         Log.e(TAG, "Sync failed: ${error.message}")
                         handleSyncFailure(beaconsToSend, error, isRetry = false)
+
+                        DiagnosticsStore.recordSync(success = false, beaconCount = beaconsToSend.size)
 
                         // Notify listener of failure
                         handler.post {
@@ -863,6 +892,9 @@ class BeAroundSDK private constructor() {
                 consecutiveFailures++
                 lastFailureTime = System.currentTimeMillis()
 
+                DiagnosticsStore.recordSync(success = false, beaconCount = beaconsInChunk.size)
+                DiagnosticsStore.recordError("Retry chunk failed: ${error.message}")
+
                 handler.post {
                     listener?.onSyncCompleted(
                         beaconsInChunk.size,
@@ -885,7 +917,8 @@ class BeAroundSDK private constructor() {
 
             Log.d(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} succeeded — removed ${chunk.size} batch(es)")
 
-            PushTokenStore.markSynced()
+            PushTokenStore.markSent()
+            DiagnosticsStore.recordSync(success = true, beaconCount = beaconsInChunk.size)
             handler.post {
                 listener?.onSyncCompleted(beaconsInChunk.size, success = true, error = null)
             }
@@ -898,6 +931,8 @@ class BeAroundSDK private constructor() {
     private fun handleSyncFailure(beacons: List<Beacon>, error: Throwable, isRetry: Boolean) {
         consecutiveFailures++
         lastFailureTime = System.currentTimeMillis()
+
+        DiagnosticsStore.recordError("Sync failed: ${error.message}")
 
         // Save to persistent storage (only if not already a retry)
         if (!isRetry) {
@@ -964,7 +999,31 @@ class BeAroundSDK private constructor() {
      */
     val pendingBatches: List<List<Beacon>>
         get() = offlineBatchStorage.loadAllBatches()
-    
+
+    /**
+     * Returns a point-in-time snapshot of SDK state for diagnostics/support.
+     *
+     * Combines persisted identity and push-token state with in-memory activity from
+     * [DiagnosticsStore] (recent scan/sync outcomes and errors). Safe to call at any
+     * time; values are best-effort and reflect what the SDK has observed so far.
+     */
+    fun diagnostics(): BeAroundDiagnostics {
+        return BeAroundDiagnostics(
+            deviceId = DeviceIdentifier.getDeviceId(context),
+            pushTokenMasked = PushTokenStore.maskedToken(),
+            pushTokenLastSentAt = PushTokenStore.lastSentAt(),
+            isScanning = isScanning,
+            pendingBatches = pendingBatchCount,
+            lastScanAt = DiagnosticsStore.lastScanAt(),
+            lastScanBeaconCount = DiagnosticsStore.lastScanBeaconCount(),
+            lastSyncAt = DiagnosticsStore.lastSyncAt(),
+            lastSyncSuccess = DiagnosticsStore.lastSyncSuccess(),
+            lastSyncBeaconCount = DiagnosticsStore.lastSyncBeaconCount(),
+            recentErrors = DiagnosticsStore.recentErrors(),
+            sdkVersion = Build.VERSION.SDK_INT
+        )
+    }
+
     /**
      * Perform background sync
      * Called by WorkManager and AlarmManager watchdog

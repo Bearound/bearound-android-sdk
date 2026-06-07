@@ -76,7 +76,8 @@ class BluetoothManager(private val context: Context) {
 
         try {
             val settings = ScanSettings.Builder()
-                .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
+                // Foreground service is active -> BALANCED (not LOW_POWER) for faster detection; Android throttles anyway without a FG service.
+                .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
                 .setReportDelay(0)
                 .build()
 
@@ -130,7 +131,8 @@ class BluetoothManager(private val context: Context) {
         if (!checkPermissions()) return
         try {
             val settings = ScanSettings.Builder()
-                .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
+                // Foreground service is active -> BALANCED (not LOW_POWER) for faster detection; Android throttles anyway without a FG service.
+                .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
                 .setReportDelay(0)
                 .build()
             bluetoothLeScanner?.startScan(null, settings, scanCallback)
