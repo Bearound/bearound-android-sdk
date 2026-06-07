@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-06-07
+
+### Added
+
+- **FCM push-token auto-collection** — fetches the FCM token when the host app has Firebase (`compileOnly firebase-messaging`, guarded; degrades gracefully without Firebase). `setPushToken(token)` retained for manual/forwarded tokens.
+- **`diagnostics()`** → `BeAroundDiagnostics` snapshot with `summary()`.
+- First unit tests for the `sdk/` module (Robolectric).
+
+### Changed
+
+- Push-token re-send is now a **TTL heartbeat** — re-sends when the token changes or after 7 days.
+- Faster background detection — `SCAN_MODE_LOW_POWER` → `SCAN_MODE_BALANCED`.
+
 ## [3.0.0] - 2026-05-27
 
 Mirrors the iOS SDK v3.0.0 hybrid wake-up model. This is a **major release** because the public Bluetooth permission surface changes (`BLUETOOTH_CONNECT` is no longer requested by the SDK manifest) and the default user-facing strings are now in English. Both are observable in production and require host-app awareness.
