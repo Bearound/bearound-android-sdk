@@ -22,6 +22,7 @@ android {
         buildConfigField("String", "SDK_GROUP_ID", "\"${findProperty("SDK_GROUP_ID")}\"")
         buildConfigField("String", "SDK_ARTIFACT_ID", "\"${findProperty("SDK_ARTIFACT_ID")}\"")
         buildConfigField("String", "SDK_VERSION", "\"${findProperty("SDK_VERSION")}\"")
+        buildConfigField("String", "SDK_TECHNOLOGY", "\"${findProperty("SDK_TECHNOLOGY")}\"")
     }
 
     buildTypes {

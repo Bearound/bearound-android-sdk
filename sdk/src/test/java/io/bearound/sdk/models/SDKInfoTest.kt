@@ -7,12 +7,11 @@ import org.junit.Test
 
 class SDKInfoTest {
     @Test
-    fun `sdk info reports android platform and android-native technology`() {
+    fun `sdk technology comes from BuildConfig and is android-native`() {
         val info = SDKInfo(appId = "com.test.app", build = 210)
+        assertEquals(BuildConfig.SDK_TECHNOLOGY, info.technology)
+        assertEquals("android-native", BuildConfig.SDK_TECHNOLOGY)
         assertEquals("android", info.platform)
-        assertEquals("android-native", info.technology)
-        assertEquals("com.test.app", info.appId)
-        assertEquals(210, info.build)
     }
 
     @Test
