@@ -9,6 +9,7 @@ data class SDKInfo(
     val version: String = BuildConfig.SDK_VERSION,
     val platform: String = "android",
     val appId: String,
-    val build: Int
+    val build: Int,
+    val technology: String = "android-native"
 )
 
