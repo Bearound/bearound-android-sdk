@@ -36,6 +36,28 @@ class BeaconManager(private val context: Context) {
         private const val DEFAULT_TX_POWER = -59
         /** Past this gap with no packet, the beacon is rendered as stale (faded) but kept. */
         private const val STALE_THRESHOLD_MS = 5000L
+        /**
+         * How long the BLE eye waits without ANY beacon detection before firing
+         * [onRegionExit]. Decoupled from [beaconTimeout] (which controls per-beacon
+         * eviction from the detected map) because OS-level background scan
+         * throttling (Doze, App Standby) can silence delivery for minutes while
+         * the device is stationary inside the zone. Without this gate, the falling
+         * edge in [cleanupExpiredBeacons] would fire as soon as the last beacon
+         * timed out (≤ 65s), producing phantom exit→enter cycles seen in v3.3.0.
+         * 300s (5 min) matches the iOS BLE zone exit grace.
+         */
+        private const val ZONE_EXIT_GRACE_MS = 300_000L
+        /**
+         * Persisted-zone-state staleness threshold. Restoration of `inZone=true` is only
+         * trusted if the snapshot was written less than this long ago. Beyond this, the
+         * snapshot is discarded and a real ENTER fires on the next detection. 1 hour is
+         * well above any plausible Doze + App Standby cycle. Matches iOS.
+         */
+        private const val ZONE_STATE_MAX_AGE_MS = 3_600_000L
+        private const val PREFS_NAME = "com.bearound.sdk.config"
+        private const val PREF_KEY_ZONE_IN = "ble_zone_state_v1.inZone"
+        private const val PREF_KEY_ZONE_WRITTEN_AT = "ble_zone_state_v1.writtenAt"
+        private const val PREF_KEY_ZONE_LAST_SEEN = "ble_zone_state_v1.lastSeenAt"
     }
 
     private var bluetoothLeScanner: BluetoothLeScanner? = null
@@ -73,6 +95,14 @@ class BeaconManager(private val context: Context) {
     private val beaconLastSeen = mutableMapOf<String, Long>()
     private val beaconLock = ReentrantLock()
 
+    /**
+     * Last time ANY beacon ad was received, independent of [detectedBeacons] cleanup.
+     * Used by [cleanupExpiredBeacons]'s falling-edge logic so the region exit grace is
+     * decoupled from the per-beacon eviction timeout (which can be as low as 5s in HIGH
+     * precision mode). Reset on [stopScanning] and after a real [onRegionExit].
+     */
+    private var lastBeaconSeenAt: Long? = null
+
     // RSSI smoothing + per-window sample accumulation
     private val rssiFilter = RssiFilterRegistry()
     private val rssiAccumulators = mutableMapOf<String, RssiStats.Accumulator>()
@@ -99,6 +129,69 @@ class BeaconManager(private val context: Context) {
 
     private val beaconTimeout: Long
         get() = beaconTimeoutMs
+
+    init {
+        // Restore persisted zone state — see [restorePersistedZoneState]. Must run before
+        // the first beacon is processed by [processBeacon], otherwise the default
+        // `isInBeaconRegion = false` would let the rising edge fire a phantom ENTER on the
+        // post-restoration first delivery (e.g. when AlarmManager / PendingIntent scan
+        // wakes the app after Doze + termination, while the device never left the zone).
+        restorePersistedZoneState()
+    }
+
+    private fun zoneStatePrefs() =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    /**
+     * Saves `(isInBeaconRegion, lastBeaconSeenAt)` to SharedPreferences. Called from the
+     * 3 transitions: rising edge in [processBeacon], falling edge in [cleanupExpiredBeacons],
+     * and [stopScanning] (clean wipe). `apply()` is async so this is cheap to call from
+     * the scan/lock paths.
+     */
+    private fun persistZoneState() {
+        val editor = zoneStatePrefs().edit()
+        editor.putBoolean(PREF_KEY_ZONE_IN, isInBeaconRegion)
+        editor.putLong(PREF_KEY_ZONE_WRITTEN_AT, System.currentTimeMillis())
+        val last = lastBeaconSeenAt
+        if (last != null) {
+            editor.putLong(PREF_KEY_ZONE_LAST_SEEN, last)
+        } else {
+            editor.remove(PREF_KEY_ZONE_LAST_SEEN)
+        }
+        editor.apply()
+    }
+
+    /**
+     * Restores the persisted snapshot at construction. Only honors `inZone=true` snapshots
+     * younger than [ZONE_STATE_MAX_AGE_MS] — older or absent snapshots are ignored so a
+     * genuine ENTER can still fire on the next detection.
+     */
+    private fun restorePersistedZoneState() {
+        val prefs = zoneStatePrefs()
+        if (!prefs.contains(PREF_KEY_ZONE_IN)) {
+            Log.d(TAG, "No persisted zone state found — starting fresh")
+            return
+        }
+        val inZone = prefs.getBoolean(PREF_KEY_ZONE_IN, false)
+        val writtenAt = prefs.getLong(PREF_KEY_ZONE_WRITTEN_AT, 0L)
+        val age = System.currentTimeMillis() - writtenAt
+        if (age > ZONE_STATE_MAX_AGE_MS) {
+            Log.d(TAG, "Persisted zone state stale (age=${age / 1000}s > max=${ZONE_STATE_MAX_AGE_MS / 1000}s) — ignoring")
+            return
+        }
+        if (!inZone) {
+            Log.d(TAG, "Persisted zone state was OUT-of-region — nothing to restore")
+            return
+        }
+        isInBeaconRegion = true
+        val lastSeen = if (prefs.contains(PREF_KEY_ZONE_LAST_SEEN)) {
+            prefs.getLong(PREF_KEY_ZONE_LAST_SEEN, writtenAt)
+        } else {
+            writtenAt
+        }
+        lastBeaconSeenAt = lastSeen
+        Log.d(TAG, "Restored persisted zone state: inRegion=true age=${age / 1000}s — suppressing phantom ENTER")
+    }
 
     /**
      * Set how long a beacon stays in the detected map after the last packet.
@@ -200,8 +293,10 @@ class BeaconManager(private val context: Context) {
             rssiAccumulators.clear()
         }
         rssiFilter.clear()
+        lastBeaconSeenAt = null
 
         isInBeaconRegion = false
+        persistZoneState()
         emptyBeaconCount = 0
         isScanning = false
         onScanningStateChanged?.invoke(false)
@@ -373,9 +468,12 @@ class BeaconManager(private val context: Context) {
             detectedBeacons[identifier] = beacon
             beaconLastSeen[identifier] = now
         }
+        // Cleanup-immune "any beacon seen at" timeline. See [lastBeaconSeenAt] kdoc.
+        lastBeaconSeenAt = now
 
         if (wasOutOfRegion) {
             Log.d(TAG, "REGION ENTER — first beacon detected (${beacon.identifier})")
+            persistZoneState()
             onRegionEnter?.invoke()
             onActiveScanShouldStart?.invoke()
         }
@@ -419,13 +517,27 @@ class BeaconManager(private val context: Context) {
             Pair(before, detectedBeacons.isNotEmpty())
         }
 
-        // Falling-edge detection: last beacon expired → fire region exit and stop active scan.
+        // Falling-edge detection: only fire region exit after the cleanup-immune grace
+        // (ZONE_EXIT_GRACE_MS = 5 min) has elapsed since the LAST advert. Previously this
+        // fired as soon as the per-beacon `beaconTimeout` (5-65s) drained the dict —
+        // producing phantom EXIT→ENTER cycles when OS-level background scan throttling
+        // silenced delivery briefly. Now the dict can empty without triggering exit;
+        // exit fires only when no advert has arrived for ZONE_EXIT_GRACE_MS.
         if (hadBeaconsBefore && !hasBeaconsAfter && isInBeaconRegion) {
-            isInBeaconRegion = false
-            Log.d(TAG, "REGION EXIT — last beacon expired, falling back to background broadcast scan")
-            onRegionExit?.invoke()
-            onActiveScanShouldStop?.invoke()
-            stopRegionCleanupTimer()
+            val last = lastBeaconSeenAt
+            val graceElapsed = last == null || (System.currentTimeMillis() - last) > ZONE_EXIT_GRACE_MS
+            if (graceElapsed) {
+                isInBeaconRegion = false
+                lastBeaconSeenAt = null
+                persistZoneState()
+                Log.d(TAG, "REGION EXIT — no beacon ad for ${ZONE_EXIT_GRACE_MS / 1000}s, falling back to background broadcast scan")
+                onRegionExit?.invoke()
+                onActiveScanShouldStop?.invoke()
+                stopRegionCleanupTimer()
+            } else {
+                val sinceLast = if (last != null) (System.currentTimeMillis() - last) / 1000 else -1
+                Log.d(TAG, "Detected map drained but zone-exit grace not yet elapsed (${sinceLast}s since last ad, grace=${ZONE_EXIT_GRACE_MS / 1000}s) — staying in region")
+            }
         }
     }
 

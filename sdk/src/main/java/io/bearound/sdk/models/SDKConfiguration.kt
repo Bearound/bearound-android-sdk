@@ -7,7 +7,8 @@ data class SDKConfiguration(
     val businessToken: String,
     val appId: String,
     val scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
-    val maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM
+    val maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
+    val technology: String = "android-native"
 ) {
     val apiBaseURL: String = "https://ingest.bearound.io"
 

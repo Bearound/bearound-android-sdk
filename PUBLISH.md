@@ -12,11 +12,19 @@ Checklist completo para publicar uma atualizacao do BeAround Android SDK.
 
 ## 1. Atualizar a versao
 
-Editar `gradle.properties` e incrementar `SDK_VERSION`:
+A versao vive em **um unico lugar**: `gradle.properties` (`SDK_VERSION=X.Y.Z`). Editar esse valor e incrementar:
 
 ```properties
 SDK_VERSION=X.Y.Z
 ```
+
+Dessa unica fonte, o valor flui automaticamente para:
+- `BuildConfig.SDK_VERSION` (via `buildConfigField` em `sdk/build.gradle`) — usado em runtime por `SDKInfo.version`
+- a versao da publicacao Maven/JitPack (via `version = findProperty("SDK_VERSION")` em `sdk/build.gradle`)
+
+Nao ha outro lugar para editar a versao. Nao hardcode a versao em codigo.
+
+> **Nota:** `technology` em `SDKInfo` e uma constante hardcoded (`"android-native"`), nao versionada nem configuravel — nao mexer ao publicar.
 
 Regras de versionamento ([SemVer](https://semver.org)):
 - **MAJOR** (X) — breaking changes na API publica

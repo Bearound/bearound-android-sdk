@@ -15,6 +15,7 @@ object SDKConfigStorage {
     private const val KEY_BUSINESS_TOKEN = "business_token"
     private const val KEY_SCAN_PRECISION = "scan_precision"
     private const val KEY_MAX_QUEUED_PAYLOADS = "max_queued_payloads"
+    private const val KEY_TECHNOLOGY = "technology"
     private const val KEY_IS_CONFIGURED = "is_configured"
     private const val KEY_SCANNING_ENABLED = "scanning_enabled"
     private const val KEY_INTERNAL_ID = "internal_id"
@@ -39,6 +40,7 @@ object SDKConfigStorage {
             putString(KEY_BUSINESS_TOKEN, config.businessToken)
             putString(KEY_SCAN_PRECISION, config.scanPrecision.name)
             putInt(KEY_MAX_QUEUED_PAYLOADS, config.maxQueuedPayloads.value)
+            putString(KEY_TECHNOLOGY, config.technology)
             putBoolean(KEY_IS_CONFIGURED, true)
             // Remove legacy keys if they exist
             remove(KEY_FOREGROUND_INTERVAL)
@@ -75,11 +77,15 @@ object SDKConfigStorage {
             MaxQueuedPayloads.MEDIUM
         }
 
+        // Default to "android-native" for configs persisted before 3.3.0
+        val technology = prefs.getString(KEY_TECHNOLOGY, null) ?: "android-native"
+
         return SDKConfiguration(
             businessToken = businessToken,
             appId = appId,
             scanPrecision = scanPrecision,
-            maxQueuedPayloads = maxQueuedPayloads
+            maxQueuedPayloads = maxQueuedPayloads,
+            technology = technology
         )
     }
 
