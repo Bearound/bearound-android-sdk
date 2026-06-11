@@ -187,23 +187,28 @@ fun stopScanning() {
 }
 ```
 
-### 4. Set User Properties (Optional)
+### 4. User Identity (`internalId`)
+
+`internalId` is **your own id for the user** (e.g. from your CRM / user spreadsheet) — a user property. Set it (and any other user data) via `setUserProperties` right after `configure()`, so every beacon event is tied back to that user on the backend:
 
 ```kotlin
 import io.bearound.sdk.models.UserProperties
 
-val userProps = UserProperties(
-    internalId = "user123",
-    email = "user@example.com",
-    name = "John Doe",
-    customProperties = mapOf(
-        "plan" to "premium",
-        "age" to "30"
-    )
+sdk.configure(businessToken = "your-business-token")
+sdk.setUserProperties(UserProperties(internalId = "user123"))
+
+// Discovered more later? Call it again — fields you omit are kept:
+sdk.setUserProperties(
+    UserProperties(email = "user@example.com", name = "John Doe",
+                   customProperties = mapOf("plan" to "premium"))
 )
 
-sdk.setUserProperties(userProps)
+// Clear everything on logout (also clears the persisted id)
+sdk.clearUserProperties()
 ```
+
+- `setUserProperties` **merges** — omitted fields are kept, so adding `email`/`name` later does **not** wipe a previously-set `internalId`.
+- `internalId` is **persisted** and restored when Android relaunches the SDK after an app kill / reboot, so background events stay attributed to the user.
 
 ### 5. Background Scanning 🆕
 

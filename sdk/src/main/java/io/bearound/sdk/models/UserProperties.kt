@@ -22,5 +22,13 @@ data class UserProperties(
 
     val hasProperties: Boolean
         get() = internalId != null || email != null || name != null || customProperties.isNotEmpty()
+
+    /** Returns a copy with [other]'s non-null fields overriding this one; custom keys are merged. */
+    fun mergedWith(other: UserProperties): UserProperties = UserProperties(
+        internalId = other.internalId ?: internalId,
+        email = other.email ?: email,
+        name = other.name ?: name,
+        customProperties = customProperties + other.customProperties
+    )
 }
 

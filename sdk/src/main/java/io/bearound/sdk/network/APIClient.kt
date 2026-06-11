@@ -150,6 +150,7 @@ class APIClient(private val configuration: SDKConfiguration) {
             put("platform", sdkInfo.platform)
             put("appId", sdkInfo.appId)
             put("build", sdkInfo.build)
+            put("technology", sdkInfo.technology)
         }
         payload.put("sdk", sdkObj)
 

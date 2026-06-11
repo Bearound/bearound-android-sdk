@@ -136,10 +136,16 @@ class BeAroundSDK private constructor() {
             } catch (_: Exception) {
                 1
             }
-            sdkInfo = SDKInfo(appId = savedConfig.appId, build = buildNumber)
-            
+            sdkInfo = SDKInfo(appId = savedConfig.appId, build = buildNumber, technology = savedConfig.technology)
+
             // Update offline batch storage max count
             offlineBatchStorage.maxBatchCount = savedConfig.maxQueuedPayloads.value
+
+            SDKConfigStorage.loadInternalId(context)?.let { savedId ->
+                if (userProperties?.internalId == null) {
+                    userProperties = (userProperties ?: UserProperties()).mergedWith(UserProperties(internalId = savedId))
+                }
+            }
         } else {
             Log.w(TAG, "Failed to restore configuration")
         }
@@ -349,7 +355,8 @@ class BeAroundSDK private constructor() {
     fun configure(
         businessToken: String,
         scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
-        maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM
+        maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
+        technology: String = "android-native"
     ) {
         if(businessToken.trim().isEmpty()){
             throw IllegalArgumentException("Business token cannot be empty")
@@ -361,7 +368,8 @@ class BeAroundSDK private constructor() {
             businessToken = businessToken,
             appId = appId,
             scanPrecision = scanPrecision,
-            maxQueuedPayloads = maxQueuedPayloads
+            maxQueuedPayloads = maxQueuedPayloads,
+            technology = technology
         )
 
         configuration = config
@@ -373,7 +381,7 @@ class BeAroundSDK private constructor() {
             1
         }
 
-        sdkInfo = SDKInfo(appId = appId, build = buildNumber)
+        sdkInfo = SDKInfo(appId = appId, build = buildNumber, technology = config.technology)
 
         // Update offline batch storage max count
         offlineBatchStorage.maxBatchCount = config.maxQueuedPayloads.value
@@ -405,7 +413,8 @@ class BeAroundSDK private constructor() {
     }
 
     fun setUserProperties(properties: UserProperties) {
-        userProperties = properties
+        userProperties = (userProperties ?: UserProperties()).mergedWith(properties)
+        userProperties?.internalId?.let { SDKConfigStorage.saveInternalId(context, it) }
     }
 
     /**
@@ -419,6 +428,7 @@ class BeAroundSDK private constructor() {
 
     fun clearUserProperties() {
         userProperties = null
+        SDKConfigStorage.saveInternalId(context, null)
     }
 
     fun enableForegroundScanning(config: ForegroundScanConfig) {
@@ -506,7 +516,7 @@ class BeAroundSDK private constructor() {
                 } catch (e: Exception) {
                     1
                 }
-                sdkInfo = SDKInfo(appId = savedConfig.appId, build = buildNumber)
+                sdkInfo = SDKInfo(appId = savedConfig.appId, build = buildNumber, technology = savedConfig.technology)
             } else {
                 Log.w(TAG, "Cannot start quick scan - SDK not configured")
                 return
