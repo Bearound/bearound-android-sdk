@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-06-11
+
+### Fixed
+
+- **BLE zone flap (phantom `onRegionExit`→`onRegionEnter`).** Cycles fired ~1ms apart while the device was stationary inside the zone, mirroring the iOS 3.3.1 bug. Root cause: `cleanupExpiredBeacons` fired the falling-edge as soon as the per-beacon `beaconTimeout` (5-65s depending on precision mode) drained the detected map — even though the device's BLE radio was still inside the zone, just being throttled by Android Doze / App Standby for a brief window.
+- Added cleanup-immune `lastBeaconSeenAt` and a new `ZONE_EXIT_GRACE_MS = 300_000L` (5 min) gate on the falling edge in `cleanupExpiredBeacons`. The detected map can now drain (for "fading" UX) without producing `onRegionExit` until 5 min of true silence elapses since the last advert.
+- Trade-off: a real physical zone exit takes up to 5 min to fire on the BLE eye. Matches iOS 3.3.1 behavior.
+- **Phantom ENTER after Android termination + AlarmManager / PendingIntent wake.** When the OS killed the app under Doze + App Standby while the device was inside a beacon zone, the subsequent PendingIntent-based scan broadcast would cold-start the SDK with `isInBeaconRegion = false`. The first delivered beacon in `processBeacon` then took the `wasOutOfRegion` branch and fired `onRegionEnter` + a "Entrou na zona" notification — even though the device never physically left. Fix mirrors iOS: persist `(isInBeaconRegion, lastBeaconSeenAt)` to SharedPreferences (`com.bearound.sdk.config`) on every transition; restore in the BeaconManager `init` block BEFORE any beacon is processed. Snapshots older than 1 hour are treated as stale and ignored.
+
+## [3.3.0] - 2026-06-10
+
+### Added
+
+- `sdk.technology` field in the `/ingest` payload (`android-native`) — kept in lockstep with iOS / RN / Flutter native parity.
+
 ## [3.2.0] - 2026-06-07
 
 ### Changed
