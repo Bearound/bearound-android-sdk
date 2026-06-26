@@ -34,6 +34,7 @@ import io.bearound.sdk.utilities.DeviceInfoCollector
 import io.bearound.sdk.utilities.DiagnosticsStore
 import io.bearound.sdk.utilities.OfflineBatchStorage
 import io.bearound.sdk.utilities.PushTokenStore
+import io.bearound.sdk.utilities.RegisterStore
 import io.bearound.sdk.utilities.SDKConfigStorage
 import io.bearound.sdk.utilities.SecureStorage
 import kotlinx.coroutines.CoroutineScope
@@ -485,6 +486,70 @@ class BeAroundSDK private constructor() {
         // be started inside onActiveScanShouldStart when the first beacon is detected, and
         // stopped on region exit. BackgroundScanManager.enableBackgroundScanning() (above)
         // already runs the low-power filter scan that wakes us when a beacon appears.
+
+        // Register the device with the backend even when no beacons are in range so that
+        // the device appears in the Control Hub on first launch (iOS parity).
+        scope.launch { registerDeviceIfNeeded() }
+    }
+
+    /**
+     * Sends a register event (beacons=[] + syncTrigger="register") when:
+     * - the device has never registered, OR
+     * - the fingerprint changed (app update, OS update, new businessToken), OR
+     * - 24 hours have elapsed since the last successful register.
+     *
+     * Fires-and-forgets inside the SDK's background [scope] — never blocks [startScanning].
+     */
+    private suspend fun registerDeviceIfNeeded() {
+        val client = apiClient
+        val info = sdkInfo
+        val config = configuration
+
+        if (client == null || info == null || config == null) {
+            Log.w(TAG, "registerDeviceIfNeeded: SDK not fully configured, skipping")
+            return
+        }
+
+        val appBuild = try {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionCode
+        } catch (_: Exception) { 1 }
+
+        val fingerprint = RegisterStore.buildFingerprint(
+            deviceId = DeviceIdentifier.getDeviceId(context),
+            appId = config.appId,
+            businessToken = config.businessToken,
+            sdkVersion = info.version,
+            osVersion = android.os.Build.VERSION.RELEASE,
+            appBuild = appBuild
+        )
+
+        if (!RegisterStore.shouldRegister(context, fingerprint)) {
+            Log.d(TAG, "registerDeviceIfNeeded: TTL not expired and fingerprint unchanged, skipping")
+            return
+        }
+
+        val locationPermission = getLocationPermissionStatus()
+        val bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off"
+        val userDevice = deviceInfoCollector.collectDeviceInfo(
+            locationPermission = locationPermission,
+            bluetoothState = bluetoothState,
+            appInForeground = !isInBackground
+        )
+
+        Log.d(TAG, "registerDeviceIfNeeded: sending register event")
+
+        client.sendRegister(info, userDevice, userProperties) { result ->
+            result.fold(
+                onSuccess = {
+                    RegisterStore.markRegistered(context, fingerprint)
+                    Log.d(TAG, "registerDeviceIfNeeded: registered successfully")
+                },
+                onFailure = { error ->
+                    Log.w(TAG, "registerDeviceIfNeeded: register failed: ${error.message}")
+                    // Not persisted to offlineBatchStorage — will retry on next startScanning call.
+                }
+            )
+        }
     }
 
     fun stopScanning() {
