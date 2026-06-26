@@ -26,6 +26,65 @@ class APIClient(private val configuration: SDKConfiguration) {
         private const val READ_TIMEOUT = 60000
     }
 
+    /**
+     * Sends a register event to /ingest with an empty beacon list and syncTrigger="register".
+     * Used on startScanning() to ensure the device appears in the Control Hub even when no
+     * beacons are detected. Payload is identical to sendBeacons except beacons=[] and the
+     * extra syncTrigger field.
+     */
+    suspend fun sendRegister(
+        sdkInfo: SDKInfo,
+        userDevice: UserDevice,
+        userProperties: UserProperties?,
+        onComplete: (Result<Unit>) -> Unit
+    ) {
+        withContext(Dispatchers.IO) {
+            try {
+                val url = URL("${configuration.apiBaseURL}/ingest")
+                val connection = url.openConnection() as HttpURLConnection
+
+                connection.requestMethod = "POST"
+                connection.setRequestProperty("Content-Type", "application/json")
+                connection.setRequestProperty("Authorization", configuration.businessToken)
+                connection.connectTimeout = CONNECT_TIMEOUT
+                connection.readTimeout = READ_TIMEOUT
+                connection.doOutput = true
+
+                // beacons=[] + syncTrigger="register" (iOS parity)
+                val payload = buildPayload(emptyList(), sdkInfo, userDevice, userProperties)
+                payload.put("syncTrigger", "register")
+
+                Log.d(TAG, "Sending register event to $url")
+
+                OutputStreamWriter(connection.outputStream).use { writer ->
+                    writer.write(payload.toString())
+                    writer.flush()
+                }
+
+                val responseCode = connection.responseCode
+
+                if (responseCode in 200..299) {
+                    Log.d(TAG, "Register succeeded (HTTP $responseCode)")
+                    onComplete(Result.success(Unit))
+                } else {
+                    val errorMessage = try {
+                        BufferedReader(InputStreamReader(connection.errorStream)).use { it.readText() }
+                    } catch (e: Exception) {
+                        "HTTP error $responseCode"
+                    }
+                    Log.e(TAG, "Register failed: HTTP $responseCode - $errorMessage")
+                    onComplete(Result.failure(Exception("HTTP error: $responseCode")))
+                }
+
+                connection.disconnect()
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Register request failed: ${e.message}")
+                onComplete(Result.failure(e))
+            }
+        }
+    }
+
     suspend fun sendBeacons(
         beacons: List<Beacon>,
         sdkInfo: SDKInfo,
@@ -42,7 +101,7 @@ class APIClient(private val configuration: SDKConfiguration) {
             try {
                 val url = URL("${configuration.apiBaseURL}/ingest")
                 val connection = url.openConnection() as HttpURLConnection
-                
+
                 connection.requestMethod = "POST"
                 connection.setRequestProperty("Content-Type", "application/json")
                 connection.setRequestProperty("Authorization", configuration.businessToken)
@@ -52,7 +111,7 @@ class APIClient(private val configuration: SDKConfiguration) {
 
                 // Build JSON payload
                 val payload = buildPayload(beacons, sdkInfo, userDevice, userProperties)
-                
+
                 // Send request
                 Log.d(TAG, "Sending ${beacons.size} beacon(s) to $url")
 
