@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-06-26
+
+### Added
+
+- **Device register on `startScanning()`** (iOS parity). The SDK reports the device to the backend on init even before any beacon is detected, so it shows up in the Control Hub on first launch. Sends `POST /ingest` with `beacons: []` + `syncTrigger: "register"`, throttled by a 24h TTL + fingerprint (deviceId, appId, businessToken, sdkVersion, osVersion, appBuild) via a new `RegisterStore`. Reuses the existing payload builder.
+
 ## [3.3.1] - 2026-06-11
 
 ### Fixed
