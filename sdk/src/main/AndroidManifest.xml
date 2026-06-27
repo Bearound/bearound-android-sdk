@@ -27,11 +27,12 @@
     <!-- Boot completed permission for restart scanning after reboot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     
-    <!-- Alarm permission for exact alarms (Android 12+) -->
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" 
-        android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.USE_EXACT_ALARM"
-        tools:ignore="ExactAlarm" />
+    <!-- SEM USE_EXACT_ALARM / SCHEDULE_EXACT_ALARM: o SDK NÃO é app de "agenda"
+         nem "despertador", então não qualifica para alarme exato no Google Play
+         (a Play Console exige a remoção, senão pede a declaração de "Alarmes
+         exatos"). O watchdog de scan usa alarme INEXATO (setAndAllowWhileIdle),
+         que roda em Doze sem permissão especial — precisão de minuto é
+         irrelevante para uma rede de segurança do WorkManager. -->
 
     <!-- Foreground service permissions -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

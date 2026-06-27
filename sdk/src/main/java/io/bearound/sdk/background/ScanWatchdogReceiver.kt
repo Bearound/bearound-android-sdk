@@ -11,7 +11,7 @@ import io.bearound.sdk.BeAroundSDK
  * Ensures scanning is still active and syncs any pending data
  * 
  * Triggers:
- * - Every 15 minutes via AlarmManager (setExactAndAllowWhileIdle)
+ * - Every ~15 minutes via AlarmManager (setAndAllowWhileIdle, inexact)
  * - On device boot (BOOT_COMPLETED)
  * 
  * This provides an additional safety net when:

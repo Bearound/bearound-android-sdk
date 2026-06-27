@@ -120,9 +120,11 @@ class BackgroundScheduler private constructor(private val context: Context) {
     // =========================================================================
     
     /**
-     * Schedule watchdog alarm using AlarmManager
-     * Uses setExactAndAllowWhileIdle for more precise timing
-     * This acts as a safety net when WorkManager is delayed
+     * Schedule watchdog alarm using AlarmManager.
+     * Uses setAndAllowWhileIdle (INEXACT) — runs in Doze without USE_EXACT_ALARM.
+     * The SDK is not an alarm/calendar app, so it does not qualify for exact
+     * alarms on Google Play. A few minutes of jitter is fine for a watchdog that
+     * is just a safety net for WorkManager.
      */
     fun scheduleWatchdogAlarm() {
         val intent = Intent(context, ScanWatchdogReceiver::class.java).apply {
@@ -144,35 +146,26 @@ class BackgroundScheduler private constructor(private val context: Context) {
         
         val triggerTime = System.currentTimeMillis() + WATCHDOG_INTERVAL_MS
         
+        // Alarme INEXATO: setAndAllowWhileIdle roda em Doze SEM exigir
+        // USE_EXACT_ALARM. Para um watchdog (rede de segurança do WorkManager),
+        // a janela de alguns minutos não afeta a detecção de presença.
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                // Use setExactAndAllowWhileIdle for Doze mode compatibility
-                alarmManager.setExactAndAllowWhileIdle(
+                alarmManager.setAndAllowWhileIdle(
                     AlarmManager.RTC_WAKEUP,
                     triggerTime,
                     pendingIntent
                 )
             } else {
-                alarmManager.setExact(
+                alarmManager.set(
                     AlarmManager.RTC_WAKEUP,
                     triggerTime,
                     pendingIntent
                 )
             }
-            
-            Log.d(TAG, "Watchdog alarm scheduled for ${WATCHDOG_INTERVAL_MS / 1000 / 60} minutes from now")
-            
-        } catch (e: SecurityException) {
-            // On Android 12+ may need SCHEDULE_EXACT_ALARM permission
-            Log.w(TAG, "Cannot schedule exact alarm: ${e.message}")
-            
-            // Fallback to inexact alarm
-            alarmManager.set(
-                AlarmManager.RTC_WAKEUP,
-                triggerTime,
-                pendingIntent
-            )
-            Log.d(TAG, "Fallback: Inexact alarm scheduled")
+            Log.d(TAG, "Watchdog (inexact) scheduled for ${WATCHDOG_INTERVAL_MS / 1000 / 60} minutes from now")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to schedule watchdog alarm: ${e.message}")
         }
     }
     
