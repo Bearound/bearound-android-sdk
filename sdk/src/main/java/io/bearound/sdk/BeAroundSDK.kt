@@ -424,7 +424,16 @@ class BeAroundSDK private constructor() {
      */
     fun setPushToken(token: String) {
         PushTokenStore.setToken(token)
-        Log.d(TAG, "Push token registered (will sync on next request)")
+        Log.d(TAG, "Push token registered")
+        // Se já estamos escaneando e o token ainda não foi enviado (novo/mudou),
+        // empurra agora via register (beacons:[]) — senão só iria no próximo
+        // register (TTL) ou ao detectar um beacon. Cobre apps que chamam
+        // setPushToken DEPOIS do startScanning: o register-on-init já teria saído
+        // sem o token, e o token NÃO faz parte do fingerprint (um register normal
+        // não re-dispararia).
+        if (isScanning && PushTokenStore.tokenForPayload() != null) {
+            scope.launch { registerDeviceIfNeeded(force = true) }
+        }
     }
 
     fun clearUserProperties() {
@@ -500,7 +509,7 @@ class BeAroundSDK private constructor() {
      *
      * Fires-and-forgets inside the SDK's background [scope] — never blocks [startScanning].
      */
-    private suspend fun registerDeviceIfNeeded() {
+    private suspend fun registerDeviceIfNeeded(force: Boolean = false) {
         val client = apiClient
         val info = sdkInfo
         val config = configuration
@@ -523,7 +532,7 @@ class BeAroundSDK private constructor() {
             appBuild = appBuild
         )
 
-        if (!RegisterStore.shouldRegister(context, fingerprint)) {
+        if (!force && !RegisterStore.shouldRegister(context, fingerprint)) {
             Log.d(TAG, "registerDeviceIfNeeded: TTL not expired and fingerprint unchanged, skipping")
             return
         }
@@ -542,6 +551,7 @@ class BeAroundSDK private constructor() {
             result.fold(
                 onSuccess = {
                     RegisterStore.markRegistered(context, fingerprint)
+                    PushTokenStore.markSent()
                     Log.d(TAG, "registerDeviceIfNeeded: registered successfully")
                 },
                 onFailure = { error ->
