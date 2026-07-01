@@ -29,6 +29,7 @@ import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.ScanPrecision
 import io.bearound.sdk.models.UserProperties
 import io.bearound.sdk.network.APIClient
+import io.bearound.sdk.utilities.BackgroundReliabilityHelper
 import io.bearound.sdk.utilities.DeviceIdentifier
 import io.bearound.sdk.utilities.DeviceInfoCollector
 import io.bearound.sdk.utilities.DiagnosticsStore
@@ -462,6 +463,43 @@ class BeAroundSDK private constructor() {
 
     val isForegroundScanningEnabled: Boolean
         get() = foregroundScanConfig?.enabled == true
+
+    // region Background reliability (Doze + OEM battery killers) — sem location, sem policy
+
+    /**
+     * true se o app já está isento da otimização de bateria do Android (Doze). Abaixo do
+     * Android 6 sempre true (não se aplica). Ver [openBatteryOptimizationSettings].
+     */
+    fun isIgnoringBatteryOptimizations(): Boolean =
+        BackgroundReliabilityHelper.isIgnoringBatteryOptimizations(context)
+
+    /**
+     * Abre a tela de Settings de otimização de bateria para o usuário isentar o app —
+     * aumenta a sobrevivência do scan em background sob Doze. Usa a tela de Settings
+     * (sem a permissão restrita REQUEST_IGNORE_BATTERY_OPTIMIZATIONS), então não dispara
+     * revisão do Google Play. @return true se conseguiu abrir a tela.
+     */
+    fun openBatteryOptimizationSettings(): Boolean =
+        BackgroundReliabilityHelper.openBatteryOptimizationSettings(context)
+
+    /**
+     * true se o device é de um OEM (Xiaomi, Huawei, Oppo/Vivo, OnePlus, Samsung…) com tela
+     * de autostart conhecida e resolvível. Em Android stock (Pixel) retorna false — não é
+     * necessário. Ver [openManufacturerAutostartSettings].
+     */
+    fun isAutostartManageable(): Boolean =
+        BackgroundReliabilityHelper.isAutostartManageable(context)
+
+    /**
+     * Abre a tela de "autostart"/"apps protegidos" do fabricante, quando existe. Vários
+     * OEMs matam PendingIntent/broadcast receivers em background mesmo no Android 14+;
+     * habilitar o autostart é a mitigação. @return true se abriu; false em stock/OEM não
+     * mapeado (nesse caso o [openBatteryOptimizationSettings] já cobre o essencial).
+     */
+    fun openManufacturerAutostartSettings(): Boolean =
+        BackgroundReliabilityHelper.openManufacturerAutostartSettings(context)
+
+    // endregion
 
     fun startScanning(foregroundScanConfig: ForegroundScanConfig? = null) {
         val config = configuration

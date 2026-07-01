@@ -90,10 +90,16 @@ Add these permissions to your `AndroidManifest.xml`:
     android:usesPermissionFlags="neverForLocation"
     tools:targetApi="s" />
 
-<!-- Location -->
-<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+<!-- Location (LEGACY ONLY): gates the BLE scan on Android <= 11. On Android 12+
+     detection runs through BLUETOOTH_SCAN (neverForLocation) and does NOT use location,
+     so the SDK caps these at maxSdkVersion="30".
+     Do NOT declare ACCESS_BACKGROUND_LOCATION: background detection on Android 12+ does
+     not use location, and declaring it forces your app into Google Play's background-
+     location review (declaration form + demonstration video). -->
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+    android:maxSdkVersion="30" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
+    android:maxSdkVersion="30" />
 
 <!-- Internet -->
 <uses-permission android:name="android.permission.INTERNET" />
@@ -156,21 +162,22 @@ class MainActivity : AppCompatActivity(), BeAroundSDKListener {
 
 ```kotlin
 private fun requestPermissions() {
-    val permissions = mutableListOf(
-        Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.ACCESS_COARSE_LOCATION
-    )
-    
+    val permissions = mutableListOf<String>()
+
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        // Only BLUETOOTH_SCAN is required by the SDK (v3.0.0+).
+        // Android 12+: BLUETOOTH_SCAN ("Nearby devices") is THE permission that unlocks
+        // beacon detection — the Android equivalent of iOS's Location-for-beacons.
         // Declared with neverForLocation, so it does not imply Location authorization.
         permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+    } else {
+        // Android <= 11: there is no BLUETOOTH_SCAN; FINE_LOCATION is the legacy BLE gate.
+        permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
     }
-    
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        permissions.add(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-    }
-    
+
+    // Do NOT request ACCESS_BACKGROUND_LOCATION: background detection on Android 12+ runs
+    // on BLUETOOTH_SCAN, not location. Requesting it triggers Google Play's background-
+    // location review (form + demo video) for zero detection benefit.
+
     ActivityCompat.requestPermissions(this, permissions.toTypedArray(), REQUEST_CODE)
 }
 ```
@@ -259,7 +266,7 @@ class MainActivity : AppCompatActivity(), BeAroundSDKListener {
 - No foreground service required for Android 14+
 
 **Important Notes:**
-- Background scanning requires `ACCESS_BACKGROUND_LOCATION` permission
+- Background scanning requires `BLUETOOTH_SCAN` ("Nearby devices") permission on Android 12+ — **not** location. (On Android <= 11 the legacy gate is `ACCESS_FINE_LOCATION`.)
 - WorkManager's minimum interval is 15 minutes (Android limitation)
 - Android may delay scans in battery saver mode
 - Background scanning continues even after device reboot via `BOOT_COMPLETED`
@@ -279,7 +286,7 @@ The SDK is designed to survive every state where the app is not running — incl
 
 **Architecture under the hood:**
 
-- **`BluetoothScanReceiver`** — wakes the app via `PendingIntent` when a matching iBeacon is observed by the OS scanner. Equivalent to iOS's `CLBeaconRegion` `didEnterRegion` callback, but **does not require Location authorization beyond `ACCESS_BACKGROUND_LOCATION`** (which is required for any BLE scan in background on Android).
+- **`BluetoothScanReceiver`** — wakes the app via `PendingIntent` when a matching iBeacon is observed by the OS scanner. Equivalent to iOS's `CLBeaconRegion` `didEnterRegion` callback. Requires only `BLUETOOTH_SCAN` (declared `neverForLocation`) — **no Location authorization at all** on Android 12+.
 - **`ScanWatchdogReceiver`** — `AlarmManager` heartbeat every 15 min, plus `BOOT_COMPLETED` listener. Re-registers the BLE scan filter if it ever gets evicted by the OS.
 - **`BeaconScanService`** — optional foreground service for apps targeting Android 13 or below, or for apps that need a visible "scanning" indicator. Not needed on Android 14+.
 
@@ -303,7 +310,29 @@ Stock Android (Pixel) honors the `PendingIntent` scan exactly as documented. Sev
 | OnePlus (OxygenOS 11+) | Less aggressive but still restricts | Disable "Deep optimization" for the app |
 | Pixel / Stock | Honors PendingIntent scan | No action |
 
-For any of these vendors, the host app should request `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` and link to the relevant settings page. Without that, the OEM's killer can evict the SDK even on Android 14+. See [dontkillmyapp.com](https://dontkillmyapp.com) for the full per-vendor matrix.
+For any of these vendors, the host app should get the user to exempt the app from battery optimization and enable autostart. The SDK ships helpers for exactly this (see **Background reliability** below). Without it, the OEM's killer can evict the SDK even on Android 14+. See [dontkillmyapp.com](https://dontkillmyapp.com) for the full per-vendor matrix.
+
+### Background reliability
+
+Keeping the process eligible to wake under Doze and aggressive OEM battery managers is the real Android equivalent of the resilience the iOS "second eye" (Location monitoring) provides — and it needs **no location permission**. The SDK exposes:
+
+```kotlin
+// Battery optimization — opens the system Settings screen so the user can exempt the app.
+// Uses ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS (the Settings list), NOT the restricted
+// REQUEST_IGNORE_BATTERY_OPTIMIZATIONS permission — so it triggers no Google Play review.
+if (!sdk.isIgnoringBatteryOptimizations()) {
+    sdk.openBatteryOptimizationSettings()
+}
+
+// OEM autostart / protected-apps — deep-links to the manufacturer's screen when one exists
+// (Xiaomi/MIUI, Huawei, Oppo/Vivo, OnePlus, Letv). Returns false on stock Android (Pixel)
+// or unmapped OEMs — where the battery-optimization screen above already covers it.
+if (sdk.isAutostartManageable()) {
+    sdk.openManufacturerAutostartSettings()
+}
+```
+
+> **Samsung** is intentionally not in the autostart deep-link list: its "app power management" screen requires the system permission `READ_SEARCH_INDEXABLES`, which third-party apps cannot hold. On Samsung, use `openBatteryOptimizationSettings()` (which works) and optionally guide the user to add the app to "Never sleeping apps" manually.
 
 ## Configuration Options
 
@@ -588,7 +617,7 @@ Background scanning is **automatically enabled** when SDK is configured.
 - ✅ **Survives reboot** - Automatically resumes after device restart
 
 **Requirements:**
-- `ACCESS_BACKGROUND_LOCATION` permission must be granted
+- `BLUETOOTH_SCAN` ("Nearby devices") permission must be granted on Android 12+ (on Android <= 11 the legacy gate is `ACCESS_FINE_LOCATION`). Background detection does **not** use `ACCESS_BACKGROUND_LOCATION`.
 - SDK must be configured before enabling background scanning
 
 **Limitations:**
@@ -596,10 +625,10 @@ Background scanning is **automatically enabled** when SDK is configured.
 
 ### Best Practices
 
-- Request `ACCESS_BACKGROUND_LOCATION` permission for background operation
+- Request `BLUETOOTH_SCAN` ("Nearby devices") permission — it is what unlocks detection on Android 12+ (no location needed). Present it as the core permission, with a pre-permission context screen.
 - Choose the appropriate `ScanPrecision` for your use case (HIGH for real-time, MEDIUM for balanced, LOW for battery savings)
 - Use `enableForegroundScanning()` if you need reliable background scanning with a notification
-- Inform users about background location usage in your privacy policy
+- To survive aggressive OEM battery managers and Doze, guide users through `openBatteryOptimizationSettings()` and `openManufacturerAutostartSettings()` (see Background reliability below)
 
 ## Migration from 1.x
 
@@ -705,13 +734,14 @@ beacon.metadata  // new: battery, firmware, temperature
 
 ### No beacons in background
 
-1. Ensure `ACCESS_BACKGROUND_LOCATION` permission is granted
-2. For better results, ask users to disable battery optimization for your app in device settings
+1. Ensure `BLUETOOTH_SCAN` ("Nearby devices") permission is granted (Android 12+) — that is what unlocks detection, **not** location
+2. On aggressive OEMs (Xiaomi, Huawei, Samsung…), call `openBatteryOptimizationSettings()` and `openManufacturerAutostartSettings()` to keep the process eligible to wake in background
 
 ### App crashes with SecurityException
 
 - Ensure `ACCESS_NETWORK_STATE` permission is in AndroidManifest.xml
 - This was a known issue in pre-2.0 versions
+- **Foreground-service crash (fixed in 3.4.4):** on Android 14+, enabling foreground scanning and then revoking "Nearby devices" used to crash the app in a loop (`Starting FGS with type connectedDevice ... requires ... BLUETOOTH_SCAN`). As of 3.4.4 the SDK checks Bluetooth permission before starting the foreground service and stops it gracefully instead of crashing.
 
 ## ⚠️ Technical Pending Issues
 

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.4] - 2026-07-01
+
+### Fixed
+
+- **Crash (`SecurityException`) when Bluetooth permission is denied while foreground scanning is enabled.** On Android 14+ (API 34+), `BeaconScanService` promoted itself to a `connectedDevice` foreground service without checking Bluetooth permissions; if the user revoked "Nearby devices", the OS killed the process with `SecurityException: Starting FGS with type connectedDevice ... requires ... BLUETOOTH_SCAN` and `START_STICKY` re-created it into a crash loop. Fixed with a permission guard in `BeaconScanService.start()` (skips the service when no Bluetooth permission) plus a defensive `try/catch` around `startForeground()` in `onStartCommand()` that stops the service instead of crashing — the latter is essential because the `START_STICKY` re-launch bypasses `start()`.
+
+### Added
+
+- **Background-reliability helpers** (`BeAroundSDK`): `isIgnoringBatteryOptimizations()`, `openBatteryOptimizationSettings()`, `isAutostartManageable()`, `openManufacturerAutostartSettings()`. Help the host app keep the process eligible to wake under Doze and aggressive OEM battery managers (Xiaomi/MIUI, Huawei, Oppo/Vivo, OnePlus, Letv) — the real Android equivalent of the resilience the iOS "second eye" provides. Battery-optimization uses the Settings screen (`ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS`), **not** the restricted `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` permission, so it triggers no Google Play review. Samsung is intentionally excluded from the autostart deep-link (its app-power screen requires the system permission `READ_SEARCH_INDEXABLES`); it falls back to the battery-optimization screen.
+
 ## [3.4.0] - 2026-06-26
 
 ### Added

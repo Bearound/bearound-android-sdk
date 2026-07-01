@@ -1,11 +1,13 @@
 package io.bearound.sdk.background
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -31,6 +33,14 @@ class BeaconScanService : Service() {
             private set
 
         fun start(context: Context, config: ForegroundScanConfig) {
+            // Android 14+ recusa um FGS do tipo connectedDevice se o app não tiver
+            // nenhuma das permissões Bluetooth (SecurityException → crash do processo).
+            // Sem permissão de Bluetooth não há scan de qualquer forma, então não faz
+            // sentido subir o serviço: pulamos e evitamos o crash.
+            if (!hasBluetoothForegroundServicePermission(context)) {
+                Log.w(TAG, "Skipping foreground service start — no Bluetooth permission (FGS connectedDevice would crash on Android 14+)")
+                return
+            }
             val intent = Intent(context, BeaconScanService::class.java).apply {
                 putExtra(EXTRA_TITLE, config.notificationTitle)
                 putExtra(EXTRA_TEXT, config.notificationText)
@@ -42,6 +52,23 @@ class BeaconScanService : Service() {
                 context.startForegroundService(intent)
             } else {
                 context.startService(intent)
+            }
+        }
+
+        /**
+         * Verdadeiro se o app pode subir o FGS connectedDevice. No Android 14+
+         * (UPSIDE_DOWN_CAKE) o SO exige pelo menos uma das permissões Bluetooth;
+         * abaixo disso não há essa exigência.
+         */
+        fun hasBluetoothForegroundServicePermission(context: Context): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return true
+            val bluetoothPermissions = listOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE
+            )
+            return bluetoothPermissions.any {
+                context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
             }
         }
 
@@ -105,16 +132,24 @@ class BeaconScanService : Service() {
 
         val notification = buildNotification(title, text, icon, channelId, channelName)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-            )
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        // Defesa em profundidade: mesmo que o serviço tenha sido iniciado antes da
+        // permissão ser revogada (ex.: retry do watchdog/boot), promover a foreground
+        // com type connectedDevice sem permissão Bluetooth lança SecurityException no
+        // Android 14+ e derruba o app. Nesse caso paramos o serviço em vez de crashar.
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Cannot start FGS connectedDevice without Bluetooth permission — stopping service instead of crashing", e)
+            stopSelf()
+            return START_NOT_STICKY
         }
 
         Log.d(TAG, "BeaconScanService started in foreground")
