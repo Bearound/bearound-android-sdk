@@ -9,39 +9,16 @@ import org.junit.Test
 /**
  * Pure JVM tests for [DiagnosticsStore].
  *
- * [DiagnosticsStore] is a singleton `object` with mutable process-lifetime state and no
- * public reset hook, so each test would otherwise inherit state from the previous one.
- * [reset] drains every field via reflection in [setUp] so the tests are fully
- * order-independent.
+ * [DiagnosticsStore] is a singleton `object` with mutable process-lifetime state, so each test
+ * would otherwise inherit state from the previous one. [DiagnosticsStore.reset] drains it in
+ * [setUp] so the tests are fully order-independent. Uses the public test hook (not reflection)
+ * so the test also passes against the R8-minified release variant.
  */
 class DiagnosticsStoreTest {
 
     @Before
     fun setUp() {
-        reset()
-    }
-
-    /** Resets all private state of the singleton to its initial (empty) values. */
-    private fun reset() {
-        val store = DiagnosticsStore
-        val cls = store.javaClass
-
-        listOf(
-            "lastSyncAt",
-            "lastSyncSuccess",
-            "lastSyncBeaconCount",
-            "lastScanAt",
-            "lastScanBeaconCount",
-        ).forEach { name ->
-            cls.getDeclaredField(name).apply {
-                isAccessible = true
-                set(store, null)
-            }
-        }
-
-        val errorsField = cls.getDeclaredField("recentErrors").apply { isAccessible = true }
-        val deque = errorsField.get(store) as ArrayDeque<*>
-        deque.clear()
+        DiagnosticsStore.reset()
     }
 
     @Test
