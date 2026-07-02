@@ -42,7 +42,12 @@ data class BeAroundScanState(
     val sortOption: BeaconSortOption = BeaconSortOption.PROXIMITY,
     val pinnedBeaconIds: Set<String> = emptySet(),
     val retryBatches: List<List<Beacon>> = emptyList(),
-    val retryBatchCount: Int = 0
+    val retryBatchCount: Int = 0,
+    /**
+     * Non-null when the sample cannot start because BUSINESS_TOKEN is missing. The UI shows
+     * this instead of the app crashing on launch (SDK.configure throws on a blank token).
+     */
+    val configurationError: String? = null
 )
 
 class BeaconViewModel(application: Application) : AndroidViewModel(application), BeAroundSDKListener {
@@ -66,15 +71,24 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         updatePermissionStatus()
         checkBluetoothStatus()
         checkNotificationStatus()
-        
-        // Configure SDK
-        configureSDK(
-            _state.value.scanPrecision,
-            _state.value.maxQueuedPayloads
-        )
-        
-        // Auto-start scanning
-        startScanning()
+
+        // BUSINESS_TOKEN comes from local.properties (gitignored) or the BUSINESS_TOKEN env var.
+        // Without it, sdk.configure() throws — so surface a friendly state instead of crashing.
+        if (BuildConfig.BUSINESS_TOKEN.isBlank()) {
+            _state.value = _state.value.copy(
+                configurationError = "Configure BUSINESS_TOKEN em local.properties",
+                statusMessage = "Configuração necessária"
+            )
+        } else {
+            // Configure SDK
+            configureSDK(
+                _state.value.scanPrecision,
+                _state.value.maxQueuedPayloads
+            )
+
+            // Auto-start scanning
+            startScanning()
+        }
     }
     
     override fun onCleared() {
@@ -96,6 +110,10 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun startScanning() {
+        if (_state.value.configurationError != null) {
+            return
+        }
+
         if (!hasRequiredPermissions()) {
             _state.value = _state.value.copy(
                 statusMessage = "Permissões necessárias",
@@ -130,6 +148,10 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         precision: ScanPrecision,
         maxQueued: MaxQueuedPayloads
     ) {
+        if (_state.value.configurationError != null) {
+            return
+        }
+
         configureSDK(precision, maxQueued)
         _state.value = _state.value.copy(
             scanPrecision = precision,
