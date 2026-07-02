@@ -74,8 +74,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Run tests
-        run: ./gradlew :sdk:test || echo "⚠️ No tests implemented yet"
-        continue-on-error: true
+        run: ./gradlew :sdk:test
 
       - name: Run lint
         run: ./gradlew :sdk:lint

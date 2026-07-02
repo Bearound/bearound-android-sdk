@@ -82,8 +82,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Run SDK unit tests
-        run: ./gradlew :sdk:test || echo "⚠️ No tests implemented yet"
-        continue-on-error: true
+        run: ./gradlew :sdk:test
 
       - name: Upload test results
         if: always()
