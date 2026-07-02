@@ -245,7 +245,7 @@ class BeaconManager(private val context: Context) {
         }
 
         if (!checkPermissions()) {
-            val error = Exception("Neither Location nor Bluetooth permission granted — at least one is required to scan")
+            val error = Exception(missingPermissionMessage())
             onError?.invoke(error)
             return
         }
@@ -688,6 +688,33 @@ class BeaconManager(private val context: Context) {
                 context,
                 Manifest.permission.ACCESS_COARSE_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    /**
+     * Whether BLUETOOTH_SCAN is granted (the runtime permission that unlocks the BLE scan
+     * on Android 12+). Always true on Android <12 where BLUETOOTH_SCAN is not a runtime
+     * permission. Exposed for diagnostics.
+     */
+    fun hasBluetoothScanPermission(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.BLUETOOTH_SCAN
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    /**
+     * Version-accurate message for the missing-permission case. Reflects the real gate of
+     * the current SDK: on Android 12+ only BLUETOOTH_SCAN unlocks the BLE scan (manifest
+     * declares neverForLocation, so location does NOT unlock it); on Android ≤11 the legacy
+     * model applies and location is what unlocks the scan.
+     */
+    private fun missingPermissionMessage(): String {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            "BLUETOOTH_SCAN (Nearby devices) required on Android 12+ — location does not unlock BLE scan; location only unlocks it on Android ≤11"
+        } else {
+            "ACCESS_FINE_LOCATION or ACCESS_COARSE_LOCATION required on Android ≤11 to unlock the BLE scan"
         }
     }
 }
