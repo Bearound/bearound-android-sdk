@@ -48,10 +48,22 @@ class BeaconScanService : Service() {
                 putExtra(EXTRA_CHANNEL_ID, config.notificationChannelId)
                 putExtra(EXTRA_CHANNEL_NAME, config.notificationChannelName)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: IllegalStateException) {
+                // Android 12+ lança ForegroundServiceStartNotAllowedException (subclasse de
+                // IllegalStateException) quando um FGS é iniciado DE BACKGROUND sem uma
+                // exceção de background-start válida. O fix do 3.4.4 só cobria a
+                // SecurityException (falta de permissão), lançada dentro do onStartCommand;
+                // este caso é lançado já aqui, no startForegroundService. Sem o FGS o scan
+                // em background segue via o PendingIntent scan, então não vale crashar.
+                Log.w(TAG, "FGS start blocked (started from background) — skipping instead of crashing", e)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not start foreground service — skipping", e)
             }
         }
 
@@ -83,10 +95,16 @@ class BeaconScanService : Service() {
                 putExtra(EXTRA_TEXT, text)
                 putExtra(EXTRA_UPDATE_ONLY, true)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                // Mesma proteção do start(): não crashar se o SO recusar (re)iniciar o FGS
+                // de background (ForegroundServiceStartNotAllowed / SecurityException).
+                Log.w(TAG, "Could not update foreground service notification — skipping", e)
             }
         }
 

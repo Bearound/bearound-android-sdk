@@ -666,11 +666,20 @@ class BeaconManager(private val context: Context) {
     }
 
     private fun checkPermissions(): Boolean {
-        // Two "eyes": Location and Bluetooth. Scan should proceed if AT LEAST ONE is granted.
-        // - Android 12+: BLUETOOTH_SCAN alone is sufficient (manifest uses neverForLocation).
-        // - Android <12: ACCESS_FINE/COARSE_LOCATION alone is sufficient (legacy BLE scan model;
-        //   BLUETOOTH/BLUETOOTH_ADMIN are normal permissions, auto-granted at install).
-        val locationPermission =
+        // The BLE-scan gate is version-dependent:
+        // - Android 12+ (S+): ONLY BLUETOOTH_SCAN unlocks the scan (manifest uses
+        //   neverForLocation). Location does NOT unlock it — the OS BluetoothLeScanner
+        //   requires BLUETOOTH_SCAN, so passing with location-only made the SDK attempt a
+        //   scan the OS then blocked with a (caught) SecurityException — polluting the log
+        //   with no detection. So on 12+ we require BLUETOOTH_SCAN directly.
+        // - Android <12: legacy model — ACCESS_FINE/COARSE_LOCATION unlocks the BLE scan
+        //   (BLUETOOTH/BLUETOOTH_ADMIN are install-time normal permissions).
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_SCAN
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
             ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.ACCESS_FINE_LOCATION
@@ -679,18 +688,6 @@ class BeaconManager(private val context: Context) {
                 context,
                 Manifest.permission.ACCESS_COARSE_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
-
-        val bluetoothScanPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.BLUETOOTH_SCAN
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            // Pre-Android-12, BLUETOOTH/BLUETOOTH_ADMIN are install-time normal permissions.
-            // Treat as available so that location-only grants still unlock the scan.
-            true
         }
-
-        return locationPermission || bluetoothScanPermission
     }
 }

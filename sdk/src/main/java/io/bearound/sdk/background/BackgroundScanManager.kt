@@ -1,5 +1,6 @@
 package io.bearound.sdk.background
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.bluetooth.le.BluetoothLeScanner
@@ -7,6 +8,7 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
@@ -32,6 +34,16 @@ class BackgroundScanManager(private val context: Context) {
      */
     @SuppressLint("MissingPermission")
     fun enableBackgroundScanning() {
+        // On Android 12+ the PendingIntent scan requires BLUETOOTH_SCAN. Without it the OS
+        // throws SecurityException (caught, but it floods the log on every retry). This path
+        // is reached ungated via restartScanningFromBackground, so check here too — skip
+        // silently, consistent with the managers' permission gate.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.d(TAG, "Skipping background scan — BLUETOOTH_SCAN not granted (Android 12+)")
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             enableBluetoothScanBroadcast()
         } else {
