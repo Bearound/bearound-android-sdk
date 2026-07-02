@@ -14,6 +14,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Second FGS crash mode (`ForegroundServiceStartNotAllowedException`).** The 3.4.4 fix only caught the `SecurityException` thrown inside `onStartCommand` when Bluetooth permission was missing. A distinct crash — `ForegroundServiceStartNotAllowedException` (a subclass of `IllegalStateException`) — is thrown earlier, at `context.startForegroundService()`, when the service is started from the background without a valid background-start exemption (Android 12+). `BeaconScanService.start()` and `updateNotification()` now wrap that call in try/catch and skip instead of crashing (background detection still runs via the PendingIntent scan).
 - **Log spam from location-only permission on Android 12+.** `BeaconManager`/`BluetoothManager.checkPermissions()` returned `location || bluetoothScan`, so with location-only granted the SDK attempted a BLE scan the OS rejected with a caught `SecurityException` (several per duty cycle, no detection). On Android 12+ the SDK now requires `BLUETOOTH_SCAN` directly — location never unlocks the scan on 12+ (the manifest uses `neverForLocation`); Android <12 keeps the legacy location gate. `BackgroundScanManager.enableBackgroundScanning()` gets the same guard for the ungated `restartScanningFromBackground` path.
 
+### Added
+
+- **Richer `diagnostics()`.** `sdkVersion` now returns the real SDK version (from `BuildConfig`, not the OS API level), plus new runtime fields: `osApiLevel`, `hasBluetoothScanPermission`, `bluetoothEnabled`, `foregroundServiceActive`, `backgroundScanRegistered`, `isIgnoringBatteryOptimizations` — so support can triage "not detecting" remotely without adb.
+- **Error propagation to the listener.** Register/sync HTTP failures now surface via `onError` (with status code and body) instead of dying in `Log.w`; `APIClient` throws `HttpException(statusCode, body)`. `startScanning()` without permission emits one informative `onError` while keeping the watchdog retry armed.
+
+### Changed
+
+- Listener callbacks are dispatched on the main thread (documented in the listener KDoc).
+- The permission-denied message reflects the real 12+ gate (BLUETOOTH_SCAN; location only unlocks on ≤11).
+- Sample app no longer crashes with an empty `BUSINESS_TOKEN` (shows a UI state); `SettingsScreen` shows the real SDK version.
+- CI: removed `continue-on-error` from the `:sdk` test job so failing tests fail the build.
+
+### Documentation
+
+- README rewritten from the actual code: install snippet pinned to the current version, single support matrix, "detects 0xBEAD, not generic iBeacon", a Google Play review section (FGS `connectedDevice` → declaration + video), an integrated Quick Start, and corrected troubleshooting. Backfilled the 3.4.1/3.4.2 CHANGELOG entries and rewrote the sample READMEs.
+
 ## [3.4.4] - 2026-07-01
 
 ### Fixed
