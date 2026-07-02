@@ -6,38 +6,64 @@
 
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by BeAround.
 
-## Version 3.0.0
+## What the SDK detects
 
-Hybrid wake-up parity with iOS SDK 3.0.0: kernel-registered `PendingIntent` BLE scan survives force-stop and swipe-from-recents on Android 14+ without a foreground service. `BLUETOOTH_SCAN` is declared with `neverForLocation`, so beacon detection no longer implies Location authorization. Default SDK user-facing strings are now English; precision-based scanning, duty-cycle architecture, foreground service support, and beacon-gated GPS from 2.4.0 are preserved.
+The SDK detects **Bearound proprietary BLE beacons only**. The scan filter matches
+advertisements carrying the Bearound identifier `0xBEAD` — as **service data** (16-bit
+service UUID `0xBEAD`, an 11-byte payload with major/minor, firmware, battery, motion and
+temperature) or as **manufacturer data** (manufacturer ID `0xBEAD`).
 
-## Features
+> ⚠️ **Generic iBeacons are NOT detected.** An iPhone (or any app) advertising a classic
+> iBeacon frame — even one using the Bearound UUID `E25B8D3C-947A-452F-A13F-589CB706D2E5` —
+> will not show up. That UUID is a fixed label attached to the `Beacon` model after parsing;
+> it plays no role in detection. To test the SDK you need a physical Bearound beacon.
 
-- ✅ Native Android Bluetooth LE beacon scanning (no external dependencies)
-- ✅ Background and foreground beacon detection
-- ✅ Automatic beacon metadata collection via BLE (battery, firmware, temperature)
-- ✅ Periodic and continuous scanning modes
-- ✅ Comprehensive device information collection
-- ✅ Secure storage for device identifiers
-- ✅ Exponential backoff retry logic with circuit breaker
-- ✅ Battery-optimized scanning strategies
-- ✅ Thread-safe beacon caching and sync
-- ✅ Real-time UI updates via listener pattern
-- ✅ **Background scanning when app is closed** (no notification required)
+## Requirements
 
-## Architecture
+- Android 6.0+ (API 23+)
+- Bluetooth LE hardware (the SDK manifest declares `bluetooth_le` as a required feature)
+- A Bearound **business token** (see [Getting a business token](#getting-a-business-token))
+- **Android 12+**: the `BLUETOOTH_SCAN` runtime permission ("Nearby devices") is what unlocks
+  beacon detection. It is declared with `neverForLocation` — **location permission is neither
+  required nor useful on 12+; it does not unlock the scan**.
+- **Android ≤ 11**: the legacy BLE gate is `ACCESS_FINE_LOCATION` (there is no
+  `BLUETOOTH_SCAN` before API 31).
 
-- **BeAroundSDK**: Main singleton class for SDK operations
-- **BeaconManager**: Handles beacon scanning using native Android Bluetooth LE APIs
-- **BluetoothManager**: Manages BLE scanning for beacon metadata
-- **APIClient**: Handles communication with BeAround backend
-- **DeviceInfoCollector**: Collects comprehensive device information
-- **SecureStorage**: Encrypted storage for sensitive data
+### Support matrix
+
+| Android version | Detection without foreground service | Detection with foreground service | After force-stop / swipe-from-recents |
+|---|---|---|---|
+| 6.0 – 7.1 (API 23 – 25) | Foreground + background while the process is alive (no `PendingIntent` scan — requires API 26+) | ✅ persistent notification keeps the process scanning | ❌ |
+| 8.0 – 13 (API 26 – 33) | ✅ kernel-registered `PendingIntent` scan wakes the app when a beacon appears | ✅ recommended for reliability | ❌ — force-stop cancels the scan registration |
+| 14+ (API 34+) | ✅ `PendingIntent` scan | ✅ optional | ✅ — the kernel-registered scan survives force-stop and swipe-from-recents |
+
+On every version, aggressive OEM battery managers (Xiaomi, Huawei, …) can still evict the
+SDK — see [Background reliability](#background-reliability) for the shipped mitigations.
+
+## Getting a business token
+
+The **business token** authenticates your app against the Bearound ingest backend and ties
+every detection to your business. It is provisioned by the **Bearound team** together with
+your **Control Hub** account (the dashboard where registered devices and detections show up).
+If you don't have one, ask your Bearound contact or write to `contact@bearound.com`.
+
+**Behavior with a wrong or missing token:**
+
+- An **empty/blank** token makes `configure()` throw `IllegalArgumentException` immediately.
+- A **non-empty but invalid** token is not validated locally: scanning starts normally, but
+  every upload to `https://ingest.bearound.io` fails with HTTP 401. You will see it as
+  `BeAroundSDK-APIClient` errors in logcat, `onSyncCompleted(success = false, error = ...)`
+  on the listener, and a growing `pendingBatchCount` — and the device never appears in the
+  Control Hub. If nothing shows up in the Hub, check the token first.
+
+> The sample app in [`app/`](app/README.md) reads the token from `local.properties`
+> (`BUSINESS_TOKEN=...`) so it never gets committed.
 
 ## Installation
 
 ### JitPack
 
-1. Add JitPack repository to your root `build.gradle`:
+1. Add the JitPack repository to your root `build.gradle`:
 
 ```gradle
 allprojects {
@@ -59,144 +85,117 @@ dependencyResolutionManagement {
 }
 ```
 
-2. Add the dependency:
+2. Add the dependency (the version badge above always points at the latest release):
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:v3.0.0'
+    implementation 'com.github.Bearound:bearound-android-sdk:v3.4.5'
 }
 ```
 
-## Requirements
-
-- Android API 23+ (Android 6.0 Marshmallow)
-- Kotlin 1.8+
-- Bluetooth LE support
-- Location permissions
-
 ## Permissions
 
-Add these permissions to your `AndroidManifest.xml`:
+**You don't need to declare any permission yourself.** The SDK ships them in its own
+`AndroidManifest.xml` and Gradle's manifest merge injects them into your app:
 
-```xml
-<!-- Bluetooth (Android 11 and below) -->
-<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+| Merged into your app | Purpose |
+|---|---|
+| `BLUETOOTH`, `BLUETOOTH_ADMIN` (`maxSdkVersion=30`) | Legacy Bluetooth, Android ≤ 11 |
+| `BLUETOOTH_SCAN` (`neverForLocation`) | BLE scan on Android 12+, no location implied |
+| `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` (`maxSdkVersion=30`) | Legacy BLE-scan gate, Android ≤ 11 only |
+| `INTERNET`, `ACCESS_NETWORK_STATE` | Upload to the ingest API |
+| `POST_NOTIFICATIONS` | Foreground-service notification on Android 13+ |
+| `RECEIVE_BOOT_COMPLETED` | Re-arm scanning after reboot |
+| `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE` | Optional foreground service (see [Google Play review](#google-play-review--what-the-manifest-merge-means-for-your-app)) |
 
-<!-- Bluetooth (Android 12+) -->
-<!-- BLUETOOTH_CONNECT is NOT required by the SDK as of v3.0.0.
-     Declare it only if your own app uses GATT operations. -->
-<uses-permission android:name="android.permission.BLUETOOTH_SCAN"
-    android:usesPermissionFlags="neverForLocation"
-    tools:targetApi="s" />
+The SDK deliberately does **not** declare `ACCESS_BACKGROUND_LOCATION` (background detection
+on Android 12+ does not use location) and does **not** declare `BLUETOOTH_CONNECT` (add it to
+your own manifest only if your app does GATT operations).
 
-<!-- Location (LEGACY ONLY): gates the BLE scan on Android <= 11. On Android 12+
-     detection runs through BLUETOOTH_SCAN (neverForLocation) and does NOT use location,
-     so the SDK caps these at maxSdkVersion="30".
-     Do NOT declare ACCESS_BACKGROUND_LOCATION: background detection on Android 12+ does
-     not use location, and declaring it forces your app into Google Play's background-
-     location review (declaration form + demonstration video). -->
-<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
-    android:maxSdkVersion="30" />
-<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
-    android:maxSdkVersion="30" />
-
-<!-- Internet -->
-<uses-permission android:name="android.permission.INTERNET" />
-<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-
-<!-- Notifications (Android 13+) -->
-<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-```
+What you DO need to do is **request the runtime permissions** — see the Quick Start below.
 
 ## Quick Start
 
-### 1. Initialize the SDK
+One activity, end to end: request the right runtime permission for the OS version, configure,
+start scanning.
 
 ```kotlin
+import android.Manifest
+import android.os.Build
+import androidx.activity.result.contract.ActivityResultContracts
 import io.bearound.sdk.BeAroundSDK
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.models.Beacon
-import io.bearound.sdk.models.ScanPrecision
-import io.bearound.sdk.models.MaxQueuedPayloads
 
 class MainActivity : AppCompatActivity(), BeAroundSDKListener {
 
     private lateinit var sdk: BeAroundSDK
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-
-        // Get SDK instance
-        sdk = BeAroundSDK.getInstance(this)
-        sdk.listener = this
-
-        // Configure SDK
-        sdk.configure(
-            businessToken = "your-business-token",
-            scanPrecision = ScanPrecision.MEDIUM, // Default: MEDIUM
-            maxQueuedPayloads = MaxQueuedPayloads.MEDIUM // Default: 100 payloads
-        )
-        // Note: appId is automatically extracted from context.packageName
-    }
-
-    // Implement listener methods
-    override fun onBeaconsUpdated(beacons: List<Beacon>) {
-        Log.d("BeAround", "Detected ${beacons.size} beacons")
-        beacons.forEach { beacon ->
-            Log.d("BeAround", "Beacon: ${beacon.major}.${beacon.minor}, RSSI: ${beacon.rssi}")
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        // The permission that actually unlocks detection:
+        val scanUnlocked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            grants[Manifest.permission.BLUETOOTH_SCAN] == true
+        } else {
+            grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        }
+        if (scanUnlocked) {
+            sdk.startScanning()
         }
     }
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        sdk = BeAroundSDK.getInstance(this)
+        sdk.listener = this
+
+        // Throws IllegalArgumentException if the token is blank.
+        sdk.configure(businessToken = "your-business-token")
+
+        requestScanPermissions()
+    }
+
+    private fun requestScanPermissions() {
+        val permissions = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Android 12+: BLUETOOTH_SCAN ("Nearby devices") is THE detection permission.
+                // Location does NOT unlock the scan on 12+.
+                add(Manifest.permission.BLUETOOTH_SCAN)
+            } else {
+                // Android <= 11: FINE_LOCATION is the legacy BLE-scan gate.
+                add(Manifest.permission.ACCESS_FINE_LOCATION)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                // Android 13+: without this the (optional) foreground-service
+                // notification is silently invisible.
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        permissionLauncher.launch(permissions.toTypedArray())
+    }
+
+    // Minimal listener — see the API Reference for all 11 callbacks.
+    override fun onBeaconsUpdated(beacons: List<Beacon>) {
+        beacons.forEach { b -> Log.d("BeAround", "Beacon ${b.major}.${b.minor} rssi=${b.rssi}") }
+    }
+
     override fun onError(error: Exception) {
-        Log.e("BeAround", "Error: ${error.message}")
-    }
-
-    override fun onScanningStateChanged(isScanning: Boolean) {
-        Log.d("BeAround", "Scanning: $isScanning")
+        Log.e("BeAround", "SDK error: ${error.message}")
     }
 }
 ```
 
-### 2. Request Permissions
+Do **not** request `ACCESS_BACKGROUND_LOCATION`: background detection on Android 12+ runs on
+`BLUETOOTH_SCAN`, and declaring/requesting background location drags your app into Google
+Play's background-location review (declaration form + demo video) for zero detection benefit.
 
-```kotlin
-private fun requestPermissions() {
-    val permissions = mutableListOf<String>()
+### User identity (`internalId`)
 
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        // Android 12+: BLUETOOTH_SCAN ("Nearby devices") is THE permission that unlocks
-        // beacon detection — the Android equivalent of iOS's Location-for-beacons.
-        // Declared with neverForLocation, so it does not imply Location authorization.
-        permissions.add(Manifest.permission.BLUETOOTH_SCAN)
-    } else {
-        // Android <= 11: there is no BLUETOOTH_SCAN; FINE_LOCATION is the legacy BLE gate.
-        permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
-    }
-
-    // Do NOT request ACCESS_BACKGROUND_LOCATION: background detection on Android 12+ runs
-    // on BLUETOOTH_SCAN, not location. Requesting it triggers Google Play's background-
-    // location review (form + demo video) for zero detection benefit.
-
-    ActivityCompat.requestPermissions(this, permissions.toTypedArray(), REQUEST_CODE)
-}
-```
-
-### 3. Start Scanning
-
-```kotlin
-fun startScanning() {
-    sdk.startScanning()
-}
-
-fun stopScanning() {
-    sdk.stopScanning()
-}
-```
-
-### 4. User Identity (`internalId`)
-
-`internalId` is **your own id for the user** (e.g. from your CRM / user spreadsheet) — a user property. Set it (and any other user data) via `setUserProperties` right after `configure()`, so every beacon event is tied back to that user on the backend:
+`internalId` is **your own id for the user** (e.g. from your CRM) — a user property. Set it
+(and any other user data) via `setUserProperties` right after `configure()`, so every beacon
+event is tied back to that user on the backend:
 
 ```kotlin
 import io.bearound.sdk.models.UserProperties
@@ -214,107 +213,120 @@ sdk.setUserProperties(
 sdk.clearUserProperties()
 ```
 
-- `setUserProperties` **merges** — omitted fields are kept, so adding `email`/`name` later does **not** wipe a previously-set `internalId`.
-- `internalId` is **persisted** and restored when Android relaunches the SDK after an app kill / reboot, so background events stay attributed to the user.
+- `setUserProperties` **merges** — omitted fields are kept, so adding `email`/`name` later
+  does **not** wipe a previously-set `internalId`.
+- `internalId` is **persisted** and restored when Android relaunches the SDK after an app
+  kill / reboot, so background events stay attributed to the user.
 
-### 5. Background Scanning 🆕
+### Push notifications (FCM)
 
-**Background scanning is automatically enabled** when you call `configure()`. The SDK will continue detecting beacons even when the app is closed.
-
-**Complete Example:**
+If your app ships Firebase, `configure(...)` auto-collects the FCM token and sends it on the
+next sync. Firebase is a soft dependency (`compileOnly`): apps without it are unaffected. If
+you don't use Firebase, provide the token yourself:
 
 ```kotlin
-class MainActivity : AppCompatActivity(), BeAroundSDKListener {
-
-    private lateinit var sdk: BeAroundSDK
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-
-        // Get SDK instance
-        sdk = BeAroundSDK.getInstance(this)
-        sdk.listener = this
-
-        // Configure SDK
-        sdk.configure(
-            businessToken = "your-business-token",
-            scanPrecision = ScanPrecision.MEDIUM,
-            maxQueuedPayloads = MaxQueuedPayloads.MEDIUM
-        )
-
-        // Start scanning
-        sdk.startScanning()
-
-        // Background scanning is automatically enabled!
-    }
-
-    override fun onBeaconsUpdated(beacons: List<Beacon>) {
-        Log.d("BeAround", "Detected ${beacons.size} beacons")
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        // Note: Background scanning continues even after app is closed
-    }
-}
+sdk.setPushToken(token)
 ```
 
-**How it works:**
-- System automatically wakes up the app when an iBeacon is detected
-- No notification required
-- Real-time detection
-- No foreground service required for Android 14+
+Calling `setPushToken` **after** `startScanning()` is fine — since 3.4.1 the SDK pushes a
+new/changed token to the backend immediately instead of waiting for the next sync cycle.
 
-**Important Notes:**
-- Background scanning requires `BLUETOOTH_SCAN` ("Nearby devices") permission on Android 12+ — **not** location. (On Android <= 11 the legacy gate is `ACCESS_FINE_LOCATION`.)
-- WorkManager's minimum interval is 15 minutes (Android limitation)
-- Android may delay scans in battery saver mode
-- Background scanning continues even after device reboot via `BOOT_COMPLETED`
+## Background scanning
 
-### Terminated App Detection
+**Background scanning is automatically enabled** by `startScanning()`. On Android 8+ the SDK
+registers a kernel-managed, low-power `PendingIntent` BLE scan filtered on `0xBEAD`: the OS
+wakes the app (a fresh process if needed) when a Bearound beacon comes into range — the
+Android equivalent of iOS's `CLBeaconRegion` monitoring. No notification required.
 
-The SDK is designed to survive every state where the app is not running — including a user **force-stop** or **swipe from recents** — without any code change on the host side. This is the same posture the iOS SDK delivers only when the user opts into the Location eye; on Android it is the default.
+### Terminated app detection
 
 | Scenario | Detection still works? | Mechanism |
 |---|---|---|
 | App in foreground | ✅ | `BluetoothLeScanner` with `ScanCallback` |
 | App in background | ✅ | Same callback, OS keeps process alive briefly |
-| App killed by **system** (memory / battery pressure) | ✅ | `PendingIntent` broadcast scan → `BluetoothScanReceiver` wakes a fresh process |
+| App killed by **system** (memory / battery pressure) | ✅ on Android 8+ | `PendingIntent` broadcast scan → `BluetoothScanReceiver` wakes a fresh process |
 | App killed by **user** (swipe from recents) | ✅ on **Android 14+** | Same `PendingIntent` scan — kernel-registered, survives swipe |
 | App **force-stopped** in Settings | ✅ on **Android 14+** | Same `PendingIntent` scan, re-registered on next interaction |
 | After device reboot | ✅ | `BOOT_COMPLETED` → `ScanWatchdogReceiver` re-arms the scan |
 
 **Architecture under the hood:**
 
-- **`BluetoothScanReceiver`** — wakes the app via `PendingIntent` when a matching iBeacon is observed by the OS scanner. Equivalent to iOS's `CLBeaconRegion` `didEnterRegion` callback. Requires only `BLUETOOTH_SCAN` (declared `neverForLocation`) — **no Location authorization at all** on Android 12+.
-- **`ScanWatchdogReceiver`** — `AlarmManager` heartbeat every 15 min, plus `BOOT_COMPLETED` listener. Re-registers the BLE scan filter if it ever gets evicted by the OS.
-- **`BeaconScanService`** — optional foreground service for apps targeting Android 13 or below, or for apps that need a visible "scanning" indicator. Not needed on Android 14+.
+- **`BluetoothScanReceiver`** — wakes the app via `PendingIntent` when a `0xBEAD` beacon is
+  observed by the OS scanner. Requires only `BLUETOOTH_SCAN` (`neverForLocation`) — **no
+  Location authorization at all** on Android 12+.
+- **`ScanWatchdogReceiver`** — `AlarmManager` heartbeat (inexact alarms — no exact-alarm
+  permission, no Play policy impact) plus `BOOT_COMPLETED` listener. Re-registers the BLE
+  scan filter if it ever gets evicted by the OS.
+- **`BeaconScanService`** — optional `connectedDevice` foreground service for apps that need
+  maximum reliability on Android 13 or below, or a visible "scanning" indicator.
 
-#### Android version baseline
+### Foreground service (optional)
 
-| Android version | Force-stop survival without foreground service |
-|---|---|
-| 14+ (API 34+) | ✅ Default behavior |
-| 8 – 13 (API 26 – 33) | Partial — recommend enabling the foreground service (`enableForegroundScanning(...)`) |
-| < 8 (API < 26) | Not supported — the SDK requires API 26+ |
+For a persistent notification while scanning in background, either pass the config to
+`startScanning(...)` or call `enableForegroundScanning(...)`:
 
-#### OEM caveat (the part not in the docs of any beacon SDK)
+```kotlin
+import io.bearound.sdk.models.ForegroundScanConfig
 
-Stock Android (Pixel) honors the `PendingIntent` scan exactly as documented. Several OEMs ship aggressive battery managers that kill third-party `PendingIntent` and broadcast receivers regardless of Android version:
+sdk.startScanning(
+    ForegroundScanConfig(
+        notificationTitle = "",                          // "" = host app name
+        notificationText = "Scanning for nearby content",
+        notificationIcon = R.drawable.ic_notification,   // optional
+        notificationChannelId = "beacon_channel",        // optional
+        notificationChannelName = "Beacon Monitoring"    // optional
+    )
+)
 
-| OEM | Behavior | Mitigation |
-|---|---|---|
-| Samsung (One UI 6+) | Generally honors the scan; some restrictions on apps marked "Sleeping" | Ask user to add app to "Never sleeping apps" |
-| Xiaomi / Redmi (MIUI / HyperOS) | Aggressively kills background broadcast receivers | Ask user to enable "Autostart" + lock app in recents |
-| Huawei / Honor (EMUI / HarmonyOS) | Same as Xiaomi | "Manage manually" in battery settings |
-| OnePlus (OxygenOS 11+) | Less aggressive but still restricts | Disable "Deep optimization" for the app |
-| Pixel / Stock | Honors PendingIntent scan | No action |
+// Or toggle it independently of startScanning:
+sdk.enableForegroundScanning(config)
+sdk.disableForegroundScanning()
+```
 
-For any of these vendors, the host app should get the user to exempt the app from battery optimization and enable autostart. The SDK ships helpers for exactly this (see **Background reliability** below). Without it, the OEM's killer can evict the SDK even on Android 14+. See [dontkillmyapp.com](https://dontkillmyapp.com) for the full per-vendor matrix.
+The service starts when the app goes to background and stops when it returns to foreground.
+When beacons are detected in background, the SDK asks the listener for contextual
+notification content via `onProvideNotificationContent(beacons)` — return a
+`NotificationContent(title, text)` or `null` to keep the defaults.
+
+Safety (3.4.4/3.4.5): the service checks Bluetooth permission before promoting itself and
+catches `ForegroundServiceStartNotAllowedException` / `SecurityException` — revoking "Nearby
+devices" no longer crash-loops the host app; detection falls back to the `PendingIntent` scan.
+
+### Google Play review — what the manifest merge means for your app
+
+Because of the manifest merge, **every app that embeds this SDK carries
+`FOREGROUND_SERVICE_CONNECTED_DEVICE` in its merged manifest — even if it never uses the
+foreground service.** Consequences on the Play Console:
+
+- **targetSdk 34+**: Play requires you to **declare every foreground-service type** present
+  in the manifest, including a **video demonstrating the user-facing feature** that justifies
+  the `connectedDevice` type (e.g. a screen showing live beacon detection). Budget for this
+  in your release plan — it surfaces at review time, not at build time.
+- If your app does **not** use the foreground service (never calls
+  `enableForegroundScanning()` / `startScanning(config)`), you can strip the permission and
+  skip the declaration entirely:
+
+```xml
+<!-- In your app's AndroidManifest.xml (needs xmlns:tools) -->
+<uses-permission
+    android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"
+    tools:node="remove" />
+```
+
+  After removing it, do **not** call the foreground-service APIs — the service cannot start
+  without the permission. All other detection paths (foreground scan, `PendingIntent`
+  background scan) are unaffected.
+- The SDK also merges `<uses-feature android:name="android.hardware.bluetooth_le"
+  android:required="true" />`, which **filters your app out of the Play Store on devices
+  without BLE**. That is correct for beacon-driven apps; if your app must remain installable
+  on such devices, override the feature with `tools:node` and `required="false"` and gate the
+  SDK calls at runtime.
 
 ### Background reliability
 
-Keeping the process eligible to wake under Doze and aggressive OEM battery managers is the real Android equivalent of the resilience the iOS "second eye" (Location monitoring) provides — and it needs **no location permission**. The SDK exposes:
+Keeping the process eligible to wake under Doze and aggressive OEM battery managers is the
+real Android equivalent of the resilience the iOS "second eye" (Location monitoring)
+provides — and it needs **no location permission**. The SDK exposes:
 
 ```kotlin
 // Battery optimization — opens the system Settings screen so the user can exempt the app.
@@ -332,13 +344,32 @@ if (sdk.isAutostartManageable()) {
 }
 ```
 
-> **Samsung** is intentionally not in the autostart deep-link list: its "app power management" screen requires the system permission `READ_SEARCH_INDEXABLES`, which third-party apps cannot hold. On Samsung, use `openBatteryOptimizationSettings()` (which works) and optionally guide the user to add the app to "Never sleeping apps" manually.
+> **Samsung** is intentionally not in the autostart deep-link list: its "app power
+> management" screen requires the system permission `READ_SEARCH_INDEXABLES`, which
+> third-party apps cannot hold. On Samsung, use `openBatteryOptimizationSettings()` (which
+> works) and optionally guide the user to add the app to "Never sleeping apps" manually.
 
-## Configuration Options
+#### OEM caveat matrix
 
-### Scan Precision
+Stock Android (Pixel) honors the `PendingIntent` scan exactly as documented. Several OEMs
+ship aggressive battery managers that kill third-party `PendingIntent` and broadcast
+receivers regardless of Android version:
 
-Controls the duty cycle and sync interval for beacon scanning:
+| OEM | Behavior | Mitigation |
+|---|---|---|
+| Samsung (One UI 6+) | Generally honors the scan; some restrictions on apps marked "Sleeping" | Ask user to add app to "Never sleeping apps" |
+| Xiaomi / Redmi (MIUI / HyperOS) | Aggressively kills background broadcast receivers | `openManufacturerAutostartSettings()` + lock app in recents |
+| Huawei / Honor (EMUI / HarmonyOS) | Same as Xiaomi | `openManufacturerAutostartSettings()` → "Manage manually" |
+| OnePlus (OxygenOS 11+) | Less aggressive but still restricts | Disable "Deep optimization" for the app |
+| Pixel / Stock | Honors PendingIntent scan | No action |
+
+See [dontkillmyapp.com](https://dontkillmyapp.com) for the full per-vendor matrix.
+
+## Configuration options
+
+### Scan precision
+
+Controls the duty cycle and sync interval:
 
 ```kotlin
 sdk.configure(
@@ -347,17 +378,24 @@ sdk.configure(
 )
 ```
 
-**Available Precision Modes:**
-
-| Mode | Scan Pattern | Sync Interval | Use Case |
+| Mode | Scan pattern | Sync interval | Use case |
 |------|-------------|---------------|----------|
 | `HIGH` | Continuous scanning (no pauses) | Every 15s | Maximum detection, higher battery usage |
-| `MEDIUM` | 3x (10s scan + 10s pause) per 60s window | Every 60s | Balanced detection and battery (default) |
-| `LOW` | 1x (10s scan + 50s pause) per 60s window | Every 60s | Maximum battery savings |
+| `MEDIUM` | 3× (10s scan + 10s pause) per 60s window | Every 60s | Balanced detection and battery (default) |
+| `LOW` | 1× (10s scan + 50s pause) per 60s window | Every 60s | Maximum battery savings |
 
-### Retry Queue Size
+> Note: the Android **native default is `MEDIUM`**. The iOS SDK and the Flutter/RN wrappers
+> default to `HIGH` — set the precision explicitly if you need identical cadence cross-stack.
 
-Configure how many failed batches to queue before discarding:
+Active scanning is additionally **gated by beacon-region presence**: outside a region only
+the kernel-level filter scan runs (~zero battery); the duty cycle starts on the first
+detection (`onEnterBeaconRegion`) and stops when the zone goes silent (`onExitBeaconRegion`,
+after a 5-minute grace).
+
+### Retry queue size
+
+Failed upload batches are persisted to disk (FIFO, survives kill/reboot, auto-cleanup after
+7 days) up to a configurable limit:
 
 ```kotlin
 sdk.configure(
@@ -366,182 +404,126 @@ sdk.configure(
 )
 ```
 
-**Available Sizes:**
-- `SMALL` (50 payloads)
-- `MEDIUM` (100 payloads) - Default
-- `LARGE` (200 payloads)
-- `XLARGE` (500 payloads)
-
-### Duty Cycle Scanning
-
-Scanning uses a duty cycle architecture based on `ScanPrecision`:
-
-- **HIGH**: Continuous BLE + Beacon scanning with sync every 15 seconds
-- **MEDIUM**: 3 cycles of (10s scan + 10s pause) per 60-second window, sync at end of window
-- **LOW**: 1 cycle of (10s scan + 50s pause) per 60-second window, sync at end of window
-
-The SDK automatically manages scan/pause cycles for optimal battery usage.
-
-### Foreground Service (Optional)
-
-For apps that need a persistent notification while scanning in background:
+Available sizes: `SMALL` (50), `MEDIUM` (100, default), `LARGE` (200), `XLARGE` (500).
 
 ```kotlin
-import io.bearound.sdk.models.ForegroundScanConfig
-
-// Enable foreground service with notification
-sdk.enableForegroundScanning(
-    ForegroundScanConfig(
-        notificationTitle = "Monitoring region",
-        notificationText = "Scanning for beacons in background",
-        notificationIcon = R.drawable.ic_notification, // optional
-        notificationChannelId = "beacon_channel", // optional
-        notificationChannelName = "Beacon Monitoring" // optional
-    )
-)
-
-// Disable foreground service
-sdk.disableForegroundScanning()
+// Inspect the queue
+val pendingCount: Int = sdk.pendingBatchCount
+val batches: List<List<Beacon>> = sdk.pendingBatches
 ```
 
-The foreground service automatically starts when the app goes to background and stops when returning to foreground.
+### Bluetooth metadata scanning
 
-### Bluetooth Metadata Scanning
-
-Bluetooth metadata scanning (battery, temperature, firmware, etc.) is **always enabled** when permissions are granted. The SDK automatically attempts to connect to nearby beacons to collect this data.
-
-No configuration needed - the SDK adapts automatically!
-
-### Offline Batch Storage
-
-Failed beacon batches are now **persistently stored** to survive app kills and device reboots:
-
-**Features:**
-- ✅ **Persistent**: Saved as JSON files in app's private directory
-- ✅ **FIFO ordering**: Oldest batches sent first
-- ✅ **Auto-cleanup**: Removes batches older than 7 days
-- ✅ **Survives**: App kill, device reboot, crashes
-- ✅ **Thread-safe**: Uses `ReentrantLock` for concurrent access
-- ✅ **Respects limits**: Honors `maxQueuedPayloads` configuration
-
-**How it works:**
-
-```kotlin
-// 1. Network fails → batch saved to disk automatically
-// 2. WorkManager/AlarmManager triggers background sync
-// 3. SDK loads oldest batch from storage (FIFO)
-// 4. Success → removes batch from disk
-// 5. Failure → batch remains for next retry
-
-// Check pending batches
-val pendingCount = sdk.pendingBatchCount
-println("Waiting to sync: $pendingCount batches")
-```
-
-**Storage location:** `/data/data/your.package.name/app_com.bearound.sdk.batches/`
-
-**Filename format:** `timestamp_uuid.json` (sorted by timestamp for FIFO)
+Beacon metadata (battery, temperature, firmware, movements) arrives in the same `0xBEAD`
+service-data payload and is exposed via `Beacon.metadata`. No configuration needed.
 
 ## API Reference
 
 ### BeAroundSDK
 
-Main SDK class (Singleton pattern).
+Main SDK class (singleton).
 
 ```kotlin
-// Get instance
+// Instance
 val sdk = BeAroundSDK.getInstance(context)
+sdk.listener = myListener            // BeAroundSDKListener
 
-// Configure SDK
+// Configuration — throws IllegalArgumentException on blank token
 sdk.configure(
     businessToken: String,
     scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
-    maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM
+    maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
+    technology: String = "android-native" // payload tag; wrappers override it
 )
 
-// Control scanning
-sdk.startScanning()
+// Scanning
+sdk.startScanning(foregroundScanConfig: ForegroundScanConfig? = null)
 sdk.stopScanning()
 
-// Foreground service (optional)
+// Foreground service
 sdk.enableForegroundScanning(config: ForegroundScanConfig)
 sdk.disableForegroundScanning()
 
-// User properties
-sdk.setUserProperties(properties: UserProperties)
+// User identity & push
+sdk.setUserProperties(properties: UserProperties)   // merges; internalId is persisted
 sdk.clearUserProperties()
+sdk.setPushToken(token: String)                     // re-registers immediately if scanning
 
-// Status
+// Background reliability (Doze / OEM killers)
+sdk.isIgnoringBatteryOptimizations(): Boolean
+sdk.openBatteryOptimizationSettings(): Boolean
+sdk.isAutostartManageable(): Boolean
+sdk.openManufacturerAutostartSettings(): Boolean
+
+// Diagnostics & helpers
+sdk.diagnostics(): BeAroundDiagnostics
+sdk.isLocationAvailable(): Boolean                  // GPS/network provider enabled?
+sdk.getLocationPermissionStatus(): String           // "authorized_always" | "authorized_when_in_use" | "denied"
+
+// Status properties
 val isScanning: Boolean = sdk.isScanning
 val isConfigured: Boolean = sdk.isConfigured
-val syncInterval: Long? = sdk.currentSyncInterval
-val scanDuration: Long? = sdk.currentScanDuration
+val syncInterval: Long? = sdk.currentSyncInterval          // ms
+val scanDuration: Long? = sdk.currentScanDuration          // ms
 val scanPrecision: ScanPrecision? = sdk.currentScanPrecision
-val pauseDuration: Long? = sdk.currentPauseDuration
-val isPeriodicScanningEnabled: Boolean = sdk.isPeriodicScanningEnabled
-val isForegroundScanningEnabled: Boolean = sdk.isForegroundScanningEnabled
+val pauseDuration: Long? = sdk.currentPauseDuration        // ms
+val isPeriodic: Boolean = sdk.isPeriodicScanningEnabled    // true unless HIGH
+val isFgs: Boolean = sdk.isForegroundScanningEnabled
 val pendingBatchCount: Int = sdk.pendingBatchCount
-```
-
-### Push Notifications (FCM)
-
-If your app ships Firebase, `configure(...)` auto-collects the FCM token and sends it on the next sync. Firebase is a soft dependency (`compileOnly`): apps without it are unaffected. If you don't use Firebase, provide the token yourself:
-
-```kotlin
-sdk.setPushToken(token)
+val pendingBatches: List<List<Beacon>> = sdk.pendingBatches
 ```
 
 ### BeAroundSDKListener
 
-Implement this interface to receive SDK events:
+All callbacks except `onBeaconsUpdated` have default no-op implementations — override what
+you need:
 
 ```kotlin
 interface BeAroundSDKListener {
-    // Required
-    fun onBeaconsUpdated(beacons: List<Beacon>)
-    
-    // Optional (with default implementations)
+    // Detection
+    fun onBeaconsUpdated(beacons: List<Beacon>)                 // required
+    fun onBeaconDetectedInBackground(beaconCount: Int) {}
+
+    // Errors & state
     fun onError(error: Exception) {}
     fun onScanningStateChanged(isScanning: Boolean) {}
     fun onAppStateChanged(isInBackground: Boolean) {}
-    
-    // Sync Lifecycle (v2.2.0)
+
+    // Sync lifecycle
     fun onSyncStarted(beaconCount: Int) {}
     fun onSyncCompleted(beaconCount: Int, success: Boolean, error: Exception?) {}
-    
-    // Background Events (v2.2.0)
-    fun onBeaconDetectedInBackground(beaconCount: Int) {}
+
+    // Beacon region (v2.5+) — the "geofence" signals
+    fun onEnterBeaconRegion() {}                                // rising edge: first beacon
+    fun onExitBeaconRegion() {}                                 // falling edge: zone silent
+    fun onActiveScanStateChanged(isActive: Boolean) {}          // duty cycle on/off
+
+    // Foreground-service notification (v2.4+)
+    fun onProvideNotificationContent(beacons: List<Beacon>): NotificationContent? = null
 }
 ```
 
-**New in v2.2.0:**
+### Diagnostics
 
-The SDK now provides callbacks for sync lifecycle and background detection:
+`diagnostics()` returns a point-in-time snapshot for support/triage. `summary()` renders it
+as a printable multi-line string.
 
 ```kotlin
-class MainActivity : AppCompatActivity(), BeAroundSDKListener {
-    
-    override fun onSyncStarted(beaconCount: Int) {
-        // Called before sending beacons to API
-        // Useful for showing "syncing..." UI or sending notifications
-        Log.d("BeAround", "Starting sync of $beaconCount beacons")
-    }
-    
-    override fun onSyncCompleted(beaconCount: Int, success: Boolean, error: Exception?) {
-        // Called after API sync completes (success or failure)
-        if (success) {
-            sendNotification("Sync Complete", "$beaconCount beacons sent")
-        } else {
-            sendNotification("Sync Failed", error?.message ?: "Unknown error")
-        }
-    }
-    
-    override fun onBeaconDetectedInBackground(beaconCount: Int) {
-        // Called when beacons detected while app is in background
-        // Perfect for sending notifications when app is closed
-        sendNotification("Beacon Detected", "$beaconCount beacons nearby")
-    }
-}
+data class BeAroundDiagnostics(
+    val deviceId: String,
+    val pushTokenMasked: String?,       // masked, never the raw token
+    val pushTokenLastSentAt: Long?,     // epoch ms
+    val isScanning: Boolean,
+    val pendingBatches: Int,
+    val lastScanAt: Long?,
+    val lastScanBeaconCount: Int?,
+    val lastSyncAt: Long?,
+    val lastSyncSuccess: Boolean?,
+    val lastSyncBeaconCount: Int?,
+    val recentErrors: List<String>,
+    val sdkVersion: Int                 // ⚠️ this is the OS API level (Build.VERSION.SDK_INT),
+                                        // not the SDK release version
+)
 ```
 
 ### Models
@@ -550,24 +532,33 @@ class MainActivity : AppCompatActivity(), BeAroundSDKListener {
 
 ```kotlin
 data class Beacon(
-    val uuid: UUID,
+    val uuid: UUID,                     // always E25B8D3C-… (fixed label, not a filter)
     val major: Int,
     val minor: Int,
-    val rssi: Int,
-    val proximity: Beacon.Proximity,
-    val accuracy: Double,
-    val timestamp: Date,
-    val metadata: BeaconMetadata?,
-    val txPower: Int?
+    val rssi: Int,                      // smoothed
+    val proximity: Proximity,
+    val accuracy: Double,               // estimated distance (m); -1.0 when unknown
+    val timestamp: Date = Date(),
+    val metadata: BeaconMetadata? = null,
+    val txPower: Int? = null,
+    val alreadySynced: Boolean = false, // true after a successful upload
+    val syncedAt: Date? = null,
+    val rssiRaw: Int? = null,           // last unsmoothed sample
+    val rssiSamples: RssiStats? = null, // per-sync-window RSSI stats
+    val isStale: Boolean = false        // no packet for >5s but still within timeout
 ) {
-enum class Proximity {
-    IMMEDIATE,
-    NEAR,
-    FAR,
-    UNKNOWN
-    }
+    enum class Proximity { IMMEDIATE, NEAR, FAR, BT, UNKNOWN }
+    val identifier: String              // "major.minor"
 }
 ```
+
+`Proximity.BT` marks detections surfaced by the auxiliary BLE scanner while the main ranging
+is not active (e.g. woken from background) — distance is unknown (`accuracy = -1.0`).
+
+#### RssiStats
+
+Per-beacon RSSI statistics accumulated over each sync window (Welford, constant memory):
+`count`, `min`, `max`, `avg`, `stdDev`, `firstSeen`, `lastSeen`.
 
 #### BeaconMetadata
 
@@ -577,9 +568,9 @@ data class BeaconMetadata(
     val batteryLevel: Int,
     val movements: Int,
     val temperature: Int,
-    val txPower: Int?,
-    val rssiFromBLE: Int?,
-    val isConnectable: Boolean?
+    val txPower: Int? = null,
+    val rssiFromBLE: Int? = null,
+    val isConnectable: Boolean? = null
 )
 ```
 
@@ -594,249 +585,100 @@ data class UserProperties(
 )
 ```
 
-## Background Scanning
-
-The SDK offers multiple background scanning modes:
-
-### 1. Standard Background (App in Memory)
-
-When the app is in background but not killed:
-- **Foreground**: Uses periodic or continuous scanning based on configuration
-- **Background**: Automatically switches to continuous scanning for better beacon detection
-- Implements watchdog timers and periodic restarts to prevent Android throttling
-
-### 2. Advanced Background (App Closed) 🆕
-
-Background scanning is **automatically enabled** when SDK is configured.
-
-**Features:**
-- ✅ **Real-time detection** - System wakes app when beacon is detected
-- ✅ **Zero notifications** - No foreground service required
-- ✅ **Very battery efficient** - System manages scanning
-- ✅ **Survives app kill** - Continues working after force-stop
-- ✅ **Survives reboot** - Automatically resumes after device restart
-
-**Requirements:**
-- `BLUETOOTH_SCAN` ("Nearby devices") permission must be granted on Android 12+ (on Android <= 11 the legacy gate is `ACCESS_FINE_LOCATION`). Background detection does **not** use `ACCESS_BACKGROUND_LOCATION`.
-- SDK must be configured before enabling background scanning
-
-**Limitations:**
-- System may delay scans in extreme battery saver mode
-
-### Best Practices
-
-- Request `BLUETOOTH_SCAN` ("Nearby devices") permission — it is what unlocks detection on Android 12+ (no location needed). Present it as the core permission, with a pre-permission context screen.
-- Choose the appropriate `ScanPrecision` for your use case (HIGH for real-time, MEDIUM for balanced, LOW for battery savings)
-- Use `enableForegroundScanning()` if you need reliable background scanning with a notification
-- To survive aggressive OEM battery managers and Doze, guide users through `openBatteryOptimizationSettings()` and `openManufacturerAutostartSettings()` (see Background reliability below)
-
-## Migration from 1.x
-
-Version 2.0.x introduces breaking changes. Follow these steps to migrate:
-
-### 1. Update Dependencies
-
-```gradle
-// OLD (v1.x)
-implementation 'com.github.Bearound:bearound-android-sdk:1.3.2'
-
-// NEW (v3.0+)
-implementation 'com.github.Bearound:bearound-android-sdk:v3.0.0'
-```
-
-### 2. Update AndroidManifest.xml
-
-Add the missing `ACCESS_NETWORK_STATE` permission:
-
-```xml
-<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-```
-
-### 3. Update Initialization Code
+#### ForegroundScanConfig / NotificationContent
 
 ```kotlin
-// OLD (v1.x)
-val beAround = BeAround.getInstance(context)
-beAround.initialize(
-    iconNotification = R.drawable.ic_notification,
-    clientToken = "your-token",
-    debug = true
+data class ForegroundScanConfig(
+    val enabled: Boolean = false,                      // set true by enableForegroundScanning
+    val notificationTitle: String = "",                // "" = host app name
+    val notificationText: String = "Scanning for nearby content",
+    val notificationIcon: Int? = null,
+    val notificationChannelId: String? = null,
+    val notificationChannelName: String = "Region monitoring service"
 )
 
-// NEW (v2.3+)
-val sdk = BeAroundSDK.getInstance(context)
-sdk.listener = this // implement BeAroundSDKListener
-sdk.configure(
-    businessToken = "your-business-token",
-    scanPrecision = ScanPrecision.MEDIUM,
-    maxQueuedPayloads = MaxQueuedPayloads.MEDIUM
-)
-sdk.startScanning()
-```
-
-### 4. Replace Listeners
-
-```kotlin
-// OLD (v1.x)
-beAround.addBeaconListener(object : BeaconListener {
-    override fun onBeaconsDetected(beacons: List<BeaconData>) { }
-})
-
-// NEW (v2.3+)
-class MainActivity : AppCompatActivity(), BeAroundSDKListener {
-    override fun onBeaconsUpdated(beacons: List<Beacon>) { }
-    override fun onError(error: Exception) { }
-}
-```
-
-### 5. Update Beacon Data Access
-
-The `Beacon` model has changed:
-
-```kotlin
-// OLD (v1.x)
-beacon.uuid
-beacon.major
-beacon.minor
-beacon.distance
-
-// NEW (v2.2)
-beacon.uuid
-beacon.major
-beacon.minor
-beacon.accuracy  // replaces distance
-beacon.proximity // IMMEDIATE, NEAR, FAR, UNKNOWN
-beacon.metadata  // new: battery, firmware, temperature
+data class NotificationContent(val title: String, val text: String)
 ```
 
 ## Troubleshooting
 
 ### Beacons not detected
 
-1. Ensure all permissions are granted (Location, Bluetooth)
-2. Check that Bluetooth is enabled
-3. Verify location services are enabled
-4. Ensure the beacon UUID matches: `E25B8D3C-947A-452F-A13F-589CB706D2E5`
+1. **Are you testing with a real Bearound beacon?** The SDK only detects `0xBEAD`
+   service/manufacturer data. A phone simulating a generic iBeacon — even with the "right"
+   UUID — is invisible to the scan filter (see [What the SDK detects](#what-the-sdk-detects)).
+2. **Android 12+**: is `BLUETOOTH_SCAN` ("Nearby devices") granted? That is the only
+   permission that unlocks the scan — granting location does **not** help on 12+.
+   **Android ≤ 11**: is `ACCESS_FINE_LOCATION` granted and location services on?
+3. Is Bluetooth enabled?
+4. Are you on a physical device? Emulators have no usable BLE.
+5. Call `sdk.diagnostics()` and check `lastScanAt` / `recentErrors`.
 
-### Beacons detected but not syncing to API
+### Device doesn't appear in the Control Hub / sync fails
 
-1. Check logcat for `BeAroundSDK-APIClient` logs
-2. Verify `ACCESS_NETWORK_STATE` permission is granted
-3. Ensure internet connectivity
-4. Check API base URL configuration
+1. **Check the business token.** A wrong token fails every upload with HTTP 401 — filter
+   logcat by `BeAroundSDK-APIClient`. There is no local validation of the token value.
+2. Check internet connectivity; failed batches accumulate in `pendingBatchCount` and are
+   retried with backoff.
+3. Watch `onSyncCompleted(beaconCount, success, error)` on the listener.
 
 ### High battery usage
 
-1. Use a lower scan precision:
-   - `scanPrecision = ScanPrecision.LOW` — scans only 10s per minute
-   - `scanPrecision = ScanPrecision.MEDIUM` — scans 30s per minute (default)
-2. Duty cycle scanning is automatic — the SDK manages scan/pause cycles for battery efficiency
+1. Use a lower scan precision (`ScanPrecision.LOW` scans 10s per minute; `MEDIUM` 30s).
+2. Duty cycle and region gating are automatic — outside a beacon zone only the kernel filter
+   scan runs.
 
 ### No beacons in background
 
-1. Ensure `BLUETOOTH_SCAN` ("Nearby devices") permission is granted (Android 12+) — that is what unlocks detection, **not** location
-2. On aggressive OEMs (Xiaomi, Huawei, Samsung…), call `openBatteryOptimizationSettings()` and `openManufacturerAutostartSettings()` to keep the process eligible to wake in background
+1. Ensure `BLUETOOTH_SCAN` ("Nearby devices") is granted (Android 12+) — that is what
+   unlocks detection, **not** location.
+2. `PendingIntent` background scan requires Android 8+ (API 26+); force-stop survival
+   requires Android 14+ (see the [support matrix](#support-matrix)).
+3. On aggressive OEMs (Xiaomi, Huawei, Samsung…), run the
+   [Background reliability](#background-reliability) flow: `openBatteryOptimizationSettings()`
+   and `openManufacturerAutostartSettings()`.
 
 ### App crashes with SecurityException
 
-- Ensure `ACCESS_NETWORK_STATE` permission is in AndroidManifest.xml
-- This was a known issue in pre-2.0 versions
-- **Foreground-service crash (fixed in 3.4.4):** on Android 14+, enabling foreground scanning and then revoking "Nearby devices" used to crash the app in a loop (`Starting FGS with type connectedDevice ... requires ... BLUETOOTH_SCAN`). As of 3.4.4 the SDK checks Bluetooth permission before starting the foreground service and stops it gracefully instead of crashing.
+- **Foreground-service crash (fixed in 3.4.4/3.4.5):** on Android 14+, enabling foreground
+  scanning and then revoking "Nearby devices" used to crash the app in a loop (`Starting FGS
+  with type connectedDevice ... requires ... BLUETOOTH_SCAN`). Since 3.4.4/3.4.5 the SDK
+  checks the permission before starting the service and catches both `SecurityException` and
+  `ForegroundServiceStartNotAllowedException`, degrading gracefully. If you see this crash,
+  update the SDK.
 
-## ⚠️ Technical Pending Issues
+## Migrating from 2.x to 3.x
 
-Due to Android system restrictions and manufacturer-specific behaviors, the following limitations currently apply:
+3.x is the hybrid wake-up generation (kernel-registered `PendingIntent` scan, force-stop
+survival on Android 14+, `neverForLocation`). Update the dependency to the latest 3.x tag,
+then review:
 
-### 1. Background scanning with app fully closed (Android version)
-
-- **Background beacon scanning when the app is fully closed is supported only on Android 14 (API 34) and above.**
-- On Android versions **below 14**, the system does not reliably wake the app for BLE beacon detection without a foreground service or notification.
-- This is a platform-level limitation imposed by Android background execution policies.
-
-**Impact:** Devices running Android 13 or lower may not detect beacons when the app is fully closed.
-
----
-
-### 2. Battery Saver / Power Optimization modes
-
-- When **Battery Saver**, **Power Saving**, or manufacturer-specific optimization modes are enabled (e.g. Samsung, Xiaomi, Oppo),
-  the system may place the app into a **hibernation / deep sleep state** when the device is locked.
-- In this state, **BLE scanning is automatically interrupted by the system**, even if background scanning is enabled.
-- This behavior is **outside the SDK’s control** and varies by device manufacturer and OS version.
-
-**Impact:** Beacon scanning may stop when the device screen is locked with battery optimization enabled.
-
----
-
-### Summary
-
-| Scenario | Supported |
-|--------|---------|
-| App in foreground | ✅ Yes |
-| App in background (in memory) | ✅ Yes |
-| App closed (Android 14+) | ✅ Yes |
-| App closed (Android <= 13) | ❌ No |
-| Battery saver / hibernation enabled | ⚠️ Limited |
+1. **`BLUETOOTH_CONNECT` is no longer declared by the SDK manifest** (3.0.0). If your app
+   uses GATT operations of its own, declare it in your own manifest.
+2. **Default user-facing strings are English** (3.0.0). If you relied on the old Portuguese
+   foreground-notification copy, pass your localized strings via `ForegroundScanConfig` /
+   `NotificationContent`.
+3. **Location-capture APIs were removed** (3.3.1): `LocationCaptureResult`,
+   `onStartLocationCapture`, `onCompleteLocationCapture` no longer exist. Delete any
+   overrides — the SDK no longer touches GPS at all.
+4. **Permission requests**: stop requesting location on Android 12+; request `BLUETOOTH_SCAN`
+   instead (see Quick Start). Remove any `ACCESS_BACKGROUND_LOCATION` requests made for the
+   SDK's benefit.
+5. Coming from **2.3.6 or older**: `configure()` takes `scanPrecision: ScanPrecision` instead
+   of `foregroundScanInterval`/`backgroundScanInterval` (changed in 2.3.7).
+6. Coming from **1.x**: the entry point is `BeAroundSDK.getInstance(context)` +
+   `configure(businessToken = ...)` + `BeAroundSDKListener` — see the Quick Start; the old
+   `BeAround.initialize`/`BeaconListener` API is gone.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
+See [CHANGELOG.md](CHANGELOG.md) for the full version history. Recent highlights:
 
-### Version 3.0.0 (Latest)
-
-- 🆕 **Hybrid wake-up parity with iOS SDK 3.0.0**: kernel-registered `PendingIntent` BLE scan survives force-stop and swipe-from-recents on Android 14+ without a foreground service
-- 🆕 **`BLUETOOTH_SCAN` with `neverForLocation`**: beacon detection no longer implies Location authorization on Android 12+
-- 🆕 **Surface BT detections via listener**: `BluetoothManager` now feeds `onBeaconsUpdated` / `onBeaconDetectedInBackground` even when the SDK is not actively ranging, with `Beacon.Proximity.BT`
-- 🆕 **OEM caveat matrix** in README (Samsung, Xiaomi, Huawei, OnePlus) + `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` mitigation
-- ⚠️ **Breaking**: SDK manifest no longer declares `BLUETOOTH_CONNECT` — host apps that need it must declare it themselves
-- ⚠️ **Breaking**: default user-facing SDK strings (foreground service notification, `ForegroundScanConfig`, `SDKConfigStorage` fallbacks) are now English — override via `ForegroundScanConfig`/`NotificationContent` if you need a specific locale
-
-### Version 2.4.0 (2026-05-22)
-
-- 🆕 **Beacon-gated GPS + active BLE scan**: only run while inside a beacon region (kernel filter scan stays on, ~0 battery outside)
-- 🆕 **Listener surface**: `onEnterBeaconRegion`, `onExitBeaconRegion`, `onActiveScanStateChanged`, `onStartLocationCapture`, `onCompleteLocationCapture`
-- 🆕 **`LocationCaptureResult` public model** + `BeaconManager.isInBeaconRegion`
-
-### Version 2.3.7 (2026-02-26)
-
-- 🆕 **Scan Precision**: Replaced `foregroundScanInterval`/`backgroundScanInterval` with `ScanPrecision` enum (HIGH, MEDIUM, LOW)
-- 🆕 **Duty Cycle Architecture**: Scan/pause cycle model for battery-efficient scanning
-- 🆕 **Foreground Service**: Optional `ForegroundScanConfig` for persistent background scanning with notification
-- 🆕 **enableForegroundScanning/disableForegroundScanning**: New methods for foreground service control
-- ⚠️ **Breaking**: `configure()` no longer accepts `foregroundScanInterval` or `backgroundScanInterval` — use `scanPrecision` instead
-
-### Version 2.2.1 (2026-01-20)
-
-- ⚠️ **Breaking**: Removed `onSyncStatusUpdated` callback (battery optimization - was firing every second)
-- 🔧 Fixed lint warnings in sync timer logic
-
-### Version 2.2.0 (2026-01-17)
-
-- 🆕 **WorkManager Integration**: Periodic background sync every 15 minutes
-- 🆕 **AlarmManager Watchdog**: Secondary mechanism for reliable background operation
-- 🆕 **Boot Completed Receiver**: Automatic restart after device reboot
-- 🆕 **Persistent Batch Storage**: Failed batches saved to disk (survives app kill)
-- 🆕 **Sync Lifecycle Callbacks**: `onSyncStarted` and `onSyncCompleted` methods
-- 🆕 **Background Detection Callback**: `onBeaconDetectedInBackground` method
-- ⚠️ **Breaking**: Removed `enableBluetoothScanning` parameter (now automatic)
-- ⚠️ **Breaking**: Removed `enablePeriodicScanning` parameter (now automatic)
-
-### Version 2.1.0 (2026-01-13)
-
-- 🆕 **Configurable Scan Intervals**: Separate foreground/background intervals
-- 🆕 **Configurable Retry Queue**: Control failed payload queue size
-- 🔧 **Improved Lifecycle Detection**: Using `ProcessLifecycleOwner`
-
-### Version 2.0.2 (2026-01-08)
-
-- 🆕 **Background Scanning**: Beacon detection when app is closed
-- 🐛 Fixed scanning restart bug after `stopScanning()` is called
-
-### Version 2.0.0 (2025-12-30)
-
-- 🚀 Complete SDK rewrite with new architecture
-- ✨ Native Android Bluetooth LE (no external dependencies)
-- ⚠️ Breaking changes - not compatible with v1.x
+- **3.4.5** — hardened foreground-service start; `BLUETOOTH_SCAN` required (and sufficient) on Android 12+
+- **3.4.4** — FGS crash-loop fix; background-reliability helpers (battery-opt + OEM autostart)
+- **3.4.2** — inexact watchdog alarms; `USE_EXACT_ALARM` removed (Play policy)
+- **3.4.1** — `setPushToken` pushes the token immediately when already scanning
+- **3.4.0** — device register on `startScanning()`: the device appears in the Control Hub even before the first beacon
 
 ## License
 
