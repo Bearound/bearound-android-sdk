@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.5] - 2026-07-01
+
+### Fixed
+
+- **Second FGS crash mode (`ForegroundServiceStartNotAllowedException`).** The 3.4.4 fix only caught the `SecurityException` thrown inside `onStartCommand` when Bluetooth permission was missing. A distinct crash — `ForegroundServiceStartNotAllowedException` (a subclass of `IllegalStateException`) — is thrown earlier, at `context.startForegroundService()`, when the service is started from the background without a valid background-start exemption (Android 12+). `BeaconScanService.start()` and `updateNotification()` now wrap that call in try/catch and skip instead of crashing (background detection still runs via the PendingIntent scan).
+- **Log spam from location-only permission on Android 12+.** `BeaconManager`/`BluetoothManager.checkPermissions()` returned `location || bluetoothScan`, so with location-only granted the SDK attempted a BLE scan the OS rejected with a caught `SecurityException` (several per duty cycle, no detection). On Android 12+ the SDK now requires `BLUETOOTH_SCAN` directly — location never unlocks the scan on 12+ (the manifest uses `neverForLocation`); Android <12 keeps the legacy location gate. `BackgroundScanManager.enableBackgroundScanning()` gets the same guard for the ungated `restartScanningFromBackground` path.
+
 ## [3.4.4] - 2026-07-01
 
 ### Fixed

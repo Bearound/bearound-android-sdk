@@ -182,10 +182,17 @@ class BluetoothManager(private val context: Context) {
     }
 
     private fun checkPermissions(): Boolean {
-        // Two "eyes": Location and Bluetooth. Scan proceeds if AT LEAST ONE is granted.
-        // - Android 12+ (neverForLocation flag): BLUETOOTH_SCAN alone is sufficient.
-        // - Android <12: ACCESS_FINE/COARSE_LOCATION alone is sufficient (legacy BLE).
-        val hasLocation =
+        // Version-dependent BLE-scan gate (mirrors BeaconManager):
+        // - Android 12+ (S+): ONLY BLUETOOTH_SCAN unlocks the scan (manifest neverForLocation).
+        //   Location does NOT unlock it — passing with location-only made the SDK attempt a
+        //   scan the OS blocked with a caught SecurityException. So require BLUETOOTH_SCAN.
+        // - Android <12: legacy model — ACCESS_FINE/COARSE_LOCATION unlocks the BLE scan.
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_SCAN
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
             ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.ACCESS_FINE_LOCATION
@@ -194,16 +201,6 @@ class BluetoothManager(private val context: Context) {
                 context,
                 Manifest.permission.ACCESS_COARSE_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
-
-        val hasBluetoothScan = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.BLUETOOTH_SCAN
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
         }
-
-        return hasLocation || hasBluetoothScan
     }
 }
