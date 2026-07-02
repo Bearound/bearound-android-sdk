@@ -25,7 +25,13 @@ class BeAroundDiagnosticsTest {
         lastSyncSuccess = true,
         lastSyncBeaconCount = 8,
         recentErrors = recentErrors,
-        sdkVersion = 34,
+        sdkVersion = "3.4.5",
+        osApiLevel = 34,
+        hasBluetoothScanPermission = true,
+        bluetoothEnabled = true,
+        foregroundServiceActive = false,
+        backgroundScanRegistered = true,
+        isIgnoringBatteryOptimizations = false,
     )
 
     @Test
@@ -37,7 +43,11 @@ class BeAroundDiagnosticsTest {
         assertTrue("masked token present", text.contains("pushTokenMasked: abcd1234…wxyz"))
         assertTrue("pendingBatches present", text.contains("pendingBatches: 4"))
         assertTrue("isScanning present", text.contains("isScanning: true"))
-        assertTrue("sdkVersion present", text.contains("sdkVersion (OS API): 34"))
+        assertTrue("sdkVersion present", text.contains("sdkVersion: 3.4.5"))
+        assertTrue("osApiLevel present", text.contains("osApiLevel: 34"))
+        assertTrue("hasBluetoothScanPermission present", text.contains("hasBluetoothScanPermission: true"))
+        assertTrue("bluetoothEnabled present", text.contains("bluetoothEnabled: true"))
+        assertTrue("backgroundScanRegistered present", text.contains("backgroundScanRegistered: true"))
         assertTrue("lastSyncSuccess present", text.contains("lastSyncSuccess: true"))
     }
 

@@ -27,6 +27,10 @@ class BackgroundScanManager(private val context: Context) {
     
     private var pendingIntent: PendingIntent? = null
     private var bluetoothLeScanner: BluetoothLeScanner? = null
+
+    /** True while the low-power PendingIntent background scan is registered. For diagnostics. */
+    val isRegistered: Boolean
+        get() = pendingIntent != null
     
     /**
      * Enable background scanning

@@ -91,6 +91,28 @@ class BeAroundSDK private constructor() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val handler = Handler(Looper.getMainLooper())
 
+    /**
+     * Dispatches a [BeAroundSDKListener] callback on the main thread.
+     *
+     * SDK callbacks originate from several threads (BLE scan callbacks, background sync
+     * coroutines, lifecycle observers). To give a single, predictable threading contract —
+     * and avoid the intermittent UI crashes seen when [BeAroundSDKListener.onError] fired on
+     * a worker thread — every listener invocation goes through here.
+     *
+     * If the caller is already on the main thread the block runs inline (no reordering and
+     * no self-post that could deadlock a synchronous caller); otherwise it is posted to the
+     * main looper. Reads [listener] on the main thread so a null/replaced listener is handled
+     * consistently.
+     */
+    private inline fun dispatchToListener(crossinline block: (BeAroundSDKListener) -> Unit) {
+        val run = Runnable { listener?.let(block) }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            run.run()
+        } else {
+            handler.post(run)
+        }
+    }
+
     private var syncRunnable: Runnable? = null
     private var dutyCycleRunnable: Runnable? = null
 
@@ -197,13 +219,16 @@ class BeAroundSDK private constructor() {
             }
 
             // Notify listener of beacon update (with sync state preserved)
-            listener?.onBeaconsUpdated(beaconsForListener)
+            dispatchToListener { it.onBeaconsUpdated(beaconsForListener) }
 
             // Notify if beacons detected in background
             if (isInBackground && enrichedBeacons.isNotEmpty()) {
-                listener?.onBeaconDetectedInBackground(enrichedBeacons.size)
+                dispatchToListener { it.onBeaconDetectedInBackground(enrichedBeacons.size) }
 
-                // Update foreground notification with contextual content
+                // Update foreground notification with contextual content.
+                // Note: onProvideNotificationContent is a value-returning callback consumed
+                // synchronously here (not a fire-and-forget event), so it is not routed
+                // through the main-thread dispatcher.
                 if (BeaconScanService.isRunning) {
                     val content = listener?.onProvideNotificationContent(beaconsForListener)
                     if (content != null) {
@@ -214,11 +239,11 @@ class BeAroundSDK private constructor() {
         }
 
         beaconManager.onError = { error ->
-            listener?.onError(error)
+            dispatchToListener { it.onError(error) }
         }
 
         beaconManager.onScanningStateChanged = { isScanning ->
-            listener?.onScanningStateChanged(isScanning)
+            dispatchToListener { it.onScanningStateChanged(isScanning) }
         }
 
         beaconManager.onBackgroundRangingComplete = {
@@ -227,24 +252,24 @@ class BeAroundSDK private constructor() {
 
         // v2.5 — region transitions: gate active BLE scan
         beaconManager.onRegionEnter = {
-            handler.post { listener?.onEnterBeaconRegion() }
+            dispatchToListener { it.onEnterBeaconRegion() }
         }
 
         beaconManager.onRegionExit = {
-            handler.post { listener?.onExitBeaconRegion() }
+            dispatchToListener { it.onExitBeaconRegion() }
         }
 
         beaconManager.onActiveScanShouldStart = {
             Log.d(TAG, "Active scan START — region entered, starting BLE central scan + duty cycle")
             // Bluetooth metadata scan ON only while inside a region.
             bluetoothManager.startScanning()
-            handler.post { listener?.onActiveScanStateChanged(true) }
+            dispatchToListener { it.onActiveScanStateChanged(true) }
         }
 
         beaconManager.onActiveScanShouldStop = {
             Log.d(TAG, "Active scan STOP — region exited, stopping BLE central scan")
             bluetoothManager.stopScanning()
-            handler.post { listener?.onActiveScanStateChanged(false) }
+            dispatchToListener { it.onActiveScanStateChanged(false) }
         }
 
         bluetoothManager.listener = object : BluetoothManagerListener {
@@ -286,10 +311,10 @@ class BeAroundSDK private constructor() {
                     collectedBeacons.values.toList()
                 }
 
-                listener?.onBeaconsUpdated(beaconsForListener)
+                dispatchToListener { it.onBeaconsUpdated(beaconsForListener) }
 
                 if (isInBackground) {
-                    listener?.onBeaconDetectedInBackground(beaconsForListener.size)
+                    dispatchToListener { it.onBeaconDetectedInBackground(beaconsForListener.size) }
                 }
             }
 
@@ -330,7 +355,7 @@ class BeAroundSDK private constructor() {
             restartSyncTimer()
         }
 
-        listener?.onAppStateChanged(isInBackground = false)
+        dispatchToListener { it.onAppStateChanged(isInBackground = false) }
     }
 
     private fun onAppBackgrounded() {
@@ -349,8 +374,8 @@ class BeAroundSDK private constructor() {
         if (isScanning) {
             restartSyncTimer()
         }
-        
-        listener?.onAppStateChanged(isInBackground = true)
+
+        dispatchToListener { it.onAppStateChanged(isInBackground = true) }
     }
 
     /** Configures and activates the SDK. Auto-collects the FCM token if Firebase is present (see [tryAutoCollectFcmToken]). */
@@ -501,11 +526,22 @@ class BeAroundSDK private constructor() {
 
     // endregion
 
+    /**
+     * Starts beacon scanning.
+     *
+     * If the required runtime permission is missing (BLUETOOTH_SCAN on Android 12+,
+     * ACCESS_FINE/COARSE_LOCATION on Android ≤11), the active scan cannot start and the SDK
+     * emits an informative [BeAroundSDKListener.onError] exactly once for this call. The
+     * background scheduler + watchdog are still armed on purpose: when the user grants the
+     * permission later, scanning resumes without requiring another explicit call.
+     *
+     * All listener callbacks are dispatched on the main thread.
+     */
     fun startScanning(foregroundScanConfig: ForegroundScanConfig? = null) {
         val config = configuration
         if (config == null) {
             val error = Exception("SDK not configured. Call configure() first.")
-            listener?.onError(error)
+            dispatchToListener { it.onError(error) }
             return
         }
 
@@ -594,7 +630,13 @@ class BeAroundSDK private constructor() {
                 },
                 onFailure = { error ->
                     Log.w(TAG, "registerDeviceIfNeeded: register failed: ${error.message}")
-                    // Not persisted to offlineBatchStorage — will retry on next startScanning call.
+                    DiagnosticsStore.recordError("Register failed: ${error.message}")
+                    // Surface the failure (e.g. a 401 with the token-rejection body) to the
+                    // host so an invalid token or unreachable backend is not silent. Not
+                    // persisted to offlineBatchStorage — will retry on next startScanning call.
+                    dispatchToListener {
+                        it.onError(error as? Exception ?: Exception(error.message))
+                    }
                 }
             )
         }
@@ -887,9 +929,7 @@ class BeAroundSDK private constructor() {
             isSyncing = true
 
             // Notify listener that sync is starting
-            handler.post {
-                listener?.onSyncStarted(beaconsToSend.size)
-            }
+            dispatchToListener { it.onSyncStarted(beaconsToSend.size) }
 
             val locationPermission = getLocationPermissionStatus()
             val bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off"
@@ -925,9 +965,7 @@ class BeAroundSDK private constructor() {
                         val updatedBeacons = beaconLock.withLock {
                             collectedBeacons.values.toList()
                         }
-                        handler.post {
-                            listener?.onBeaconsUpdated(updatedBeacons)
-                        }
+                        dispatchToListener { it.onBeaconsUpdated(updatedBeacons) }
 
                         handler.postDelayed({
                             beaconLock.withLock {
@@ -944,9 +982,7 @@ class BeAroundSDK private constructor() {
                         // Notify listener of success
                         PushTokenStore.markSent()
                         DiagnosticsStore.recordSync(success = true, beaconCount = beaconsToSend.size)
-                        handler.post {
-                            listener?.onSyncCompleted(beaconsToSend.size, success = true, error = null)
-                        }
+                        dispatchToListener { it.onSyncCompleted(beaconsToSend.size, success = true, error = null) }
                     },
                     onFailure = { error ->
                         Log.e(TAG, "Sync failed: ${error.message}")
@@ -955,8 +991,8 @@ class BeAroundSDK private constructor() {
                         DiagnosticsStore.recordSync(success = false, beaconCount = beaconsToSend.size)
 
                         // Notify listener of failure
-                        handler.post {
-                            listener?.onSyncCompleted(
+                        dispatchToListener {
+                            it.onSyncCompleted(
                                 beaconsToSend.size,
                                 success = false,
                                 error = error as? Exception ?: Exception(error.message)
@@ -999,9 +1035,7 @@ class BeAroundSDK private constructor() {
 
             Log.d(TAG, "Sending retry chunk ${chunkIndex + 1}/${chunks.size} — ${beaconsInChunk.size} beacons from ${chunk.size} batch(es)")
 
-            handler.post {
-                listener?.onSyncStarted(beaconsInChunk.size)
-            }
+            dispatchToListener { it.onSyncStarted(beaconsInChunk.size) }
 
             var chunkResult: Result<Unit>? = null
             client.sendBeacons(beaconsInChunk, info, userDevice, userProperties) { result ->
@@ -1018,13 +1052,13 @@ class BeAroundSDK private constructor() {
                 DiagnosticsStore.recordSync(success = false, beaconCount = beaconsInChunk.size)
                 DiagnosticsStore.recordError("Retry chunk failed: ${error.message}")
 
-                handler.post {
-                    listener?.onSyncCompleted(
+                dispatchToListener {
+                    it.onSyncCompleted(
                         beaconsInChunk.size,
                         success = false,
                         error = error as? Exception ?: Exception(error.message)
                     )
-                    listener?.onError(error as? Exception ?: Exception(error.message))
+                    it.onError(error as? Exception ?: Exception(error.message))
                 }
 
                 isSyncing = false
@@ -1042,9 +1076,7 @@ class BeAroundSDK private constructor() {
 
             PushTokenStore.markSent()
             DiagnosticsStore.recordSync(success = true, beaconCount = beaconsInChunk.size)
-            handler.post {
-                listener?.onSyncCompleted(beaconsInChunk.size, success = true, error = null)
-            }
+            dispatchToListener { it.onSyncCompleted(beaconsInChunk.size, success = true, error = null) }
         }
 
         isSyncing = false
@@ -1071,14 +1103,10 @@ class BeAroundSDK private constructor() {
             val circuitBreakerError = Exception(
                 "API unreachable after $consecutiveFailures consecutive failures"
             )
-            handler.post {
-                listener?.onError(circuitBreakerError)
-            }
+            dispatchToListener { it.onError(circuitBreakerError) }
         }
 
-        handler.post {
-            listener?.onError(error as? Exception ?: Exception(error.message))
-        }
+        dispatchToListener { it.onError(error as? Exception ?: Exception(error.message)) }
     }
 
     private fun shouldRetryFailedBatches(): Boolean {
@@ -1131,6 +1159,7 @@ class BeAroundSDK private constructor() {
      * time; values are best-effort and reflect what the SDK has observed so far.
      */
     fun diagnostics(): BeAroundDiagnostics {
+        val hasBtScan = ::beaconManager.isInitialized && beaconManager.hasBluetoothScanPermission()
         return BeAroundDiagnostics(
             deviceId = DeviceIdentifier.getDeviceId(context),
             pushTokenMasked = PushTokenStore.maskedToken(),
@@ -1143,7 +1172,13 @@ class BeAroundSDK private constructor() {
             lastSyncSuccess = DiagnosticsStore.lastSyncSuccess(),
             lastSyncBeaconCount = DiagnosticsStore.lastSyncBeaconCount(),
             recentErrors = DiagnosticsStore.recentErrors(),
-            sdkVersion = Build.VERSION.SDK_INT
+            sdkVersion = BuildConfig.SDK_VERSION,
+            osApiLevel = Build.VERSION.SDK_INT,
+            hasBluetoothScanPermission = hasBtScan,
+            bluetoothEnabled = ::bluetoothManager.isInitialized && bluetoothManager.isPoweredOn,
+            foregroundServiceActive = BeaconScanService.isRunning,
+            backgroundScanRegistered = ::backgroundScanManager.isInitialized && backgroundScanManager.isRegistered,
+            isIgnoringBatteryOptimizations = BackgroundReliabilityHelper.isIgnoringBatteryOptimizations(context)
         )
     }
 

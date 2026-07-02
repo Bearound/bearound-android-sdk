@@ -17,6 +17,19 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
+ * Thrown when the backend responds with a non-2xx status. Carries the HTTP [statusCode] and
+ * the (best-effort) response [body] so the SDK can surface actionable failures — e.g. a 401
+ * with the token-rejection reason — through [io.bearound.sdk.interfaces.BeAroundSDKListener.onError]
+ * instead of discarding them in a log line.
+ */
+class HttpException(
+    val statusCode: Int,
+    val body: String
+) : Exception(
+    if (body.isBlank()) "HTTP error: $statusCode" else "HTTP error: $statusCode — $body"
+)
+
+/**
  * API client for sending beacon data to the backend
  */
 class APIClient(private val configuration: SDKConfiguration) {
@@ -67,13 +80,13 @@ class APIClient(private val configuration: SDKConfiguration) {
                     Log.d(TAG, "Register succeeded (HTTP $responseCode)")
                     onComplete(Result.success(Unit))
                 } else {
-                    val errorMessage = try {
+                    val errorBody = try {
                         BufferedReader(InputStreamReader(connection.errorStream)).use { it.readText() }
                     } catch (e: Exception) {
-                        "HTTP error $responseCode"
+                        ""
                     }
-                    Log.e(TAG, "Register failed: HTTP $responseCode - $errorMessage")
-                    onComplete(Result.failure(Exception("HTTP error: $responseCode")))
+                    Log.e(TAG, "Register failed: HTTP $responseCode - $errorBody")
+                    onComplete(Result.failure(HttpException(responseCode, errorBody)))
                 }
 
                 connection.disconnect()
@@ -132,13 +145,13 @@ class APIClient(private val configuration: SDKConfiguration) {
                     Log.d(TAG, "Successfully sent ${beacons.size} beacon(s)")
                     onComplete(Result.success(Unit))
                 } else {
-                    val errorMessage = try {
+                    val errorBody = try {
                         BufferedReader(InputStreamReader(connection.errorStream)).use { it.readText() }
                     } catch (e: Exception) {
-                        "HTTP error $responseCode"
+                        ""
                     }
-                    Log.e(TAG, "API error: HTTP $responseCode - $errorMessage")
-                    onComplete(Result.failure(Exception("HTTP error: $responseCode")))
+                    Log.e(TAG, "API error: HTTP $responseCode - $errorBody")
+                    onComplete(Result.failure(HttpException(responseCode, errorBody)))
                 }
 
                 connection.disconnect()
