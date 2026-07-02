@@ -24,6 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Background-reliability helpers** (`BeAroundSDK`): `isIgnoringBatteryOptimizations()`, `openBatteryOptimizationSettings()`, `isAutostartManageable()`, `openManufacturerAutostartSettings()`. Help the host app keep the process eligible to wake under Doze and aggressive OEM battery managers (Xiaomi/MIUI, Huawei, Oppo/Vivo, OnePlus, Letv) — the real Android equivalent of the resilience the iOS "second eye" provides. Battery-optimization uses the Settings screen (`ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS`), **not** the restricted `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` permission, so it triggers no Google Play review. Samsung is intentionally excluded from the autostart deep-link (its app-power screen requires the system permission `READ_SEARCH_INDEXABLES`); it falls back to the battery-optimization screen.
 
+## [3.4.2] - 2026-06-27
+
+### Changed
+
+- **Watchdog now uses inexact alarms; `USE_EXACT_ALARM` removed.** The SDK is not an alarm-clock/calendar app, so it does not qualify for exact alarms under Google Play policy (the Play Console requires removing `USE_EXACT_ALARM` or filing the "Exact alarms" declaration). `BackgroundScheduler` switched `setExactAndAllowWhileIdle`/`setExact` to `setAndAllowWhileIdle`/`set` (inexact) — the watchdog is only a safety net for WorkManager, so minute-level precision is irrelevant. `USE_EXACT_ALARM` and `SCHEDULE_EXACT_ALARM` were removed from the SDK manifest.
+
+## [3.4.1] - 2026-06-27
+
+### Fixed
+
+- **`setPushToken` now pushes the token immediately when already scanning.** The register-on-init (`registerDeviceIfNeeded`, inside `startScanning`) reads the push token from `PushTokenStore`; if the app called `setPushToken` AFTER `startScanning`, the initial register went out without the token and the device stayed push-less until the next register (24h TTL) or a beacon detection — the token is not part of the register fingerprint, so a normal register would not re-fire. Now `setPushToken`, when scanning and the token hasn't been sent yet, forces a register (`force = true`, bypassing the TTL); a successful register marks the token as sent (`PushTokenStore.markSent()`).
+
 ## [3.4.0] - 2026-06-26
 
 ### Added
