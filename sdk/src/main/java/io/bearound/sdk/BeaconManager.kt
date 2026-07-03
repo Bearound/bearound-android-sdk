@@ -34,6 +34,9 @@ class BeaconManager(private val context: Context) {
         private const val RANGING_REFRESH_INTERVAL = 120000L
         private const val MAX_RESTARTS_PER_MINUTE = 3
         private const val DEFAULT_TX_POWER = -59
+
+        /** Batch report delay for the slow-beacon iBeacon scan (see [startSlowBeaconBatchScan]). */
+        private const val SLOW_BEACON_BATCH_DELAY_MS = 2000L
         /** Past this gap with no packet, the beacon is rendered as stale (faded) but kept. */
         private const val STALE_THRESHOLD_MS = 5000L
         /**
@@ -63,6 +66,7 @@ class BeaconManager(private val context: Context) {
     private var bluetoothLeScanner: BluetoothLeScanner? = null
     var isScanning = false
     var isRanging = false
+    private var isBatchScanning = false
         private set
     private var isInForeground = true
     /**
@@ -218,6 +222,28 @@ class BeaconManager(private val context: Context) {
         }
     }
 
+    /**
+     * Dedicated callback for the batched iBeacon scan (see [startSlowBeaconBatchScan]).
+     * Kept separate from [scanCallback] so the batch scanner can be started/stopped
+     * independently of the regular 0xBEAD scan. Results are parsed by the same
+     * [processScanResult] — the batched ScanRecord carries the 0xBEAD payload (scan response),
+     * so the existing BEAD parser handles them unchanged.
+     */
+    private val batchScanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            processScanResult(result)
+        }
+
+        override fun onBatchScanResults(results: List<ScanResult>) {
+            results.forEach { processScanResult(it) }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            // Batch scanning isn't supported on every device; the regular scan still runs.
+            Log.w(TAG, "Slow-beacon batch scan failed (code $errorCode) — regular scan unaffected")
+        }
+    }
+
     fun setForegroundState(inForeground: Boolean) {
         isInForeground = inForeground
         
@@ -255,15 +281,16 @@ class BeaconManager(private val context: Context) {
         try {
             val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
             bluetoothLeScanner = bluetoothManager.adapter?.bluetoothLeScanner
-            
+
             if (bluetoothLeScanner == null) {
                 throw Exception("BluetoothLeScanner not available")
             }
 
             startMonitoring()
+            startSlowBeaconBatchScan()
             isScanning = true
             onScanningStateChanged?.invoke(true)
-            
+
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start scanning: ${e.message}")
             onError?.invoke(e)
@@ -286,6 +313,7 @@ class BeaconManager(private val context: Context) {
             bluetoothLeScanner?.stopScan(scanCallback)
             isRanging = false
         }
+        stopSlowBeaconBatchScan()
 
         beaconLock.withLock {
             detectedBeacons.clear()
@@ -397,6 +425,54 @@ class BeaconManager(private val context: Context) {
             startRangingRefreshTimer()
         }
         // In foreground: ranging is controlled by BeAroundSDK's sync timer
+    }
+
+    /**
+     * Dedicated batched scan for "slow" Bearound beacons. Some beacons advertise the 0xBEAD
+     * payload in the SCAN RESPONSE (not the primary PDU) and/or at a long advertising interval
+     * (~1 s). On some OEMs (notably Samsung) the regular scan runs at a reduced host duty cycle
+     * and never catches them, even though the controller receives the packet. This scan:
+     *  - filters on the Bearound iBeacon frame (present in the PRIMARY PDU, so the offloaded
+     *    hardware filter matches it — the 0xBEAD service-data filter can't, being scan-response),
+     *  - uses a non-zero reportDelay (batch), so the controller accumulates matches continuously
+     *    and delivers them via onBatchScanResults regardless of the host duty cycle.
+     * Runs alongside the regular 0xBEAD scan; the delivered ScanRecord still carries the 0xBEAD
+     * payload, so [processScanResult]/[IBeaconParser.parseServiceData] handle it unchanged.
+     */
+    @SuppressLint("MissingPermission")
+    private fun startSlowBeaconBatchScan() {
+        if (isBatchScanning) return
+        val scanner = bluetoothLeScanner ?: return
+        try {
+            val ibFilter = ScanFilter.Builder()
+                .setManufacturerData(
+                    IBeaconParser.APPLE_MANUFACTURER_ID,
+                    IBeaconParser.BEAROUND_IBEACON_PREFIX,
+                    IBeaconParser.BEAROUND_IBEACON_MASK
+                )
+                .build()
+            val settings = ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+                .setReportDelay(SLOW_BEACON_BATCH_DELAY_MS)
+                .build()
+            scanner.startScan(listOf(ibFilter), settings, batchScanCallback)
+            isBatchScanning = true
+            Log.d(TAG, "Slow-beacon batch scan started (reportDelay=${SLOW_BEACON_BATCH_DELAY_MS}ms)")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to start slow-beacon batch scan: ${e.message}")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopSlowBeaconBatchScan() {
+        if (!isBatchScanning) return
+        try {
+            bluetoothLeScanner?.stopScan(batchScanCallback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to stop slow-beacon batch scan: ${e.message}")
+        }
+        isBatchScanning = false
     }
 
     private fun processScanResult(result: ScanResult) {

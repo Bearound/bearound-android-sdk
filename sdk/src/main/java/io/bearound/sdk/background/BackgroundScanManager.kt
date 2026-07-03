@@ -112,6 +112,17 @@ class BackgroundScanManager(private val context: Context) {
                         byteArrayOf(),
                         byteArrayOf()
                     )
+                    .build(),
+                // iBeacon Bearound (Apple 0x004C, UUID e25b8d3c). Some beacons (e.g. B:0.135)
+                // advertise the 0xBEAD payload in the SCAN RESPONSE, not the primary PDU — the
+                // offloaded filter only inspects the primary, so the 0xBEAD filters miss them.
+                // Matching the iBeacon (present in the primary) wakes the PendingIntent for those.
+                ScanFilter.Builder()
+                    .setManufacturerData(
+                        IBeaconParser.APPLE_MANUFACTURER_ID,
+                        IBeaconParser.BEAROUND_IBEACON_PREFIX,
+                        IBeaconParser.BEAROUND_IBEACON_MASK
+                    )
                     .build()
             )
             
