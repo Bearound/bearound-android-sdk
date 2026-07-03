@@ -19,6 +19,27 @@ object IBeaconParser {
     /** BEAD Service Data UUID (16-bit 0xBEAD in 128-bit form) */
     val BEAD_SERVICE_UUID: ParcelUuid = ParcelUuid.fromString("0000BEAD-0000-1000-8000-00805F9B34FB")
 
+    /** Apple's Bluetooth SIG manufacturer ID — iBeacon frames are advertised under it (0x004C). */
+    const val APPLE_MANUFACTURER_ID = 0x004C
+
+    /**
+     * iBeacon manufacturer-data prefix for a Bearound beacon: `[0x02, 0x15]` (iBeacon type +
+     * length) followed by the 16-byte [BEAROUND_UUID]. Used as a ScanFilter to match beacons
+     * that carry the 0xBEAD payload in the SCAN RESPONSE rather than the primary PDU (e.g.
+     * B:0.135) — the offloaded 0xBEAD filter only inspects the primary advertisement, so those
+     * beacons are matched via their iBeacon frame (which is in the primary).
+     */
+    val BEAROUND_IBEACON_PREFIX: ByteArray = byteArrayOf(0x02, 0x15) + uuidToBytes(BEAROUND_UUID)
+
+    /** Full-match (0xFF) mask covering every byte of [BEAROUND_IBEACON_PREFIX]. */
+    val BEAROUND_IBEACON_MASK: ByteArray = ByteArray(BEAROUND_IBEACON_PREFIX.size) { 0xFF.toByte() }
+
+    private fun uuidToBytes(uuid: UUID): ByteArray =
+        java.nio.ByteBuffer.allocate(16)
+            .putLong(uuid.mostSignificantBits)
+            .putLong(uuid.leastSignificantBits)
+            .array()
+
     /**
      * Data class representing parsed BEAD Service Data
      */
