@@ -15,6 +15,7 @@ import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.RssiStats
 import io.bearound.sdk.utilities.IBeaconParser
 import io.bearound.sdk.utilities.RssiFilterRegistry
+import io.bearound.sdk.utilities.ScanStartBudget
 import java.util.Date
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -247,8 +248,22 @@ class BeaconManager(private val context: Context) {
 
         override fun onScanFailed(errorCode: Int) {
             Log.e(TAG, "Scan failed with error code: $errorCode")
+            handleScanFailure(errorCode)
+            // The client did NOT register — reflect it so the duty cycle/watchdog retry.
+            isRanging = false
             val error = Exception("Beacon scan failed with error code: $errorCode")
             onError?.invoke(error)
+        }
+    }
+
+    /**
+     * Shared reaction to `onScanFailed` codes: SCANNING_TOO_FREQUENTLY (6, Android 11+) means
+     * the app hit the OS scan-start quota — calling startScan again only extends the penalty,
+     * so freeze every start for a cool-off window.
+     */
+    private fun handleScanFailure(errorCode: Int) {
+        if (errorCode == 6 /* ScanCallback.SCAN_FAILED_SCANNING_TOO_FREQUENTLY, API 30+ */) {
+            ScanStartBudget.freeze()
         }
     }
 
@@ -275,17 +290,32 @@ class BeaconManager(private val context: Context) {
         override fun onScanFailed(errorCode: Int) {
             // Batch scanning isn't supported on every device; the regular scan still runs.
             Log.w(TAG, "Slow-beacon batch scan failed (code $errorCode) — regular scan unaffected")
+            handleScanFailure(errorCode)
+            // Client didn't register — clear the flag so the liveness check can re-arm it.
+            isBatchScanning = false
         }
     }
 
     fun setForegroundState(inForeground: Boolean) {
         isInForeground = inForeground
-        
+
         if (!inForeground && isScanning) {
             startRangingRefreshTimer()
         } else if (inForeground) {
             stopRangingRefreshTimer()
         }
+    }
+
+    /**
+     * Bluetooth was toggled off→on: the stack dropped every scan client while the local
+     * flags stayed true. Re-arm the batch immediately (budget-guarded); the ranging watchdog
+     * and the duty cycle recover the other scanners on their own ticks.
+     */
+    fun onBluetoothRestored() {
+        if (!isScanning) return
+        Log.i(TAG, "Bluetooth restored — re-arming batch scan")
+        isBatchScanning = false
+        startSlowBeaconBatchScan()
     }
 
     /**
@@ -403,6 +433,10 @@ class BeaconManager(private val context: Context) {
             .setReportDelay(0)
             .build()
 
+        // Preventive quota guard: skipping one duty-cycle tick is recoverable (the next
+        // tick retries in seconds); exceeding the OS quota silently starves the client.
+        if (!ScanStartBudget.tryAcquire("ranging")) return
+
         try {
             bluetoothLeScanner?.startScan(filters, settings, scanCallback)
             isRanging = true
@@ -484,6 +518,8 @@ class BeaconManager(private val context: Context) {
     private fun startSlowBeaconBatchScan() {
         if (isBatchScanning) return
         val scanner = bluetoothLeScanner ?: return
+        // Preventive quota guard — the liveness check in checkRangingHealth retries later.
+        if (!ScanStartBudget.tryAcquire("batch")) return
         try {
             // Field observability: offloaded batching is the premise of this scan — log where
             // the device only emulates it in software, so "batch didn't help" is diagnosable.
@@ -760,9 +796,10 @@ class BeaconManager(private val context: Context) {
         // Batch liveness — runs regardless of region (the batch IS the out-of-region
         // detector for scan-response beacons). A client starved by the OS scan-start quota
         // stays "started" with zero deliveries forever; revive it after a silent window.
-        if (isBatchScanning &&
-            System.currentTimeMillis() - lastBatchDeliveryAt > BATCH_LIVENESS_TIMEOUT_MS
-        ) {
+        // Also re-arms a batch that died via onScanFailed (isBatchScanning == false).
+        if (!isBatchScanning) {
+            startSlowBeaconBatchScan()
+        } else if (System.currentTimeMillis() - lastBatchDeliveryAt > BATCH_LIVENESS_TIMEOUT_MS) {
             Log.w(TAG, "Batch scan silent for ${BATCH_LIVENESS_TIMEOUT_MS / 1000}s — reviving")
             stopSlowBeaconBatchScan()
             startSlowBeaconBatchScan()

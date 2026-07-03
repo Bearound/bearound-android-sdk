@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager as AndroidBluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -15,6 +16,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import io.bearound.sdk.interfaces.BluetoothManagerListener
 import io.bearound.sdk.utilities.IBeaconParser
+import io.bearound.sdk.utilities.ScanStartBudget
 
 /**
  * Manages Bluetooth LE scanning for beacon metadata
@@ -53,8 +55,33 @@ class BluetoothManager(private val context: Context) {
 
         override fun onScanFailed(errorCode: Int) {
             Log.e(TAG, "BLE scan failed with error code: $errorCode")
+            if (errorCode == 6 /* SCAN_FAILED_SCANNING_TOO_FREQUENTLY, API 30+ */) {
+                ScanStartBudget.freeze()
+            }
         }
     }
+
+    /**
+     * Bearound-only hardware filters. An UNFILTERED scan is suspended by the platform while
+     * the screen is off (Android 8.1+), so the previous `startScan(null, …)` delivered
+     * nothing exactly when the metadata matters most (backgrounded, in-region). Filtering is
+     * also re-checked in [processScanResult] via the parser, so behaviour is unchanged.
+     */
+    private fun metadataScanFilters() = listOf(
+        ScanFilter.Builder()
+            .setManufacturerData(IBeaconParser.BEAROUND_MANUFACTURER_ID, byteArrayOf())
+            .build(),
+        ScanFilter.Builder()
+            .setServiceData(IBeaconParser.BEAD_SERVICE_UUID, byteArrayOf(), byteArrayOf())
+            .build(),
+        ScanFilter.Builder()
+            .setManufacturerData(
+                IBeaconParser.APPLE_MANUFACTURER_ID,
+                IBeaconParser.BEAROUND_IBEACON_PREFIX,
+                IBeaconParser.BEAROUND_IBEACON_MASK
+            )
+            .build()
+    )
 
     @SuppressLint("MissingPermission")
     fun startScanning() {
@@ -74,6 +101,8 @@ class BluetoothManager(private val context: Context) {
             return
         }
 
+        if (!ScanStartBudget.tryAcquire("metadata")) return
+
         try {
             val settings = ScanSettings.Builder()
                 // Foreground service is active -> BALANCED (not LOW_POWER) for faster detection; Android throttles anyway without a FG service.
@@ -81,11 +110,10 @@ class BluetoothManager(private val context: Context) {
                 .setReportDelay(0)
                 .build()
 
-            // Scan for all devices (filters applied in processScanResult)
-            bluetoothLeScanner?.startScan(null, settings, scanCallback)
+            bluetoothLeScanner?.startScan(metadataScanFilters(), settings, scanCallback)
             isScanning = true
             Log.d(TAG, "Started BLE scanning")
-            
+
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start BLE scanning: ${e.message}")
         }
@@ -129,13 +157,15 @@ class BluetoothManager(private val context: Context) {
     fun resumeScanning() {
         if (!isScanning) return
         if (!checkPermissions()) return
+        // Skipping one duty-cycle tick is recoverable; starving the client is not.
+        if (!ScanStartBudget.tryAcquire("metadata-resume")) return
         try {
             val settings = ScanSettings.Builder()
                 // Foreground service is active -> BALANCED (not LOW_POWER) for faster detection; Android throttles anyway without a FG service.
                 .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
                 .setReportDelay(0)
                 .build()
-            bluetoothLeScanner?.startScan(null, settings, scanCallback)
+            bluetoothLeScanner?.startScan(metadataScanFilters(), settings, scanCallback)
             Log.d(TAG, "Resumed BLE scanning for duty cycle")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to resume BLE scanning: ${e.message}")

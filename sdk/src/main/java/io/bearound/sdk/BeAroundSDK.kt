@@ -30,6 +30,7 @@ import io.bearound.sdk.models.ScanPrecision
 import io.bearound.sdk.models.UserProperties
 import io.bearound.sdk.network.APIClient
 import io.bearound.sdk.utilities.BackgroundReliabilityHelper
+import io.bearound.sdk.utilities.OemPowerProfile
 import io.bearound.sdk.utilities.DeviceIdentifier
 import io.bearound.sdk.utilities.DeviceInfoCollector
 import io.bearound.sdk.utilities.DiagnosticsStore
@@ -124,6 +125,7 @@ class BeAroundSDK private constructor() {
     private var isInBackground = false
     private val isColdStart = true
     private var foregroundScanConfig: ForegroundScanConfig? = null
+    private val registerInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
     val isScanning: Boolean
         get() = ::beaconManager.isInitialized && beaconManager.isScanning
@@ -422,8 +424,71 @@ class BeAroundSDK private constructor() {
 
         tryAutoCollectFcmToken(context)
 
+        // First-access contract: the device must appear in the backend as soon as the SDK
+        // is configured — registration (with the push token, once available) must NOT
+        // depend on the host also calling startScanning(). TTL-gated, so a no-op when
+        // already registered.
+        scope.launch { registerDeviceIfNeeded() }
+
+        registerBluetoothStateReceiver()
+        logOemProfileOnce()
+
         if (isScanning) {
             startSyncTimer()
+        }
+    }
+
+    /**
+     * Bluetooth off→on drops every scan client in the stack while the SDK's local flags stay
+     * true — without this receiver, out-of-region detection stays dead until the 15-min
+     * watchdog. On STATE_ON, re-arm the batch scan and re-register the PendingIntent scan.
+     */
+    private val bluetoothStateReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(ctx: Context?, intent: android.content.Intent?) {
+            if (intent?.action != android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED) return
+            val state = intent.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, -1)
+            if (state == android.bluetooth.BluetoothAdapter.STATE_ON &&
+                ::beaconManager.isInitialized && wasScanningEnabled()
+            ) {
+                Log.i(TAG, "Bluetooth back ON — re-arming scan clients")
+                beaconManager.onBluetoothRestored()
+                backgroundScanManager.refreshBackgroundScanning()
+            }
+        }
+    }
+
+    private var bluetoothStateReceiverRegistered = false
+
+    private fun registerBluetoothStateReceiver() {
+        if (bluetoothStateReceiverRegistered) return
+        try {
+            val filter = android.content.IntentFilter(android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(bluetoothStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                context.registerReceiver(bluetoothStateReceiver, filter)
+            }
+            bluetoothStateReceiverRegistered = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Bluetooth state receiver registration failed: ${e.message}")
+        }
+    }
+
+    private var oemProfileLogged = false
+
+    /** One-shot visibility of the OEM power profile — the top field cause of "stopped detecting". */
+    private fun logOemProfileOnce() {
+        if (oemProfileLogged) return
+        oemProfileLogged = true
+        val p = OemPowerProfile.get()
+        if (p.aggressiveness != OemPowerProfile.Aggressiveness.STANDARD) {
+            Log.w(
+                TAG,
+                "OEM power profile: ${p.rom ?: android.os.Build.MANUFACTURER} ${p.romVersion ?: ""} " +
+                    "(${p.aggressiveness}) — background detection may require user action; " +
+                    "see BeAroundSDK.reliabilityStatus()"
+            )
         }
     }
 
@@ -434,8 +499,11 @@ class BeAroundSDK private constructor() {
             com.google.firebase.messaging.FirebaseMessaging.getInstance().token
                 .addOnSuccessListener { token ->
                     if (!token.isNullOrEmpty()) {
-                        PushTokenStore.setToken(token)
                         Log.i(TAG, "FCM token auto-collected")
+                        // Route through setPushToken so a register-on-init that already went
+                        // out WITHOUT the (async) token is followed by a forced re-register —
+                        // storing directly would silently hold the token until the next TTL.
+                        setPushToken(token)
                     }
                 }
                 .addOnFailureListener { e -> Log.w(TAG, "FCM token fetch failed: ${e.message}") }
@@ -456,13 +524,13 @@ class BeAroundSDK private constructor() {
     fun setPushToken(token: String) {
         PushTokenStore.setToken(token)
         Log.d(TAG, "Push token registered")
-        // Se já estamos escaneando e o token ainda não foi enviado (novo/mudou),
-        // empurra agora via register (beacons:[]) — senão só iria no próximo
-        // register (TTL) ou ao detectar um beacon. Cobre apps que chamam
-        // setPushToken DEPOIS do startScanning: o register-on-init já teria saído
-        // sem o token, e o token NÃO faz parte do fingerprint (um register normal
-        // não re-dispararia).
-        if (isScanning && PushTokenStore.tokenForPayload() != null) {
+        // Se o SDK já está configurado e o token ainda não foi enviado (novo/mudou),
+        // empurra agora via register (beacons:[]) — senão só iria no próximo register
+        // (TTL) ou ao detectar um beacon. Cobre o token FCM chegando DEPOIS do register
+        // inicial (fetch assíncrono, rotação mid-session, ou setPushToken tardio do
+        // host): o register-on-init já teria saído sem o token, e o token NÃO faz
+        // parte do fingerprint (um register normal não re-dispararia).
+        if (isConfigured && PushTokenStore.tokenForPayload() != null) {
             scope.launch { registerDeviceIfNeeded(force = true) }
         }
     }
@@ -528,6 +596,27 @@ class BeAroundSDK private constructor() {
      */
     fun openManufacturerAutostartSettings(): Boolean =
         BackgroundReliabilityHelper.openManufacturerAutostartSettings(context)
+
+    /**
+     * Visão consolidada de confiabilidade: perfil de agressividade da ROM (Xiaomi/HyperOS,
+     * Huawei, Oppo, Vivo, Samsung…) + o estado das duas alavancas acionáveis. Use
+     * [io.bearound.sdk.models.ReliabilityStatus.recommendsUserAction] para decidir
+     * automaticamente quando mostrar o onboarding de "permitir detecção em background".
+     */
+    fun reliabilityStatus(): io.bearound.sdk.models.ReliabilityStatus {
+        val profile = OemPowerProfile.get()
+        val batteryExempt = isIgnoringBatteryOptimizations()
+        val needsAction = !batteryExempt &&
+            profile.aggressiveness != OemPowerProfile.Aggressiveness.STANDARD
+        return io.bearound.sdk.models.ReliabilityStatus(
+            oemRom = profile.rom,
+            oemRomVersion = profile.romVersion,
+            oemAggressiveness = profile.aggressiveness.name.lowercase(),
+            isIgnoringBatteryOptimizations = batteryExempt,
+            isAutostartManageable = isAutostartManageable(),
+            recommendsUserAction = needsAction
+        )
+    }
 
     // endregion
 
@@ -598,6 +687,13 @@ class BeAroundSDK private constructor() {
             return
         }
 
+        // Concurrency guard — configure(), startScanning(), setPushToken and the sync-tick
+        // retry can all race a register; one in flight is enough.
+        if (!registerInFlight.compareAndSet(false, true)) {
+            Log.d(TAG, "registerDeviceIfNeeded: register already in flight, skipping")
+            return
+        }
+
         val appBuild = try {
             context.packageManager.getPackageInfo(context.packageName, 0).versionCode
         } catch (_: Exception) { 1 }
@@ -613,6 +709,7 @@ class BeAroundSDK private constructor() {
 
         if (!force && !RegisterStore.shouldRegister(context, fingerprint)) {
             Log.d(TAG, "registerDeviceIfNeeded: TTL not expired and fingerprint unchanged, skipping")
+            registerInFlight.set(false)
             return
         }
 
@@ -627,10 +724,11 @@ class BeAroundSDK private constructor() {
         Log.d(TAG, "registerDeviceIfNeeded: sending register event")
 
         client.sendRegister(info, userDevice, userProperties) { result ->
+            registerInFlight.set(false)
             result.fold(
                 onSuccess = {
                     RegisterStore.markRegistered(context, fingerprint)
-                    PushTokenStore.markSent()
+                    PushTokenStore.markSent(userDevice.pushToken)
                     Log.d(TAG, "registerDeviceIfNeeded: registered successfully")
                 },
                 onFailure = { error ->
@@ -638,7 +736,8 @@ class BeAroundSDK private constructor() {
                     DiagnosticsStore.recordError("Register failed: ${error.message}")
                     // Surface the failure (e.g. a 401 with the token-rejection body) to the
                     // host so an invalid token or unreachable backend is not silent. Not
-                    // persisted to offlineBatchStorage — will retry on next startScanning call.
+                    // queued offline — the sync tick retries it (TTL-gated) while the
+                    // process lives, and startScanning()/configure() retry across launches.
                     dispatchToListener {
                         it.onError(error as? Exception ?: Exception(error.message))
                     }
@@ -894,6 +993,11 @@ class BeAroundSDK private constructor() {
         scope.launch {
             if (isSyncing) return@launch
 
+            // Register retry piggyback: if the first register failed (e.g. the app launched
+            // offline), nothing else would retry it while the process lives — the TTL gate
+            // makes this a no-op once registered.
+            registerDeviceIfNeeded()
+
             val client = apiClient
             val info = sdkInfo
             
@@ -985,7 +1089,7 @@ class BeAroundSDK private constructor() {
                         }, 30_000L)
 
                         // Notify listener of success
-                        PushTokenStore.markSent()
+                        PushTokenStore.markSent(userDevice.pushToken)
                         DiagnosticsStore.recordSync(success = true, beaconCount = beaconsToSend.size)
                         dispatchToListener { it.onSyncCompleted(beaconsToSend.size, success = true, error = null) }
                     },
@@ -1079,7 +1183,7 @@ class BeAroundSDK private constructor() {
 
             Log.d(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} succeeded — removed ${chunk.size} batch(es)")
 
-            PushTokenStore.markSent()
+            PushTokenStore.markSent(userDevice.pushToken)
             DiagnosticsStore.recordSync(success = true, beaconCount = beaconsInChunk.size)
             dispatchToListener { it.onSyncCompleted(beaconsInChunk.size, success = true, error = null) }
         }
@@ -1201,6 +1305,15 @@ class BeAroundSDK private constructor() {
      */
     internal fun wasScanningEnabled(): Boolean {
         return SDKConfigStorage.loadScanningEnabled(context)
+    }
+
+    /**
+     * Re-registers the PendingIntent scan from scratch (see
+     * [io.bearound.sdk.background.BackgroundScanManager.refreshBackgroundScanning]).
+     * Called by the 15-min watchdog as a self-heal for silently-dead scan clients.
+     */
+    internal fun refreshBackgroundScanRegistration() {
+        backgroundScanManager.refreshBackgroundScanning()
     }
     
     /**

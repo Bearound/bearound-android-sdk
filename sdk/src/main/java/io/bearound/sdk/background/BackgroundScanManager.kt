@@ -13,6 +13,7 @@ import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
 import io.bearound.sdk.utilities.IBeaconParser
+import io.bearound.sdk.utilities.ScanStartBudget
 
 /**
  * Manages background beacon scanning using:
@@ -27,6 +28,8 @@ class BackgroundScanManager(private val context: Context) {
     
     private var pendingIntent: PendingIntent? = null
     private var bluetoothLeScanner: BluetoothLeScanner? = null
+    private val retryHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var retryScheduled = false
 
     /** True while the low-power PendingIntent background scan is registered. For diagnostics. */
     val isRegistered: Boolean
@@ -134,17 +137,66 @@ class BackgroundScanManager(private val context: Context) {
                 .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
                 .build()
             
-            pendingIntent?.let { pi ->
-                bluetoothLeScanner?.startScan(filters, settings, pi)
+            if (!ScanStartBudget.tryAcquire("pending-intent")) {
+                // The PendingIntent scan is the ONLY out-of-region detector — waiting for the
+                // 15-min watchdog after a startup-burst deferral is too long. Retry shortly,
+                // once the 30 s budget window has rolled over.
+                scheduleRetry()
+                return
             }
-            
+
+            pendingIntent?.let { pi ->
+                // For PendingIntent scans the SCAN_FAILED_* code comes in the RETURN VALUE —
+                // there is no callback. Ignoring it makes a failed registration (e.g. over
+                // the scan-start quota during a fg↔bg flip) permanently invisible.
+                val result = bluetoothLeScanner?.startScan(filters, settings, pi) ?: -1
+                if (result != 0) {
+                    Log.w(TAG, "PendingIntent scan registration FAILED (code $result) — retrying shortly")
+                    if (result == 6 /* SCAN_FAILED_SCANNING_TOO_FREQUENTLY */) ScanStartBudget.freeze()
+                    pi.cancel()
+                    pendingIntent = null
+                    scheduleRetry()
+                    return
+                }
+            }
+
             Log.d(TAG, "Bluetooth Scan Broadcast registered")
-            
+
         } catch (e: Exception) {
             Log.e(TAG, "Failed to setup background scanning: ${e.message}")
         }
     }
-    
+
+    /** Single-flight delayed retry for a budget-deferred (or quota-failed) registration. */
+    private fun scheduleRetry(delayMs: Long = 35_000L) {
+        if (retryScheduled) return
+        retryScheduled = true
+        retryHandler.postDelayed({
+            retryScheduled = false
+            if (pendingIntent == null) {
+                Log.d(TAG, "Retrying deferred PendingIntent scan registration")
+                enableBackgroundScanning()
+            }
+        }, delayMs)
+    }
+
+    /**
+     * Re-registers the PendingIntent scan from scratch. The PendingIntent client is the ONLY
+     * out-of-region detector, and it can die silently (Bluetooth off→on, quota starvation,
+     * stack restart) with [isRegistered] still true — the 15-min watchdog calls this as a
+     * cheap self-heal (1 scan start per watchdog tick at most).
+     */
+    fun refreshBackgroundScanning() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        disableBluetoothScanBroadcast()
+        enableBluetoothScanBroadcast()
+    }
+
     @RequiresApi(Build.VERSION_CODES.O)
     @SuppressLint("MissingPermission")
     private fun disableBluetoothScanBroadcast() {
@@ -158,6 +210,6 @@ class BackgroundScanManager(private val context: Context) {
             Log.e(TAG, "Failed to disable background scanning: ${e.message}")
         }
     }
-    
+
 }
 
