@@ -198,7 +198,12 @@ class BeAroundSDK private constructor() {
         beaconManager.onBeaconsUpdated = { beacons ->
             val enrichedBeacons = beacons.map { beacon ->
                 val key = beacon.identifier
-                val metadata = metadataCache[key]
+                // Prefer the metadata-scan cache (fresher battery/temperature), but FALL BACK
+                // to the metadata the parser already extracted from the scan record. Without
+                // the fallback, scan-response beacons (e.g. B:0.135) — which the unfiltered
+                // metadata scan misses — had their parsed metadata overwritten with null and
+                // synced WITHOUT battery/firmware/temperature.
+                val metadata = metadataCache[key] ?: beacon.metadata
                 beacon.copy(
                     metadata = metadata,
                     txPower = metadata?.txPower ?: beacon.txPower
