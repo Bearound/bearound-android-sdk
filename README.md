@@ -35,7 +35,12 @@ your Control Hub account.
 
 For the best detection coverage on **every** Android version, guide your users to:
 
-1. **Bluetooth ON** — mandatory; no Bluetooth, no detection.
+1. **Bluetooth ON, and kept on.** Detection rides entirely on BLE, so Bluetooth is the one
+   hard switch — while it is off, nothing is detected. When the user toggles it back on the
+   SDK re-arms every scan automatically (no restart needed), but it can't scan during the
+   off window. If your product depends on always-on detection, surface a persistent prompt
+   whenever `sdk.diagnostics().bluetoothEnabled` is false rather than assuming it stays on —
+   Airplane mode, "Bluetooth timeout" ROM features, and quick-settings taps all turn it off.
 2. **Location Services ON** (the system toggle) — several OEM ROMs gate BLE scan delivery on
    the global Location toggle regardless of `neverForLocation`, and on Android ≤ 11 it is a
    hard requirement.
