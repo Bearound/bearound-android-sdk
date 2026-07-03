@@ -51,9 +51,11 @@ fun BeAroundScanApp(viewModel: BeaconViewModel = viewModel()) {
     // Permission launcher
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
+    ) { _ ->
         viewModel.updatePermissionStatus()
-        if (permissions.values.all { it }) {
+        // Start once the scan is unlocked (12+: BLUETOOTH_SCAN; below 12: fine or coarse
+        // location) — requiring every grant let a POST_NOTIFICATIONS denial block the start.
+        if (viewModel.hasRequiredPermissions()) {
             viewModel.startScanning()
         }
     }
@@ -156,6 +158,39 @@ fun BeaconsContent(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Configuration error banner (missing BUSINESS_TOKEN) — shown instead of crashing.
+        state.configurationError?.let { message ->
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Configuração necessária",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Adicione BUSINESS_TOKEN=<seu-token> em local.properties (ou defina a variável de ambiente BUSINESS_TOKEN) e reinstale o app.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
+            }
+        }
+
         // Permissions Section
         item {
             PermissionsCard(state = state)
@@ -887,8 +922,7 @@ fun MetadataItem(icon: androidx.compose.ui.graphics.vector.ImageVector, label: S
 // Helper functions for colors
 fun getLocationPermissionColor(status: String): Color = when {
     status.contains("Negada") -> Color(0xFFF44336)
-    status.contains("Sempre") -> Color(0xFF4CAF50)
-    status.contains("Quando em uso") || status.contains("Aguardando") -> Color(0xFFFF9800)
+    status.contains("Concedida") -> Color(0xFF4CAF50)
     else -> Color.Gray
 }
 

@@ -26,9 +26,15 @@ object PushTokenStore {
         return if (shouldSend) token else null
     }
 
-    fun markSent() {
-        val token = SecureStorage.retrieve(TOKEN_KEY) ?: return
-        SecureStorage.save(LAST_SENT_KEY, token)
+    /**
+     * Records that [sentToken] was transmitted in a successful payload. Pass the token that
+     * was ACTUALLY in the payload — not the currently stored one. A register can go out
+     * before the (async) FCM token arrives; marking the freshly-arrived token as sent on
+     * that register's success would silently suppress it for [RESEND_INTERVAL_MS].
+     */
+    fun markSent(sentToken: String?) {
+        if (sentToken.isNullOrEmpty()) return
+        SecureStorage.save(LAST_SENT_KEY, sentToken)
         SecureStorage.save(LAST_SENT_AT_KEY, System.currentTimeMillis().toString())
     }
 

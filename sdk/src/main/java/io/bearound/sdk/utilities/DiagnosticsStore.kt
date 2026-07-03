@@ -1,5 +1,7 @@
 package io.bearound.sdk.utilities
 
+import androidx.annotation.VisibleForTesting
+
 /** In-memory, thread-safe store of recent SDK activity for diagnostics. Resets on process death. */
 object DiagnosticsStore {
     private const val MAX_ERRORS = 10
@@ -50,4 +52,21 @@ object DiagnosticsStore {
     fun lastScanBeaconCount(): Int? = synchronized(lock) { lastScanBeaconCount }
 
     fun recentErrors(): List<String> = synchronized(lock) { recentErrors.toList() }
+
+    /**
+     * Clears all in-memory state. Test-only: this singleton has process-lifetime state and no
+     * production reason to reset, but unit tests need order-independence. Public (not
+     * reflection) so it survives R8 minification in the release unit-test variant.
+     */
+    @VisibleForTesting
+    fun reset() {
+        synchronized(lock) {
+            lastSyncAt = null
+            lastSyncSuccess = null
+            lastSyncBeaconCount = null
+            lastScanAt = null
+            lastScanBeaconCount = null
+            recentErrors.clear()
+        }
+    }
 }

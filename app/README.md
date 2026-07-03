@@ -1,214 +1,160 @@
-# BeAroundScan - App de Teste do SDK Android
+# app/ — Exemplo básico de integração (BeAround Scan)
 
-Este é o app de teste equivalente ao **BeAroundScan do iOS**, desenvolvido com Jetpack Compose para testar e demonstrar as funcionalidades do BeAround Android SDK.
+App de exemplo em **Jetpack Compose** que demonstra a integração mínima do BeAround Android
+SDK: permissões em runtime, `configure()` + `startScanning()`, listener com UI ao vivo e a
+fila de retry offline.
 
-## 📱 Características
+> Para o sample completo de diagnóstico (foreground service com notificação customizada,
+> log de detecções, debug de geofence), veja [`BearoundScan/`](../BearoundScan/README.md).
 
-O app oferece uma interface moderna e completa para:
+## 🔑 Business token (obrigatório antes de rodar)
 
-### 1. **Monitoramento de Permissões**
-- ✅ Localização (Sempre / Quando em uso / Negada)
-- ✅ Bluetooth (Ligado / Desligado)
-- ✅ Notificações (Autorizada / Negada)
-- Indicadores visuais com cores (verde/laranja/vermelho)
-
-### 2. **Informações Detalhadas do Scan**
-- **Modo de Scanning**: Periódico ou Contínuo
-- **Intervalo de Sync**: Tempo entre envios para API
-- **Duração do Scan**: Tempo ativo de scanning
-- **Tempo de Pausa**: Intervalo entre scans (modo periódico)
-- **Countdown**: Segundos até próximo sync
-- **Status de Ranging**: Indicador visual (Ativo/Pausado)
-
-### 3. **Controles**
-- Botão **Iniciar/Parar Scan** com cores diferentes
-- Seletor de **Intervalo de Sync**: 5, 10, 15, 20, 30, 60 segundos
-- Seletor de **Ordenação**: Por Proximidade ou por ID
-
-### 4. **Lista de Beacons**
-Para cada beacon detectado:
-- Major.Minor (ID do beacon)
-- UUID completo
-- **Indicador de Proximidade** com cor:
-  - 🟢 Verde: Imediato (muito perto)
-  - 🟠 Laranja: Perto
-  - 🔴 Vermelho: Longe
-  - ⚪ Cinza: Desconhecido
-- **Distância estimada** em metros
-- **RSSI** (força do sinal) em dBm
-
-### 5. **Notificações**
-- Notifica quando entrar em região de beacons
-- Cooldown de 5 minutos para evitar spam
-- Delay de 2 segundos ao iniciar para evitar notificações indevidas
-
-### 6. **Auto-Start**
-- Solicita permissões automaticamente ao abrir
-- Inicia scanning automaticamente após permissões concedidas
-
-## 🎨 Interface
-
-O app usa **Jetpack Compose** (equivalente ao SwiftUI do iOS) para uma interface:
-- ✨ Moderna e fluida
-- 🎯 Responsiva
-- 🌓 Suporte a tema claro/escuro
-- 📱 Material Design 3
-
-## 🔑 Configuração do Business Token
-
-O app lê o `BUSINESS_TOKEN` de `local.properties` (gitignored) via `BuildConfig`. Antes de rodar:
+O app lê o `BUSINESS_TOKEN` de `local.properties` (gitignored) via `BuildConfig`:
 
 ```properties
-# local.properties
+# local.properties (na raiz do repositório)
 BUSINESS_TOKEN=seu-business-token-aqui
 ```
 
-Alternativamente, defina via variável de ambiente `BUSINESS_TOKEN` antes do build.
+Alternativamente, defina a variável de ambiente `BUSINESS_TOKEN` antes do build.
 
-## 🚀 Funcionalidades do SDK Demonstradas
+> ⚠️ **Sem o token o app abre, mas o scan não inicia**: o `BeaconViewModel` detecta o
+> token vazio e exibe o card "Configuração necessária" em vez de chamar `configure()`
+> (que lançaria `IllegalArgumentException`). Se vir esse card, configure o
+> `BUSINESS_TOKEN` em `local.properties` (ou na variável de ambiente) e reinstale o app.
 
-### Inicialização e Configuração
+O token é fornecido pelo time Bearound junto com o acesso ao Control Hub — veja
+["Getting a business token"](../README.md#getting-a-business-token) no README raiz.
+
+## 📱 O que o app demonstra
+
+### Aba Beacons
+- **Status de permissões** — localização, Bluetooth e notificações, com indicação colorida
+- **Solicitação automática de permissões** ao abrir (localização; `BLUETOOTH_SCAN` no
+  Android 12+; `POST_NOTIFICATIONS` no 13+) e **auto-start** do scan após concedidas
+- **Configuração ao vivo** — seletor de `ScanPrecision` (HIGH/MEDIUM/LOW) e
+  `MaxQueuedPayloads`; reflete `currentSyncInterval`/`currentScanDuration` do SDK
+- **Lista de beacons** com Major.Minor, proximidade colorida (🟢 imediato / 🟠 perto /
+  🔴 longe), distância estimada e RSSI
+- **Ordenação** por proximidade ou ID, e **pin** de beacons no topo da lista
+
+### Aba Retry Queue
+- Visualiza `sdk.pendingBatches` — os lotes que falharam no envio e aguardam retry
+- Badge com `sdk.pendingBatchCount` na navegação, refresh automático ao abrir a aba e após
+  cada sync
+
+### Notificações locais de eventos do SDK
+O app converte callbacks do listener em notificações locais para facilitar o teste em
+background: beacon detectado (foreground e background), scan iniciado/parado e sync
+iniciado/concluído.
+
+### Listener de background
+`BeAroundScanApplication` registra um `SDKBackgroundListener` global no `Application`, que
+permanece ativo quando a Activity é destruída — é ele que notifica quando o SDK acorda o
+processo em background. O `BeaconViewModel` assume o listener enquanto a UI está viva e o
+restaura no `onCleared()`.
+
+## 🎯 Casos de uso (roteiro de teste)
+
+### Permissões
+1. Abrir o app e ver o status de cada permissão (localização, Bluetooth, notificações)
+2. Testar com permissões negadas/concedidas
+3. Verificar o comportamento do SDK em cada combinação (no 12+, `BLUETOOTH_SCAN` é o que destrava)
+
+### Modos de scan
+1. Alternar a precisão **HIGH** (contínuo, detecção máxima) e **MEDIUM/LOW** (duty cycle, economia)
+2. Observar as transições foreground/background
+3. Verificar ranging ativo/pausado
+
+### Sync e fila offline
+1. Observar o intervalo de sync por precisão e o countdown até o próximo envio
+2. Deixar sem rede e ver os lotes acumularem na aba **Retry Queue**
+3. Monitorar o consumo de bateria por modo
+
+### Detecção
+1. Aproximar de um beacon Bearound real
+2. Ver distância e RSSI em tempo real
+3. Testar a ordenação por proximidade/ID e os indicadores de cor
+
+### Notificações
+1. Sair e entrar na região dos beacons
+2. Verificar a notificação local (detecção, scan, sync)
+3. Confirmar o cooldown (sem spam)
+
+## 🚀 Integração demonstrada (código real)
+
 ```kotlin
-val sdk = BeAroundSDK.getInstance(context)
-sdk.delegate = this
+val sdk = BeAroundSDK.getInstance(application)
+sdk.listener = this // BeAroundSDKListener
 
 sdk.configure(
     businessToken = BuildConfig.BUSINESS_TOKEN,
-    foregroundScanInterval = ForegroundScanInterval.SECONDS_15,
-    backgroundScanInterval = BackgroundScanInterval.SECONDS_30,
+    scanPrecision = ScanPrecision.MEDIUM,
     maxQueuedPayloads = MaxQueuedPayloads.MEDIUM
-    // Bluetooth scanning and periodic scanning are now automatic in v2.2.0
 )
-```
 
-### Controle de Scanning
-```kotlin
 sdk.startScanning()
-sdk.stopScanning()
 ```
 
-### Delegate Callbacks
+Callbacks usados (interface `BeAroundSDKListener`):
+
 ```kotlin
-override fun didUpdateBeacons(beacons: List<Beacon>) {
-    // Atualiza UI com beacons detectados
+override fun onBeaconsUpdated(beacons: List<Beacon>) { /* atualiza a lista */ }
+override fun onError(error: Exception) { /* mostra na status bar */ }
+override fun onScanningStateChanged(isScanning: Boolean) { /* notificação local */ }
+override fun onAppStateChanged(isInBackground: Boolean) { /* atualiza estado */ }
+override fun onSyncStarted(beaconCount: Int) { /* notificação local */ }
+override fun onSyncCompleted(beaconCount: Int, success: Boolean, error: Exception?) {
+    /* notificação local + refresh da retry queue */
 }
-
-override fun didFailWithError(error: Exception) {
-    // Trata erros
-}
-
-override fun didChangeScanning(isScanning: Boolean) {
-    // Atualiza estado de scanning
-}
-
-// onSyncStatusUpdated removed in v2.2.0 for battery optimization
+override fun onBeaconDetectedInBackground(beaconCount: Int) { /* notificação local */ }
 ```
 
-### Informações do SDK
-```kotlin
-val syncInterval = sdk.currentSyncInterval // milissegundos
-val scanDuration = sdk.currentScanDuration // milissegundos
-val isPeriodicMode = sdk.isPeriodicScanningEnabled
-val isScanning = sdk.isScanning
-```
-
-## 📦 Estrutura do App
+## 📦 Estrutura
 
 ```
 app/src/main/java/io/bearound/scan/
-├── MainActivity.kt              # Activity principal com Compose
-├── BeAroundScanApp.kt          # Interface principal (UI)
-├── BeaconViewModel.kt          # ViewModel com lógica de negócio
-├── NotificationManager.kt      # Gerenciador de notificações
-└── ui/theme/
-    └── Theme.kt                # Tema Material Design 3
+├── BeAroundScanApplication.kt  # Registra o listener global de background
+├── MainActivity.kt             # Activity única com Compose
+├── BeAroundScanApp.kt          # UI (tabs Beacons + Retry Queue, permissões)
+├── BeaconViewModel.kt          # Estado + implementação do BeAroundSDKListener
+├── SDKBackgroundListener.kt    # Listener que sobrevive à Activity
+├── NotificationManager.kt      # Notificações locais dos eventos do SDK
+└── ui/theme/Theme.kt           # Material Design 3
 ```
 
-## 🔧 Dependências
+## 📊 Comparação com o sample iOS
 
-```gradle
-// Jetpack Compose
-implementation platform("androidx.compose:compose-bom:2024.11.00")
-implementation("androidx.compose.ui:ui")
-implementation("androidx.compose.material3:material3")
-implementation("androidx.compose.material:material-icons-extended")
-implementation("androidx.activity:activity-compose:1.9.3")
-implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.1")
+Os apps de exemplo Android e iOS foram construídos com paridade de funcionalidade:
 
-// BeAround SDK
-implementation project(":sdk")
-```
-
-## 🎯 Casos de Uso
-
-### Teste de Permissões
-1. Abrir app
-2. Ver status de cada permissão
-3. Testar com permissões negadas/concedidas
-4. Verificar comportamento do SDK
-
-### Teste de Scanning Modes
-1. Testar modo **Periódico** (economia de bateria)
-2. Testar modo **Contínuo** (detecção máxima)
-3. Observar transições foreground/background
-4. Verificar ranging ativo/pausado
-
-### Teste de Intervalos
-1. Testar diferentes intervalos (5s a 60s)
-2. Observar countdown
-3. Verificar envios para API
-4. Monitorar consumo de bateria
-
-### Teste de Detecção
-1. Aproximar de beacons
-2. Ver distância e RSSI em tempo real
-3. Testar ordenação por proximidade/ID
-4. Verificar indicadores de cor
-
-### Teste de Notificações
-1. Sair e entrar na região de beacons
-2. Verificar notificação
-3. Testar cooldown (não spam)
-
-## 📊 Comparação com iOS
-
-| Feature | iOS BeAroundScan | Android BeAroundScan | Status |
-|---------|------------------|----------------------|--------|
-| UI Moderna | SwiftUI | Jetpack Compose | ✅ Equivalente |
-| Permissões | ✅ | ✅ | ✅ Equivalente |
-| Scan Info | ✅ | ✅ | ✅ Equivalente |
-| Controles | ✅ | ✅ | ✅ Equivalente |
-| Lista Beacons | ✅ | ✅ | ✅ Equivalente |
-| Notificações | ✅ | ✅ | ✅ Equivalente |
-| Auto-start | ✅ | ✅ | ✅ Equivalente |
-| Indicadores Cor | ✅ | ✅ | ✅ Equivalente |
-
-## 🔍 Debug
-
-O app mostra em tempo real:
-- Número de beacons detectados
-- Status de cada permissão
-- Tempo até próximo sync
-- Status de ranging
-- Informações detalhadas de cada beacon
+| Feature | iOS BeAroundScan | Android BeAroundScan |
+|---------|------------------|----------------------|
+| UI moderna | SwiftUI | Jetpack Compose |
+| Status de permissões | ✅ | ✅ |
+| Info de scan ao vivo | ✅ | ✅ |
+| Controles (precisão, fila) | ✅ | ✅ |
+| Lista de beacons | ✅ | ✅ |
+| Notificações locais | ✅ | ✅ |
+| Auto-start | ✅ | ✅ |
+| Indicadores de cor | ✅ | ✅ |
 
 ## 📱 Requisitos
 
-- Android 5.0+ (API 21+)
-- Bluetooth LE
-- Permissões de localização
-- Dispositivo físico com BLE (não funciona em emulador)
+- Android 6.0+ (API 23+)
+- Dispositivo físico com Bluetooth LE (emulador não tem BLE utilizável)
+- **Beacon Bearound real** — o SDK só detecta advertisements `0xBEAD`; iBeacon genérico
+  (inclusive iPhone simulando beacon) não aparece. Veja
+  ["What the SDK detects"](../README.md#what-the-sdk-detects).
 
-## 🎓 Uso como Referência
+## 🔍 Observações sobre permissões no Android 12+
 
-Este app serve como:
-1. ✅ **Teste do SDK** - Valida todas as funcionalidades
-2. ✅ **Exemplo de Integração** - Mostra como usar o SDK
-3. ✅ **Referência de UI** - Demonstra boas práticas de Compose
-4. ✅ **Debug Tool** - Facilita desenvolvimento e testes
-
----
-
-**Desenvolvido para testar o BeAround Android SDK**  
-Equivalente ao BeAroundScan do iOS
-
+No Android 12+ o gate técnico do scan é **`BLUETOOTH_SCAN`** ("Dispositivos por perto") —
+é ela que destrava a detecção. O SDK declara `BLUETOOTH_SCAN` **com** `neverForLocation`:
+é essa asserção que faz a detecção funcionar só com Bluetooth (sem ela, o Android 12+
+retém silenciosamente todos os resultados de scan quando a localização está negada —
+validado em device real). O SDK também declara
+`ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION` em todas as versões: conceder localização
+junto é o recomendado para cobertura máxima entre OEMs — veja
+["Permission model"](../README.md#permission-model-neverforlocation-and-location)
+no README raiz. O app solicita as duas; o scan inicia se `BLUETOOTH_SCAN` for concedida,
+mesmo com localização negada. No Android ≤ 11, localização (fine ou coarse) é obrigatória.

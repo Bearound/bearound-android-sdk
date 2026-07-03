@@ -147,35 +147,53 @@ class DeviceInfoCollector(
     @SuppressLint("MissingPermission")
     private fun getCellularGeneration(): String? {
         if (getNetworkType() != "cellular") return null
-        
-        val telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-        
-        return when (telephonyManager.networkType) {
-            TelephonyManager.NETWORK_TYPE_GPRS,
-            TelephonyManager.NETWORK_TYPE_EDGE,
-            TelephonyManager.NETWORK_TYPE_CDMA,
-            TelephonyManager.NETWORK_TYPE_1xRTT,
-            TelephonyManager.NETWORK_TYPE_IDEN -> "2G"
-            
-            TelephonyManager.NETWORK_TYPE_UMTS,
-            TelephonyManager.NETWORK_TYPE_EVDO_0,
-            TelephonyManager.NETWORK_TYPE_EVDO_A,
-            TelephonyManager.NETWORK_TYPE_HSDPA,
-            TelephonyManager.NETWORK_TYPE_HSUPA,
-            TelephonyManager.NETWORK_TYPE_HSPA,
-            TelephonyManager.NETWORK_TYPE_EVDO_B,
-            TelephonyManager.NETWORK_TYPE_EHRPD,
-            TelephonyManager.NETWORK_TYPE_HSPAP -> "3G"
-            
-            TelephonyManager.NETWORK_TYPE_LTE -> "4G"
-            
-            else -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    if (telephonyManager.networkType == TelephonyManager.NETWORK_TYPE_NR) {
-                        "5G"
+
+        // Host apps may or may not hold READ_PHONE_STATE (the SDK does not declare it).
+        // Without it, TelephonyManager.getNetworkType() throws SecurityException on
+        // Android 11+/targetSdk 30+ — the SDK must never crash the host.
+        val hasPhoneStatePermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.READ_PHONE_STATE
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasPhoneStatePermission) {
+            return null
+        }
+
+        return try {
+            val telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+
+            when (telephonyManager.networkType) {
+                TelephonyManager.NETWORK_TYPE_GPRS,
+                TelephonyManager.NETWORK_TYPE_EDGE,
+                TelephonyManager.NETWORK_TYPE_CDMA,
+                TelephonyManager.NETWORK_TYPE_1xRTT,
+                TelephonyManager.NETWORK_TYPE_IDEN -> "2G"
+
+                TelephonyManager.NETWORK_TYPE_UMTS,
+                TelephonyManager.NETWORK_TYPE_EVDO_0,
+                TelephonyManager.NETWORK_TYPE_EVDO_A,
+                TelephonyManager.NETWORK_TYPE_HSDPA,
+                TelephonyManager.NETWORK_TYPE_HSUPA,
+                TelephonyManager.NETWORK_TYPE_HSPA,
+                TelephonyManager.NETWORK_TYPE_EVDO_B,
+                TelephonyManager.NETWORK_TYPE_EHRPD,
+                TelephonyManager.NETWORK_TYPE_HSPAP -> "3G"
+
+                TelephonyManager.NETWORK_TYPE_LTE -> "4G"
+
+                else -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        if (telephonyManager.networkType == TelephonyManager.NETWORK_TYPE_NR) {
+                            "5G"
+                        } else null
                     } else null
-                } else null
+                }
             }
+        } catch (e: SecurityException) {
+            null
+        } catch (e: Exception) {
+            null
         }
     }
 

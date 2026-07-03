@@ -12,6 +12,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import io.bearound.bearoundscan.BuildConfig
 import io.bearound.bearoundscan.model.DetectionLogEntry
 import io.bearound.bearoundscan.notification.BeaconNotificationManager
 import io.bearound.sdk.BeAroundSDK
@@ -192,7 +193,9 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         maxQueued: MaxQueuedPayloads
     ) {
         sdk.configure(
-            businessToken = "ee2ec9c46d2b2ad99bddcdd0afe224e6",
+            // From local.properties / env var, falling back to the public test token
+            // (see BearoundScan/build.gradle).
+            businessToken = BuildConfig.BUSINESS_TOKEN,
             scanPrecision = precision,
             maxQueuedPayloads = maxQueued
         )
@@ -539,21 +542,18 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         val context = getApplication<Application>()
 
         val locationPermission = when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                    ContextCompat.checkSelfPermission(
-                        context,
-                        Manifest.permission.ACCESS_BACKGROUND_LOCATION
-                    ) == PackageManager.PERMISSION_GRANTED -> {
-                "Sempre (Background habilitado)"
-            }
             ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED -> {
-                "Quando em uso (Background não funciona)"
+            ) == PackageManager.PERMISSION_GRANTED ||
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED -> {
+                "Concedida (recomendado)"
             }
             else -> {
-                "Negada"
+                "Negada — cobertura reduzida no 12+; obrigatória no Android ≤ 11"
             }
         }
 
@@ -600,6 +600,14 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             ) == PackageManager.PERMISSION_GRANTED
         }
 
-        return true
+        // Android <12: location unlocks the BLE scan (mirrors the SDK's checkPermissions gate).
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
     }
 }

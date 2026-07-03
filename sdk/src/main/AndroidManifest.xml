@@ -5,21 +5,38 @@
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
 
-    <!-- Bluetooth permissions for Android 12+ (API 31+) -->
+    <!-- Bluetooth scan permission for Android 12+ (API 31+), WITH neverForLocation.
+         The assertion is what makes Bluetooth-only detection possible: without it Android
+         12+ classifies the scan as location-deriving and silently withholds EVERY scan
+         result unless the app also holds ACCESS_FINE_LOCATION (verified on-device: an
+         unfiltered scan delivered 0 results while system scanners saw 200+/min).
+         Android's docs warn the assertion "can filter beacons out of the scan results";
+         validated NOT to affect the Bearound signatures (0xBEAD service data + iBeacon
+         frame) on One UI and HyperOS devices.
+         MERGE WARNING: if ANY manifest in the merge declares BLUETOOTH_SCAN without this
+         flag, the flag is dropped from the merged manifest and detection goes blind for
+         apps without location. -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
 
-    <!-- Location permissions — legacy only: required to run a BLE scan on API ≤ 30.
-         On API 31+ BLUETOOTH_SCAN (neverForLocation) covers scanning, so location is not requested. -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
-        android:maxSdkVersion="30" />
+    <!-- Location — declared on ALL versions. On API ≤ 30 it is the legacy BLE-scan gate
+         (detection does not work without it there); on API 31+ detection works with
+         Bluetooth alone (neverForLocation above), and granting location is recommended
+         for maximum OEM coverage. Foreground only — ACCESS_BACKGROUND_LOCATION is
+         intentionally NOT declared, so hosts need a standard Play Data Safety "Location"
+         declaration but NOT the background-location video review. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!-- Internet for API communication -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Wi-Fi state (normal permission, granted at install, no user prompt) — required by
+         WifiManager for the wifiSSID telemetry field; without it the SSID is always null
+         in host apps that only integrate the SDK. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
     <!-- Notifications permission (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -27,20 +44,24 @@
     <!-- Boot completed permission for restart scanning after reboot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     
-    <!-- SEM USE_EXACT_ALARM / SCHEDULE_EXACT_ALARM: o SDK NÃO é app de "agenda"
-         nem "despertador", então não qualifica para alarme exato no Google Play
-         (a Play Console exige a remoção, senão pede a declaração de "Alarmes
-         exatos"). O watchdog de scan usa alarme INEXATO (setAndAllowWhileIdle),
-         que roda em Doze sem permissão especial — precisão de minuto é
-         irrelevante para uma rede de segurança do WorkManager. -->
+    <!-- NO USE_EXACT_ALARM / SCHEDULE_EXACT_ALARM: the SDK is not a calendar or
+         alarm-clock app, so it does not qualify for exact alarms on Google Play
+         (the Play Console requires removing them, otherwise it demands the "Exact
+         alarms" declaration). The scan watchdog uses an INEXACT alarm
+         (setAndAllowWhileIdle), which runs in Doze without any special permission —
+         minute-level precision is irrelevant for a WorkManager safety net. -->
 
     <!-- Foreground service permissions -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
-    <!-- Required hardware features -->
-    <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
-    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+    <!-- Hardware features. required="false" ON PURPOSE: this manifest merges into the HOST
+         app's, and uses-feature merges with OR (true wins) — required="true" here would make
+         every client app invisible on the Play Store for devices without BLE, even when the
+         app has plenty of non-beacon functionality. The SDK degrades gracefully at runtime
+         (adapter == null → no scanning). -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <application>
         <!-- BroadcastReceiver for PendingIntent-based BLE scan (API 26+) -->

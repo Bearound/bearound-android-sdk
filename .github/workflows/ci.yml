@@ -82,8 +82,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Run SDK unit tests
-        run: ./gradlew :sdk:test || echo "⚠️ No tests implemented yet"
-        continue-on-error: true
+        run: ./gradlew :sdk:test
 
       - name: Upload test results
         if: always()
@@ -297,18 +296,14 @@ jobs:
       - name: Check CI status
         run: |
           if [ "${{ needs.validate.result }}" != "success" ] || \
+             [ "${{ needs.test.result }}" != "success" ] || \
              [ "${{ needs.build.result }}" != "success" ] || \
              [ "${{ needs.build-sample-app.result }}" != "success" ] || \
              [ "${{ needs.jitpack-simulation.result }}" != "success" ]; then
             echo "❌ CI failed"
             exit 1
           fi
-          
-          # Test job is optional (skipped or success is OK)
-          if [ "${{ needs.test.result }}" == "failure" ]; then
-            echo "⚠️ Tests failed (non-blocking)"
-          fi
-          
+
           echo "✅ All CI checks passed successfully!"
           echo ""
           echo "🎉 The code is ready for:"

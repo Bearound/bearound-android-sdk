@@ -42,7 +42,12 @@ data class BeAroundScanState(
     val sortOption: BeaconSortOption = BeaconSortOption.PROXIMITY,
     val pinnedBeaconIds: Set<String> = emptySet(),
     val retryBatches: List<List<Beacon>> = emptyList(),
-    val retryBatchCount: Int = 0
+    val retryBatchCount: Int = 0,
+    /**
+     * Non-null when the sample cannot start because BUSINESS_TOKEN is missing. The UI shows
+     * this instead of the app crashing on launch (SDK.configure throws on a blank token).
+     */
+    val configurationError: String? = null
 )
 
 class BeaconViewModel(application: Application) : AndroidViewModel(application), BeAroundSDKListener {
@@ -66,15 +71,24 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         updatePermissionStatus()
         checkBluetoothStatus()
         checkNotificationStatus()
-        
-        // Configure SDK
-        configureSDK(
-            _state.value.scanPrecision,
-            _state.value.maxQueuedPayloads
-        )
-        
-        // Auto-start scanning
-        startScanning()
+
+        // BUSINESS_TOKEN comes from local.properties (gitignored) or the BUSINESS_TOKEN env var.
+        // Without it, sdk.configure() throws — so surface a friendly state instead of crashing.
+        if (BuildConfig.BUSINESS_TOKEN.isBlank()) {
+            _state.value = _state.value.copy(
+                configurationError = "Configure BUSINESS_TOKEN em local.properties",
+                statusMessage = "Configuração necessária"
+            )
+        } else {
+            // Configure SDK
+            configureSDK(
+                _state.value.scanPrecision,
+                _state.value.maxQueuedPayloads
+            )
+
+            // Auto-start scanning
+            startScanning()
+        }
     }
     
     override fun onCleared() {
@@ -96,6 +110,10 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun startScanning() {
+        if (_state.value.configurationError != null) {
+            return
+        }
+
         if (!hasRequiredPermissions()) {
             _state.value = _state.value.copy(
                 statusMessage = "Permissões necessárias",
@@ -130,6 +148,10 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         precision: ScanPrecision,
         maxQueued: MaxQueuedPayloads
     ) {
+        if (_state.value.configurationError != null) {
+            return
+        }
+
         configureSDK(precision, maxQueued)
         _state.value = _state.value.copy(
             scanPrecision = precision,
@@ -286,24 +308,22 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
 
     fun updatePermissionStatus() {
         val context = getApplication<Application>()
-        
-        val locationPermission = when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-            ContextCompat.checkSelfPermission(
-                context, 
-                Manifest.permission.ACCESS_BACKGROUND_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED -> {
-                "Sempre (Background habilitado)"
-            }
+
+        // Location is recommended (OEM coverage on 12+) and required below 12; the SDK
+        // never requests ACCESS_BACKGROUND_LOCATION — background runs via BLUETOOTH_SCAN.
+        val locationGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(
                 context,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED -> {
-                "Quando em uso (Background não funciona)"
-            }
-            else -> {
-                "Negada (SDK não funcionará)"
-            }
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+        val locationPermission = if (locationGranted) {
+            "Concedida (recomendado)"
+        } else {
+            "Negada — cobertura reduzida no 12+; obrigatória no Android ≤ 11"
         }
 
         _state.value = _state.value.copy(locationPermissionStatus = locationPermission)
@@ -336,25 +356,24 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
 
     fun hasRequiredPermissions(): Boolean {
         val context = getApplication<Application>()
-        
-        val locationGranted = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
 
+        // Mirrors the SDK gate (BeaconManager.checkPermissions): on Android 12+ the scan
+        // runs on BLUETOOTH_SCAN alone; below 12, fine or coarse location unlocks it.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val bluetoothScanGranted = ContextCompat.checkSelfPermission(
+            return ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.BLUETOOTH_SCAN
             ) == PackageManager.PERMISSION_GRANTED
-
-            // anyOf: o SDK escaneia com Location OU Bluetooth concedida (ver
-            // BluetoothManager.checkPermissions). Exigir ambas re-solicitava
-            // permissão mesmo com o anyOf já satisfeito.
-            return locationGranted || bluetoothScanGranted
         }
 
-        return locationGranted
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
     }
 
     fun isLocationEnabled(): Boolean {

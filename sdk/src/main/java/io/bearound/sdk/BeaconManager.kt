@@ -15,6 +15,7 @@ import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.RssiStats
 import io.bearound.sdk.utilities.IBeaconParser
 import io.bearound.sdk.utilities.RssiFilterRegistry
+import io.bearound.sdk.utilities.ScanStartBudget
 import java.util.Date
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -34,6 +35,25 @@ class BeaconManager(private val context: Context) {
         private const val RANGING_REFRESH_INTERVAL = 120000L
         private const val MAX_RESTARTS_PER_MINUTE = 3
         private const val DEFAULT_TX_POWER = -59
+
+        /** Batch report delay for the slow-beacon iBeacon scan (see [startSlowBeaconBatchScan]). */
+        private const val SLOW_BEACON_BATCH_DELAY_MS = 2000L
+
+        /**
+         * Window during which a batch-delivered sample is dropped when the regular scan has
+         * already sampled the same beacon. Beacons matched by BOTH scanners (0xBEAD in the
+         * primary PDU and the iBeacon frame) would otherwise feed [rssiAccumulators] twice
+         * and skew the RSSI statistics synced to the backend. Scan-response-only beacons
+         * (never matched by the regular scan) are unaffected — their samples always land.
+         */
+        private const val SLOW_BEACON_DEDUP_MS = 5000L
+
+        /**
+         * No batch delivery for this long while the batch scanner claims to be running →
+         * assume the client was starved by the OS scan-start quota and revive it. Restarting
+         * at most once per window keeps the revive itself far below the quota (5/30 s).
+         */
+        private const val BATCH_LIVENESS_TIMEOUT_MS = 120_000L
         /** Past this gap with no packet, the beacon is rendered as stale (faded) but kept. */
         private const val STALE_THRESHOLD_MS = 5000L
         /**
@@ -63,8 +83,23 @@ class BeaconManager(private val context: Context) {
     private var bluetoothLeScanner: BluetoothLeScanner? = null
     var isScanning = false
     var isRanging = false
-        private set
+    private var isBatchScanning = false
+
+    /**
+     * Last time the batch scanner delivered anything. The OS scan-start quota (5 starts per
+     * 30 s per app) silently starves a scan client that registered over quota — "started"
+     * with no error, zero deliveries, forever. The watchdog uses this timestamp to detect
+     * the starved state and revive the batch (see [checkRangingHealth]).
+     */
+    @Volatile
+    private var lastBatchDeliveryAt = 0L
     private var isInForeground = true
+
+    /**
+     * Last time the REGULAR scan (ranging / PendingIntent) fed a sample for each beacon
+     * identifier. Used to drop batch-delivered duplicates (see [SLOW_BEACON_DEDUP_MS]).
+     */
+    private val lastRegularSampleAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
     /**
      * True while at least one beacon is currently detected (after rising edge in [processBeacon]
      * and before falling edge in [cleanupExpiredBeacons]). Active scanning is gated by this
@@ -213,19 +248,74 @@ class BeaconManager(private val context: Context) {
 
         override fun onScanFailed(errorCode: Int) {
             Log.e(TAG, "Scan failed with error code: $errorCode")
+            handleScanFailure(errorCode)
+            // The client did NOT register — reflect it so the duty cycle/watchdog retry.
+            isRanging = false
             val error = Exception("Beacon scan failed with error code: $errorCode")
             onError?.invoke(error)
         }
     }
 
+    /**
+     * Shared reaction to `onScanFailed` codes: SCANNING_TOO_FREQUENTLY (6, Android 11+) means
+     * the app hit the OS scan-start quota — calling startScan again only extends the penalty,
+     * so freeze every start for a cool-off window.
+     */
+    private fun handleScanFailure(errorCode: Int) {
+        if (errorCode == 6 /* ScanCallback.SCAN_FAILED_SCANNING_TOO_FREQUENTLY, API 30+ */) {
+            ScanStartBudget.freeze()
+        }
+    }
+
+    /**
+     * Dedicated callback for the batched iBeacon scan (see [startSlowBeaconBatchScan]).
+     * Kept separate from [scanCallback] so the batch scanner can be started/stopped
+     * independently of the regular 0xBEAD scan. Results are parsed by the same
+     * [processScanResult] — the batched ScanRecord carries the 0xBEAD payload (scan response),
+     * so the existing BEAD parser handles them unchanged. `fromBatch = true` lets
+     * [processScanResult] drop samples for beacons the regular scan is already feeding,
+     * so RSSI statistics don't get double-counted (see [SLOW_BEACON_DEDUP_MS]).
+     */
+    private val batchScanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            lastBatchDeliveryAt = System.currentTimeMillis()
+            processScanResult(result, fromBatch = true)
+        }
+
+        override fun onBatchScanResults(results: List<ScanResult>) {
+            lastBatchDeliveryAt = System.currentTimeMillis()
+            results.forEach { processScanResult(it, fromBatch = true) }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            // Batch scanning isn't supported on every device; the regular scan still runs.
+            Log.w(TAG, "Slow-beacon batch scan failed (code $errorCode) — regular scan unaffected")
+            handleScanFailure(errorCode)
+            // Client didn't register — clear the flag so the liveness check can re-arm it.
+            isBatchScanning = false
+        }
+    }
+
     fun setForegroundState(inForeground: Boolean) {
         isInForeground = inForeground
-        
+
         if (!inForeground && isScanning) {
             startRangingRefreshTimer()
         } else if (inForeground) {
             stopRangingRefreshTimer()
         }
+    }
+
+    /**
+     * Bluetooth was toggled off→on: the stack dropped every scan client while the local
+     * flags stayed true. Re-arm the batch immediately (budget-guarded); the ranging watchdog
+     * and the duty cycle recover the other scanners on their own ticks.
+     */
+    fun onBluetoothRestored() {
+        if (!isScanning) return
+        Log.i(TAG, "Bluetooth restored — re-arming batch scan")
+        isBatchScanning = false
+        startSlowBeaconBatchScan()
     }
 
     /**
@@ -241,11 +331,15 @@ class BeaconManager(private val context: Context) {
     fun startScanning() {
         if (isScanning) {
             Log.d(TAG, "Already scanning")
+            // Watchdog/restart path: the regular ranging has its own health-check, but the
+            // batch scanner doesn't — re-arm it here (idempotent via isBatchScanning) so a
+            // batch client dropped by the controller comes back on the next watchdog tick.
+            if (checkPermissions()) startSlowBeaconBatchScan()
             return
         }
 
         if (!checkPermissions()) {
-            val error = Exception("Neither Location nor Bluetooth permission granted — at least one is required to scan")
+            val error = Exception(missingPermissionMessage())
             onError?.invoke(error)
             return
         }
@@ -255,15 +349,16 @@ class BeaconManager(private val context: Context) {
         try {
             val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
             bluetoothLeScanner = bluetoothManager.adapter?.bluetoothLeScanner
-            
+
             if (bluetoothLeScanner == null) {
                 throw Exception("BluetoothLeScanner not available")
             }
 
             startMonitoring()
+            startSlowBeaconBatchScan()
             isScanning = true
             onScanningStateChanged?.invoke(true)
-            
+
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start scanning: ${e.message}")
             onError?.invoke(e)
@@ -286,12 +381,14 @@ class BeaconManager(private val context: Context) {
             bluetoothLeScanner?.stopScan(scanCallback)
             isRanging = false
         }
+        stopSlowBeaconBatchScan()
 
         beaconLock.withLock {
             detectedBeacons.clear()
             beaconLastSeen.clear()
             rssiAccumulators.clear()
         }
+        lastRegularSampleAt.clear()
         rssiFilter.clear()
         lastBeaconSeenAt = null
 
@@ -335,6 +432,10 @@ class BeaconManager(private val context: Context) {
             .setScanMode(scanMode)
             .setReportDelay(0)
             .build()
+
+        // Preventive quota guard: skipping one duty-cycle tick is recoverable (the next
+        // tick retries in seconds); exceeding the OS quota silently starves the client.
+        if (!ScanStartBudget.tryAcquire("ranging")) return
 
         try {
             bluetoothLeScanner?.startScan(filters, settings, scanCallback)
@@ -399,15 +500,92 @@ class BeaconManager(private val context: Context) {
         // In foreground: ranging is controlled by BeAroundSDK's sync timer
     }
 
-    private fun processScanResult(result: ScanResult) {
+    /**
+     * Dedicated batched scan for "slow" Bearound beacons. Some beacons advertise the 0xBEAD
+     * payload in the SCAN RESPONSE (not the primary PDU) and/or at a long advertising interval
+     * (~1 s). On some OEMs (notably Samsung) the regular scan runs at a reduced host duty cycle
+     * and never catches them, even though the controller receives the packet. This scan:
+     *  - filters on the Bearound iBeacon frame (present in the PRIMARY PDU, so the offloaded
+     *    hardware filter matches it — the 0xBEAD service-data filter can't, being scan-response),
+     *  - uses a non-zero reportDelay (batch), so — where the controller supports offloaded
+     *    batching — matches are accumulated continuously and delivered via onBatchScanResults
+     *    regardless of the host duty cycle. Devices without offloaded batching fall back to
+     *    framework-emulated batching (still functional; the regular scan keeps running too).
+     * Runs alongside the regular 0xBEAD scan; the delivered ScanRecord still carries the 0xBEAD
+     * payload, so [processScanResult]/[IBeaconParser.parseServiceData] handle it unchanged.
+     */
+    @SuppressLint("MissingPermission")
+    private fun startSlowBeaconBatchScan() {
+        if (isBatchScanning) return
+        val scanner = bluetoothLeScanner ?: return
+        // Preventive quota guard — the liveness check in checkRangingHealth retries later.
+        if (!ScanStartBudget.tryAcquire("batch")) return
+        try {
+            // Field observability: offloaded batching is the premise of this scan — log where
+            // the device only emulates it in software, so "batch didn't help" is diagnosable.
+            val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE)
+                as? android.bluetooth.BluetoothManager)?.adapter
+            if (adapter?.isOffloadedScanBatchingSupported == false) {
+                Log.i(TAG, "Offloaded scan batching NOT supported — batch scan will be software-emulated")
+            }
+            val ibFilter = ScanFilter.Builder()
+                .setManufacturerData(
+                    IBeaconParser.APPLE_MANUFACTURER_ID,
+                    IBeaconParser.BEAROUND_IBEACON_PREFIX,
+                    IBeaconParser.BEAROUND_IBEACON_MASK
+                )
+                .build()
+            val settings = ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+                .setReportDelay(SLOW_BEACON_BATCH_DELAY_MS)
+                .build()
+            scanner.startScan(listOf(ibFilter), settings, batchScanCallback)
+            isBatchScanning = true
+            lastBatchDeliveryAt = System.currentTimeMillis() // liveness baseline
+            Log.d(TAG, "Slow-beacon batch scan started (reportDelay=${SLOW_BEACON_BATCH_DELAY_MS}ms)")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to start slow-beacon batch scan: ${e.message}")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopSlowBeaconBatchScan() {
+        if (!isBatchScanning) return
+        try {
+            bluetoothLeScanner?.stopScan(batchScanCallback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to stop slow-beacon batch scan: ${e.message}")
+        }
+        isBatchScanning = false
+    }
+
+    private fun processScanResult(result: ScanResult, fromBatch: Boolean = false) {
         val scanRecord = result.scanRecord ?: return
 
-        val serviceData = IBeaconParser.parseServiceData(scanRecord, result.rssi) ?: return
+        // Prefer the 0xBEAD sensor payload; fall back to the iBeacon frame when the scan
+        // response wasn't captured (observed on Xiaomi batched results) — detection still
+        // works, metadata stays null until a 0xBEAD frame arrives ("first sighting" case).
+        val serviceData = IBeaconParser.parseServiceData(scanRecord, result.rssi)
+            ?: IBeaconParser.parseIBeaconFrame(scanRecord, result.rssi)
+            ?: return
 
-        val txPower = serviceData.metadata.txPower ?: DEFAULT_TX_POWER
+        val txPower = serviceData.metadata?.txPower ?: serviceData.txPower ?: DEFAULT_TX_POWER
         val identifier = "${serviceData.major}.${serviceData.minor}"
         val rawRssi = serviceData.rssi
         val nowMs = System.currentTimeMillis()
+
+        // Beacons matched by BOTH scanners (0xBEAD in the primary + iBeacon frame) would be
+        // processed twice — once by the regular scan, once by the batch — inflating the RSSI
+        // statistics synced to the backend. Drop the batch copy while the regular scan is
+        // actively feeding this beacon; scan-response-only beacons (e.g. B:0.135) are never
+        // matched by the regular scan, so their batch samples always pass.
+        if (fromBatch) {
+            val lastRegular = lastRegularSampleAt[identifier] ?: 0L
+            if (nowMs - lastRegular < SLOW_BEACON_DEDUP_MS) return
+        } else {
+            lastRegularSampleAt[identifier] = nowMs
+        }
 
         val smoothedRssi = rssiFilter.smooth(identifier, rawRssi)
 
@@ -613,7 +791,21 @@ class BeaconManager(private val context: Context) {
     }
 
     private fun checkRangingHealth() {
-        if (!isScanning || !isInBeaconRegion) return
+        if (!isScanning) return
+
+        // Batch liveness — runs regardless of region (the batch IS the out-of-region
+        // detector for scan-response beacons). A client starved by the OS scan-start quota
+        // stays "started" with zero deliveries forever; revive it after a silent window.
+        // Also re-arms a batch that died via onScanFailed (isBatchScanning == false).
+        if (!isBatchScanning) {
+            startSlowBeaconBatchScan()
+        } else if (System.currentTimeMillis() - lastBatchDeliveryAt > BATCH_LIVENESS_TIMEOUT_MS) {
+            Log.w(TAG, "Batch scan silent for ${BATCH_LIVENESS_TIMEOUT_MS / 1000}s — reviving")
+            stopSlowBeaconBatchScan()
+            startSlowBeaconBatchScan()
+        }
+
+        if (!isInBeaconRegion) return
 
         val lastUpdate = lastBeaconUpdate
         if (lastUpdate != null) {
@@ -666,11 +858,20 @@ class BeaconManager(private val context: Context) {
     }
 
     private fun checkPermissions(): Boolean {
-        // Two "eyes": Location and Bluetooth. Scan should proceed if AT LEAST ONE is granted.
-        // - Android 12+: BLUETOOTH_SCAN alone is sufficient (manifest uses neverForLocation).
-        // - Android <12: ACCESS_FINE/COARSE_LOCATION alone is sufficient (legacy BLE scan model;
-        //   BLUETOOTH/BLUETOOTH_ADMIN are normal permissions, auto-granted at install).
-        val locationPermission =
+        // The BLE-scan gate is version-dependent:
+        // - Android 12+ (S+): BLUETOOTH_SCAN is the only gate. The manifest asserts
+        //   neverForLocation, which is what makes Bluetooth-only detection work: without the
+        //   flag Android silently withholds every scan result unless ACCESS_FINE_LOCATION is
+        //   also granted (verified on-device — an unfiltered scan delivered 0 results).
+        //   Location is still declared/recommended for OEM coverage, but not required here.
+        // - Android <12: legacy model — ACCESS_FINE/COARSE_LOCATION unlocks the BLE scan
+        //   (BLUETOOTH/BLUETOOTH_ADMIN are install-time normal permissions).
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_SCAN
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
             ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.ACCESS_FINE_LOCATION
@@ -679,18 +880,32 @@ class BeaconManager(private val context: Context) {
                 context,
                 Manifest.permission.ACCESS_COARSE_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
-
-        val bluetoothScanPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.BLUETOOTH_SCAN
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            // Pre-Android-12, BLUETOOTH/BLUETOOTH_ADMIN are install-time normal permissions.
-            // Treat as available so that location-only grants still unlock the scan.
-            true
         }
+    }
 
-        return locationPermission || bluetoothScanPermission
+    /**
+     * Whether BLUETOOTH_SCAN is granted (the runtime permission that unlocks the BLE scan
+     * on Android 12+). Always true on Android <12 where BLUETOOTH_SCAN is not a runtime
+     * permission. Exposed for diagnostics.
+     */
+    fun hasBluetoothScanPermission(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.BLUETOOTH_SCAN
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    /**
+     * Version-accurate message for the missing-permission case: on Android 12+ BLUETOOTH_SCAN
+     * ("Nearby devices") is the hard gate (location is recommended alongside it but not
+     * required to start the scan); on Android ≤11 location is what unlocks the BLE scan.
+     */
+    private fun missingPermissionMessage(): String {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            "BLUETOOTH_SCAN (Nearby devices) required on Android 12+ to start the BLE scan; also grant location for full beacon coverage"
+        } else {
+            "ACCESS_FINE_LOCATION or ACCESS_COARSE_LOCATION required on Android ≤11 to unlock the BLE scan"
+        }
     }
 }

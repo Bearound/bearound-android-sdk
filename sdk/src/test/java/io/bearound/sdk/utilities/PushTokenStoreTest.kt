@@ -52,7 +52,7 @@ class PushTokenStoreTest {
     @Test
     fun `after markSent the same token is no longer offered`() {
         PushTokenStore.setToken(token)
-        PushTokenStore.markSent()
+        PushTokenStore.markSent(token)
 
         assertNull("an already-sent, unchanged token should not be re-sent", PushTokenStore.tokenForPayload())
     }
@@ -60,7 +60,7 @@ class PushTokenStoreTest {
     @Test
     fun `a changed token is offered again`() {
         PushTokenStore.setToken(token)
-        PushTokenStore.markSent()
+        PushTokenStore.markSent(token)
         assertNull(PushTokenStore.tokenForPayload())
 
         val rotated = "fcm-token-ZZZZZZZZZZZZZZZZ-9999"
@@ -72,7 +72,7 @@ class PushTokenStoreTest {
     @Test
     fun `heartbeat re-sends an unchanged token after more than 7 days`() {
         PushTokenStore.setToken(token)
-        PushTokenStore.markSent()
+        PushTokenStore.markSent(token)
         assertNull("fresh send should suppress immediate re-send", PushTokenStore.tokenForPayload())
 
         // Simulate the last successful send being 8 days ago by rewriting LAST_SENT_AT,
@@ -89,7 +89,7 @@ class PushTokenStoreTest {
 
         val before = System.currentTimeMillis()
         PushTokenStore.setToken(token)
-        PushTokenStore.markSent()
+        PushTokenStore.markSent(token)
         val after = System.currentTimeMillis()
 
         val at = PushTokenStore.lastSentAt()
@@ -115,5 +115,34 @@ class PushTokenStoreTest {
     @Test
     fun `maskedToken is null when no token stored`() {
         assertNull(PushTokenStore.maskedToken())
+    }
+
+    @Test
+    fun `a token that arrives while a tokenless payload is in flight is NOT suppressed`() {
+        // Regression: the register goes out BEFORE the async FCM token arrives. Its success
+        // callback must not mark the freshly-arrived token as sent — that suppressed real
+        // tokens for 7 days. markSent now records the token THAT WAS IN THE PAYLOAD (null).
+        PushTokenStore.setToken(token) // FCM arrives while the register is in flight
+        PushTokenStore.markSent(null)  // register succeeds; its payload carried NO token
+
+        assertEquals(
+            "the never-transmitted token must still be offered",
+            token,
+            PushTokenStore.tokenForPayload()
+        )
+    }
+
+    @Test
+    fun `markSent records the payload token even if a newer one arrived meanwhile`() {
+        PushTokenStore.setToken(token)
+        val rotated = "fcm-token-ROTATED-ZZZZZZZZ-7777"
+        PushTokenStore.setToken(rotated) // rotates while the payload with `token` is in flight
+        PushTokenStore.markSent(token)   // success of the OLD payload
+
+        assertEquals(
+            "the rotated token was never transmitted and must be offered",
+            rotated,
+            PushTokenStore.tokenForPayload()
+        )
     }
 }

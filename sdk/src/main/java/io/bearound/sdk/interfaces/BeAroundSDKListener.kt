@@ -4,7 +4,14 @@ import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.NotificationContent
 
 /**
- * Listener interface for SDK events and updates
+ * Listener interface for SDK events and updates.
+ *
+ * Threading contract: all callbacks are dispatched on the main (UI) thread, so it is safe
+ * to update UI directly from any of them without extra thread hopping. The only exception is
+ * [onProvideNotificationContent], which is invoked synchronously on the SDK's scan thread
+ * because the SDK consumes its return value inline — keep that implementation lightweight and
+ * off the UI toolkit.
+ *
  * v2.2: Added sync lifecycle and background detection callbacks
  */
 interface BeAroundSDKListener {

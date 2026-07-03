@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.bearound.bearoundscan.viewmodel.BeAroundScanState
+import io.bearound.sdk.BuildConfig
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.ScanPrecision
 
@@ -74,7 +75,7 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Text(
-                    text = "2.3.6",
+                    text = BuildConfig.SDK_VERSION,
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium
                 )

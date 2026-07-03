@@ -61,8 +61,14 @@ class ScanWatchdogReceiver : BroadcastReceiver() {
             if (shouldBeScanning && !isCurrentlyScanning) {
                 Log.w(TAG, "Watchdog: Scanning should be active but isn't - restarting")
                 sdk.restartScanningFromBackground()
+            } else if (shouldBeScanning) {
+                // Process alive and "scanning" — but the PendingIntent client (the only
+                // out-of-region detector) can be silently dead (BT off→on, quota starvation,
+                // stack restart) with the local flag still true. Re-register it from scratch:
+                // 1 scan start per 15-min tick, a cheap self-heal.
+                sdk.refreshBackgroundScanRegistration()
             }
-            
+
             // Sync any pending beacons
             if (sdk.hasPendingBeacons()) {
                 Log.d(TAG, "Watchdog: Syncing pending beacons")

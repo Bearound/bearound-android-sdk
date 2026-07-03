@@ -16,11 +16,8 @@ android {
 
     defaultConfig {
         minSdk 23
-        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles "consumer-rules.pro"
 
-        buildConfigField("String", "SDK_GROUP_ID", "\"${findProperty("SDK_GROUP_ID")}\"")
-        buildConfigField("String", "SDK_ARTIFACT_ID", "\"${findProperty("SDK_ARTIFACT_ID")}\"")
         buildConfigField("String", "SDK_VERSION", "\"${findProperty("SDK_VERSION")}\"")
     }
 
@@ -120,15 +117,11 @@ afterEvaluate {
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.16.0'
-    implementation 'androidx.appcompat:appcompat:1.7.1'
-    implementation 'com.google.android.material:material:1.12.0'
     testImplementation 'junit:junit:4.13.2'
     // Robolectric provides an Android runtime for JVM unit tests (PushTokenStore needs a
     // Context for EncryptedSharedPreferences via SecureStorage).
     testImplementation 'org.robolectric:robolectric:4.13'
     testImplementation 'androidx.test:core:1.6.1'
-    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
-    androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
 
     // Removed AltBeacon - using native Android Bluetooth LE APIs
     // api 'org.altbeacon:android-beacon-library:2.21.1'
