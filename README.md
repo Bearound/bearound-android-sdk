@@ -28,9 +28,10 @@ your Control Hub account.
 - Your app's build: `compileSdk` 35+ and Android Gradle Plugin 8.6.0+ (required
   transitively by `androidx.core` 1.16.0)
 - A Bearound **business token** (see [Getting a business token](#getting-a-business-token))
-- **Android 12+**: `BLUETOOTH_SCAN` ("Nearby devices") starts the scan; grant
-  `ACCESS_FINE_LOCATION` alongside it for full beacon coverage (the SDK declares location and
-  does **not** use `neverForLocation` — see [Why location](#why-location-and-no-neverforlocation)).
+- **Android 12+**: `BLUETOOTH_SCAN` ("Nearby devices") is all detection needs — the SDK
+  asserts `neverForLocation`, so scan results flow with Bluetooth alone. Granting
+  `ACCESS_FINE_LOCATION` alongside it is still recommended for maximum OEM coverage (see
+  [Permission model](#permission-model-neverforlocation-and-location)).
 - **Android ≤ 11**: `ACCESS_FINE_LOCATION` granted and Location Services on (the legacy BLE
   gate — there is no `BLUETOOTH_SCAN` before API 31).
 
@@ -146,26 +147,38 @@ dependencies {
 | Merged into your app | Purpose |
 |---|---|
 | `BLUETOOTH`, `BLUETOOTH_ADMIN` (`maxSdkVersion=30`) | Legacy Bluetooth, Android ≤ 11 |
-| `BLUETOOTH_SCAN` | BLE scan on Android 12+ — **without** `neverForLocation` (see below) |
+| `BLUETOOTH_SCAN` | BLE scan on Android 12+ — **with** `neverForLocation` (see below) |
 | `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` | Beacon detection on **all** versions (foreground) |
 | `INTERNET`, `ACCESS_NETWORK_STATE` | Upload to the ingest API |
 | `POST_NOTIFICATIONS` | Foreground-service notification on Android 13+ |
 | `RECEIVE_BOOT_COMPLETED` | Re-arm scanning after reboot |
 | `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE` | Optional foreground service (see [Google Play review](#google-play-review--what-the-manifest-merge-means-for-your-app)) |
 
-### Why location, and no `neverForLocation`
+### Permission model: `neverForLocation` and location
 
-This is a **proximity/beacon SDK**: it uses BLE scan results to derive the user's physical
-location, so it declares `ACCESS_FINE_LOCATION` on every version and does **not** assert
-`neverForLocation` on `BLUETOOTH_SCAN`. Android's own docs warn that `neverForLocation` *can
-filter beacons out of the scan results* — the opposite of what you want. On Android 12+ the
-scan starts on `BLUETOOTH_SCAN`; keeping location granted alongside it is what guarantees
-full beacon coverage across OEMs (the [recommended setup](#recommended-setup--keep-bluetooth-and-location-fully-on)).
+`BLUETOOTH_SCAN` is declared **with** the `neverForLocation` assertion, and location
+(`ACCESS_FINE_LOCATION` + `ACCESS_COARSE_LOCATION`, foreground only) is declared on every
+version. The combination is deliberate, and validated on real devices:
 
-> 📋 **Google Play Data Safety:** because the SDK derives location, declare **Location** in
-> your app's Data Safety form. This is a standard declaration — the SDK requests
-> **foreground** location only and never declares `ACCESS_BACKGROUND_LOCATION`, so it does
-> **not** trigger the heavier background-location review (prominent-disclosure video).
+- **`neverForLocation` is what makes Bluetooth-only detection possible on Android 12+.**
+  Without the assertion, Android classifies the scan as location-deriving and silently
+  withholds **every** scan result unless the app also holds `ACCESS_FINE_LOCATION` —
+  `startScan()` reports no error and simply delivers nothing. Verified on-device: with the
+  assertion, a beacon was detected and synced with "Nearby devices" alone; without it, even
+  an unfiltered scan returned 0 results while location was denied.
+- Android's docs caution that the assertion *can filter beacons out of the scan results* on
+  some devices. Verified **not** to affect the Bearound signatures (`0xBEAD` service data
+  and the iBeacon frame) on One UI and HyperOS test devices.
+- **Location still matters:** on Android ≤ 11 it is the OS's BLE-scan gate (no location =
+  no detection there), and keeping it granted on 12+ improves delivery on some OEM ROMs —
+  hence the [recommended setup](#recommended-setup--keep-bluetooth-and-location-fully-on)
+  and the Quick Start requesting both.
+
+> 📋 **Google Play Data Safety:** if your app requests the location permission (as the Quick
+> Start does), declare **Location** in your app's Data Safety form. This is the standard
+> declaration — the SDK uses **foreground** location only and never declares
+> `ACCESS_BACKGROUND_LOCATION`, so it does **not** trigger the heavier background-location
+> review (prominent-disclosure video).
 
 The SDK does **not** declare `BLUETOOTH_CONNECT` (the SDK only scans; it never connects to
 the beacon — add it to your own manifest only if your app does GATT operations).
@@ -314,10 +327,9 @@ Android equivalent of iOS's `CLBeaconRegion` monitoring. No notification require
 **Architecture under the hood:**
 
 - **`BluetoothScanReceiver`** — wakes the app via `PendingIntent` when a `0xBEAD` beacon is
-  observed by the OS scanner. Requires only `BLUETOOTH_SCAN` as the technical gate on
-  Android 12+ — the SDK no longer uses `neverForLocation`, and keeping location granted
-  alongside improves OEM coverage (see
-  [Why location, and no `neverForLocation`](#why-location-and-no-neverforlocation)).
+  observed by the OS scanner. Requires only `BLUETOOTH_SCAN` on Android 12+ — thanks to the
+  `neverForLocation` assertion it works with Bluetooth alone, no location grant needed (see
+  [Permission model](#permission-model-neverforlocation-and-location)).
 - **`ScanWatchdogReceiver`** — `AlarmManager` heartbeat (inexact alarms — no exact-alarm
   permission, no Play policy impact) plus `BOOT_COMPLETED` listener. Re-registers the BLE
   scan filter if it ever gets evicted by the OS.

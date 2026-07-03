@@ -46,7 +46,8 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
         viewModel.checkBluetoothStatus()
         viewModel.checkNotificationStatus()
         // Start scanning once the technical gate is satisfied: BLUETOOTH_SCAN on Android 12+
-        // (the scan starts even if location was denied), FINE/COARSE location on Android <= 11.
+        // (neverForLocation in the SDK manifest makes Bluetooth-only delivery work, so the
+        // scan runs even if location was denied), FINE/COARSE location on Android <= 11.
         // The SDK declares location on all versions and recommends granting it alongside
         // BLUETOOTH_SCAN for maximum OEM coverage.
         if (viewModel.hasRequiredPermissions()) {

@@ -149,9 +149,12 @@ Os apps de exemplo Android e iOS foram construídos com paridade de funcionalida
 ## 🔍 Observações sobre permissões no Android 12+
 
 No Android 12+ o gate técnico do scan é **`BLUETOOTH_SCAN`** ("Dispositivos por perto") —
-é ela que destrava a detecção. O SDK **não** usa `neverForLocation` e declara
+é ela que destrava a detecção. O SDK declara `BLUETOOTH_SCAN` **com** `neverForLocation`:
+é essa asserção que faz a detecção funcionar só com Bluetooth (sem ela, o Android 12+
+retém silenciosamente todos os resultados de scan quando a localização está negada —
+validado em device real). O SDK também declara
 `ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION` em todas as versões: conceder localização
-junto é o recomendado para cobertura total de beacons entre OEMs — veja
-["Why location, and no neverForLocation"](../README.md#why-location-and-no-neverforlocation)
+junto é o recomendado para cobertura máxima entre OEMs — veja
+["Permission model"](../README.md#permission-model-neverforlocation-and-location)
 no README raiz. O app solicita as duas; o scan inicia se `BLUETOOTH_SCAN` for concedida,
 mesmo com localização negada. No Android ≤ 11, localização (fine ou coarse) é obrigatória.

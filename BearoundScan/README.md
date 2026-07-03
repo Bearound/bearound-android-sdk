@@ -23,7 +23,8 @@ Token fornecido pelo time Bearound — veja
 ### Aba Beacons (`ContentScreen`)
 - **Solicitação automática de permissões** no launch: localização (FINE/COARSE),
   `BLUETOOTH_SCAN` no Android 12+, `POST_NOTIFICATIONS` no 13+. No Android 12+, o gate
-  técnico do scan é `BLUETOOTH_SCAN` (sem `neverForLocation`) — o scan inicia **mesmo com
+  técnico do scan é `BLUETOOTH_SCAN` (declarada **com** `neverForLocation` — a asserção
+  que permite a detecção funcionar só com Bluetooth) — o scan roda **mesmo com
   localização negada**. O SDK declara localização em todas as versões e recomenda
   concedê-la junto para cobertura máxima (alguns OEMs); no Android ≤ 11 ela é obrigatória
   para o scan BLE.

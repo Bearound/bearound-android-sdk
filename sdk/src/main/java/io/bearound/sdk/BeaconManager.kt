@@ -859,12 +859,11 @@ class BeaconManager(private val context: Context) {
 
     private fun checkPermissions(): Boolean {
         // The BLE-scan gate is version-dependent:
-        // - Android 12+ (S+): BLUETOOTH_SCAN is the hard gate — the OS BluetoothLeScanner
-        //   rejects startScan without it. The manifest does NOT use neverForLocation and also
-        //   declares ACCESS_FINE_LOCATION: as a proximity/beacon SDK we want location granted
-        //   too, both for compliance and because neverForLocation can filter beacons out of
-        //   the results. Location is strongly recommended (requested in the Quick Start) but
-        //   not part of the gate — the scan runs with BLUETOOTH_SCAN alone.
+        // - Android 12+ (S+): BLUETOOTH_SCAN is the only gate. The manifest asserts
+        //   neverForLocation, which is what makes Bluetooth-only detection work: without the
+        //   flag Android silently withholds every scan result unless ACCESS_FINE_LOCATION is
+        //   also granted (verified on-device — an unfiltered scan delivered 0 results).
+        //   Location is still declared/recommended for OEM coverage, but not required here.
         // - Android <12: legacy model — ACCESS_FINE/COARSE_LOCATION unlocks the BLE scan
         //   (BLUETOOTH/BLUETOOTH_ADMIN are install-time normal permissions).
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

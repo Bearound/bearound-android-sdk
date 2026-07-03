@@ -213,9 +213,8 @@ class BluetoothManager(private val context: Context) {
 
     private fun checkPermissions(): Boolean {
         // Version-dependent BLE-scan gate (mirrors BeaconManager):
-        // - Android 12+ (S+): BLUETOOTH_SCAN is the hard gate (the OS rejects startScan
-        //   without it). Location is recommended alongside it (no neverForLocation) but not
-        //   part of the gate.
+        // - Android 12+ (S+): BLUETOOTH_SCAN is the only gate — the manifest asserts
+        //   neverForLocation, so results flow with Bluetooth alone (location optional).
         // - Android <12: legacy model — ACCESS_FINE/COARSE_LOCATION unlocks the BLE scan.
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(

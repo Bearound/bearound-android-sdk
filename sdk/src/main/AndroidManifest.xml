@@ -5,18 +5,27 @@
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
 
-    <!-- Bluetooth scan permission for Android 12+ (API 31+).
-         NOT declared with neverForLocation: this is a proximity/beacon SDK — it uses the
-         scan results to derive the user's physical location, and Android's own docs warn
-         that the neverForLocation assertion can filter beacons out of the scan results. -->
+    <!-- Bluetooth scan permission for Android 12+ (API 31+), WITH neverForLocation.
+         The assertion is what makes Bluetooth-only detection possible: without it Android
+         12+ classifies the scan as location-deriving and silently withholds EVERY scan
+         result unless the app also holds ACCESS_FINE_LOCATION (verified on-device: an
+         unfiltered scan delivered 0 results while system scanners saw 200+/min).
+         Android's docs warn the assertion "can filter beacons out of the scan results";
+         validated NOT to affect the Bearound signatures (0xBEAD service data + iBeacon
+         frame) on One UI and HyperOS devices.
+         MERGE WARNING: if ANY manifest in the merge declares BLUETOOTH_SCAN without this
+         flag, the flag is dropped from the merged manifest and detection goes blind for
+         apps without location. -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
 
-    <!-- Location — required for BLE beacon detection on ALL versions. On API ≤ 30 it is the
-         legacy BLE-scan gate; on API 31+ it is what lets the scan return location-derivable
-         beacons (paired with BLUETOOTH_SCAN, without neverForLocation). Foreground only —
-         ACCESS_BACKGROUND_LOCATION is intentionally NOT declared, so this needs a standard
-         Play Data Safety "Location" declaration but NOT the background-location review. -->
+    <!-- Location — declared on ALL versions. On API ≤ 30 it is the legacy BLE-scan gate
+         (detection does not work without it there); on API 31+ detection works with
+         Bluetooth alone (neverForLocation above), and granting location is recommended
+         for maximum OEM coverage. Foreground only — ACCESS_BACKGROUND_LOCATION is
+         intentionally NOT declared, so hosts need a standard Play Data Safety "Location"
+         declaration but NOT the background-location video review. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
