@@ -9,21 +9,24 @@ detecções** filtrado e o **debug de geofence** (região BLE + scan ativo).
 
 ## 🔑 Business token
 
-Este sample usa um **token de demonstração público, hardcoded de propósito** em
-`viewmodel/BeaconViewModel.kt` (`configureSDK`), para permitir testar o SDK sem nenhum
-setup. Os dados vão para o business de demonstração da Bearound.
+Este sample lê o token de `BuildConfig.BUSINESS_TOKEN`, com **fallback para o token
+público de demonstração** (veja `BearoundScan/build.gradle`), permitindo testar o SDK sem
+nenhum setup. Os dados vão para o business de demonstração da Bearound.
 
-Para ver as detecções no **seu** Control Hub, troque o valor de `businessToken` em
-`configureSDK` pelo seu token (fornecido pelo time Bearound — veja
-["Getting a business token"](../README.md#getting-a-business-token)).
+Para ver as detecções no **seu** Control Hub, defina `BUSINESS_TOKEN=<seu-token>` no
+`local.properties` (gitignorado) ou como variável de ambiente — **sem mudar código**.
+Token fornecido pelo time Bearound — veja
+["Getting a business token"](../README.md#getting-a-business-token).
 
 ## 📱 O que o app demonstra
 
 ### Aba Beacons (`ContentScreen`)
-- **Solicitação automática de permissões** no launch: localização (legado ≤ 11),
-  `BLUETOOTH_SCAN` no Android 12+, `POST_NOTIFICATIONS` no 13+. O scan inicia se
-  `BLUETOOTH_SCAN` for concedida — **mesmo com localização negada** (modelo
-  `neverForLocation` do SDK).
+- **Solicitação automática de permissões** no launch: localização (FINE/COARSE),
+  `BLUETOOTH_SCAN` no Android 12+, `POST_NOTIFICATIONS` no 13+. No Android 12+, o gate
+  técnico do scan é `BLUETOOTH_SCAN` (sem `neverForLocation`) — o scan inicia **mesmo com
+  localização negada**. O SDK declara localização em todas as versões e recomenda
+  concedê-la junto para cobertura máxima (alguns OEMs); no Android ≤ 11 ela é obrigatória
+  para o scan BLE.
 - **Status de permissões** (localização / Bluetooth / notificações) com cores.
 - **Card "Debug Geofence"**: estado da região BLE (DENTRO/fora via
   `onEnterBeaconRegion`/`onExitBeaconRegion`), timestamps do último enter/exit, estado do

@@ -171,7 +171,7 @@ jobs:
     name: Release Success Notification
     runs-on: ubuntu-latest
     needs: [pre_release_validation, publish_to_jitpack, create_github_release]
-    if: always() && needs.publish_to_jitpack.result == 'success'
+    if: always() && needs.publish_to_jitpack.result == 'success' && needs.create_github_release.result == 'success'
 
     steps:
       - name: Release completed successfully
@@ -179,4 +179,4 @@ jobs:
           version="${{ needs.pre_release_validation.outputs.version }}"
           echo "🎉 Release v$version completed successfully!"
           echo "🚀 JitPack: Published"
-          echo "📦 Implementation: com.github.Bearound:bearound-android-sdk:$version"
+          echo "📦 Implementation: com.github.Bearound:bearound-android-sdk:v$version"

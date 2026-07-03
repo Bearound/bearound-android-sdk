@@ -18,9 +18,10 @@ BUSINESS_TOKEN=seu-business-token-aqui
 
 Alternativamente, defina a variável de ambiente `BUSINESS_TOKEN` antes do build.
 
-> ⚠️ **Sem o token o app crasha na abertura**: `configure()` lança
-> `IllegalArgumentException` para token vazio, e o `BeaconViewModel` configura o SDK no
-> `init`. Se o app fechar imediatamente ao abrir, confira o `local.properties`.
+> ⚠️ **Sem o token o app abre, mas o scan não inicia**: o `BeaconViewModel` detecta o
+> token vazio e exibe o card "Configuração necessária" em vez de chamar `configure()`
+> (que lançaria `IllegalArgumentException`). Se vir esse card, configure o
+> `BUSINESS_TOKEN` em `local.properties` (ou na variável de ambiente) e reinstale o app.
 
 O token é fornecido pelo time Bearound junto com o acesso ao Control Hub — veja
 ["Getting a business token"](../README.md#getting-a-business-token) no README raiz.
@@ -147,7 +148,10 @@ Os apps de exemplo Android e iOS foram construídos com paridade de funcionalida
 
 ## 🔍 Observações sobre permissões no Android 12+
 
-No Android 12+ a permissão que destrava a detecção é **`BLUETOOTH_SCAN`** ("Dispositivos
-por perto") — localização **não** destrava o scan (o SDK declara `neverForLocation`). O app
-ainda solicita localização para exibir o status na UI e cobrir Android ≤ 11, mas o scan
-inicia se `BLUETOOTH_SCAN` for concedida, mesmo com localização negada.
+No Android 12+ o gate técnico do scan é **`BLUETOOTH_SCAN`** ("Dispositivos por perto") —
+é ela que destrava a detecção. O SDK **não** usa `neverForLocation` e declara
+`ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION` em todas as versões: conceder localização
+junto é o recomendado para cobertura total de beacons entre OEMs — veja
+["Why location, and no neverForLocation"](../README.md#why-location-and-no-neverforlocation)
+no README raiz. O app solicita as duas; o scan inicia se `BLUETOOTH_SCAN` for concedida,
+mesmo com localização negada. No Android ≤ 11, localização (fine ou coarse) é obrigatória.

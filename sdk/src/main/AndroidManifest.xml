@@ -24,18 +24,23 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Wi-Fi state (normal permission, granted at install, no user prompt) — required by
+         WifiManager for the wifiSSID telemetry field; without it the SSID is always null
+         in host apps that only integrate the SDK. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
     <!-- Notifications permission (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     
     <!-- Boot completed permission for restart scanning after reboot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     
-    <!-- SEM USE_EXACT_ALARM / SCHEDULE_EXACT_ALARM: o SDK NÃO é app de "agenda"
-         nem "despertador", então não qualifica para alarme exato no Google Play
-         (a Play Console exige a remoção, senão pede a declaração de "Alarmes
-         exatos"). O watchdog de scan usa alarme INEXATO (setAndAllowWhileIdle),
-         que roda em Doze sem permissão especial — precisão de minuto é
-         irrelevante para uma rede de segurança do WorkManager. -->
+    <!-- NO USE_EXACT_ALARM / SCHEDULE_EXACT_ALARM: the SDK is not a calendar or
+         alarm-clock app, so it does not qualify for exact alarms on Google Play
+         (the Play Console requires removing them, otherwise it demands the "Exact
+         alarms" declaration). The scan watchdog uses an INEXACT alarm
+         (setAndAllowWhileIdle), which runs in Doze without any special permission —
+         minute-level precision is irrelevant for a WorkManager safety net. -->
 
     <!-- Foreground service permissions -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

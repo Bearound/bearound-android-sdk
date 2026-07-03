@@ -45,8 +45,10 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
         viewModel.updatePermissionStatus()
         viewModel.checkBluetoothStatus()
         viewModel.checkNotificationStatus()
-        // Start scanning if Bluetooth permissions are granted, even if location was denied.
-        // BLUETOOTH_SCAN uses neverForLocation, and BEAROUND_SVC filter works without location.
+        // Start scanning once the technical gate is satisfied: BLUETOOTH_SCAN on Android 12+
+        // (the scan starts even if location was denied), FINE/COARSE location on Android <= 11.
+        // The SDK declares location on all versions and recommends granting it alongside
+        // BLUETOOTH_SCAN for maximum OEM coverage.
         if (viewModel.hasRequiredPermissions()) {
             viewModel.startScanning()
         }
@@ -541,8 +543,8 @@ fun BeaconSection(
 // Helper functions for colors
 fun getLocationPermissionColor(status: String): Color = when {
     status.contains("Negada") -> Color(0xFFF44336)
-    status.contains("Sempre") -> Color(0xFF4CAF50)
-    status.contains("Quando em uso") || status.contains("Aguardando") -> Color(0xFFFF9800)
+    status.contains("Concedida") -> Color(0xFF4CAF50)
+    status.contains("Aguardando") -> Color(0xFFFF9800)
     else -> Color.Gray
 }
 

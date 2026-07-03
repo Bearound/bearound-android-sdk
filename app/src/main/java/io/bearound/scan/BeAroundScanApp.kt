@@ -51,9 +51,11 @@ fun BeAroundScanApp(viewModel: BeaconViewModel = viewModel()) {
     // Permission launcher
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
+    ) { _ ->
         viewModel.updatePermissionStatus()
-        if (permissions.values.all { it }) {
+        // Start once the scan is unlocked (12+: BLUETOOTH_SCAN; below 12: fine or coarse
+        // location) — requiring every grant let a POST_NOTIFICATIONS denial block the start.
+        if (viewModel.hasRequiredPermissions()) {
             viewModel.startScanning()
         }
     }
@@ -920,8 +922,7 @@ fun MetadataItem(icon: androidx.compose.ui.graphics.vector.ImageVector, label: S
 // Helper functions for colors
 fun getLocationPermissionColor(status: String): Color = when {
     status.contains("Negada") -> Color(0xFFF44336)
-    status.contains("Sempre") -> Color(0xFF4CAF50)
-    status.contains("Quando em uso") || status.contains("Aguardando") -> Color(0xFFFF9800)
+    status.contains("Concedida") -> Color(0xFF4CAF50)
     else -> Color.Gray
 }
 

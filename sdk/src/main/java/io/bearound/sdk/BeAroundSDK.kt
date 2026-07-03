@@ -512,6 +512,10 @@ class BeAroundSDK private constructor() {
         }
     }
 
+    /**
+     * Merges with previously-set properties (omitted fields are kept); internalId is
+     * persisted across app kills.
+     */
     fun setUserProperties(properties: UserProperties) {
         userProperties = (userProperties ?: UserProperties()).mergedWith(properties)
         userProperties?.internalId?.let { SDKConfigStorage.saveInternalId(context, it) }
@@ -524,17 +528,18 @@ class BeAroundSDK private constructor() {
     fun setPushToken(token: String) {
         PushTokenStore.setToken(token)
         Log.d(TAG, "Push token registered")
-        // Se o SDK já está configurado e o token ainda não foi enviado (novo/mudou),
-        // empurra agora via register (beacons:[]) — senão só iria no próximo register
-        // (TTL) ou ao detectar um beacon. Cobre o token FCM chegando DEPOIS do register
-        // inicial (fetch assíncrono, rotação mid-session, ou setPushToken tardio do
-        // host): o register-on-init já teria saído sem o token, e o token NÃO faz
-        // parte do fingerprint (um register normal não re-dispararia).
+        // If the SDK is already configured and this token was not sent yet (new/changed),
+        // push it now via register (beacons:[]) — otherwise it would only go out on the
+        // next TTL register or on beacon detection. Covers the FCM token arriving AFTER
+        // the initial register (async fetch, mid-session rotation, or a late setPushToken
+        // from the host): register-on-init already went out without the token, and the
+        // token is NOT part of the fingerprint (a normal register would not re-fire).
         if (isConfigured && PushTokenStore.tokenForPayload() != null) {
             scope.launch { registerDeviceIfNeeded(force = true) }
         }
     }
 
+    /** Clears all user properties, including the persisted internalId. */
     fun clearUserProperties() {
         userProperties = null
         SDKConfigStorage.saveInternalId(context, null)
@@ -562,46 +567,46 @@ class BeAroundSDK private constructor() {
     val isForegroundScanningEnabled: Boolean
         get() = foregroundScanConfig?.enabled == true
 
-    // region Background reliability (Doze + OEM battery killers) — sem location, sem policy
+    // region Background reliability (Doze + OEM battery killers) — no location, no policy strings
 
     /**
-     * true se o app já está isento da otimização de bateria do Android (Doze). Abaixo do
-     * Android 6 sempre true (não se aplica). Ver [openBatteryOptimizationSettings].
+     * true if the app is already exempt from Android's battery optimization (Doze). Below
+     * Android 6 always true (does not apply). See [openBatteryOptimizationSettings].
      */
     fun isIgnoringBatteryOptimizations(): Boolean =
         BackgroundReliabilityHelper.isIgnoringBatteryOptimizations(context)
 
     /**
-     * Abre a tela de Settings de otimização de bateria para o usuário isentar o app —
-     * aumenta a sobrevivência do scan em background sob Doze. Usa a tela de Settings
-     * (sem a permissão restrita REQUEST_IGNORE_BATTERY_OPTIMIZATIONS), então não dispara
-     * revisão do Google Play. @return true se conseguiu abrir a tela.
+     * Opens the battery-optimization Settings screen so the user can exempt the app —
+     * improves background scan survival under Doze. Uses the Settings screen (without
+     * the restricted REQUEST_IGNORE_BATTERY_OPTIMIZATIONS permission), so it does not
+     * trigger Google Play review. @return true if the screen was opened.
      */
     fun openBatteryOptimizationSettings(): Boolean =
         BackgroundReliabilityHelper.openBatteryOptimizationSettings(context)
 
     /**
-     * true se o device é de um OEM (Xiaomi, Huawei, Oppo/Vivo, OnePlus, Samsung…) com tela
-     * de autostart conhecida e resolvível. Em Android stock (Pixel) retorna false — não é
-     * necessário. Ver [openManufacturerAutostartSettings].
+     * true if the device is from an OEM (Xiaomi, Huawei, Oppo/Vivo, OnePlus, Samsung…) with
+     * a known, resolvable autostart screen. On stock Android (Pixel) returns false — not
+     * needed there. See [openManufacturerAutostartSettings].
      */
     fun isAutostartManageable(): Boolean =
         BackgroundReliabilityHelper.isAutostartManageable(context)
 
     /**
-     * Abre a tela de "autostart"/"apps protegidos" do fabricante, quando existe. Vários
-     * OEMs matam PendingIntent/broadcast receivers em background mesmo no Android 14+;
-     * habilitar o autostart é a mitigação. @return true se abriu; false em stock/OEM não
-     * mapeado (nesse caso o [openBatteryOptimizationSettings] já cobre o essencial).
+     * Opens the manufacturer's "autostart"/"protected apps" screen, when one exists. Several
+     * OEMs kill PendingIntent/broadcast receivers in the background even on Android 14+;
+     * enabling autostart is the mitigation. @return true if it opened; false on stock/unmapped
+     * OEMs (in that case [openBatteryOptimizationSettings] already covers the essentials).
      */
     fun openManufacturerAutostartSettings(): Boolean =
         BackgroundReliabilityHelper.openManufacturerAutostartSettings(context)
 
     /**
-     * Visão consolidada de confiabilidade: perfil de agressividade da ROM (Xiaomi/HyperOS,
-     * Huawei, Oppo, Vivo, Samsung…) + o estado das duas alavancas acionáveis. Use
-     * [io.bearound.sdk.models.ReliabilityStatus.recommendsUserAction] para decidir
-     * automaticamente quando mostrar o onboarding de "permitir detecção em background".
+     * Consolidated reliability view: the ROM's aggressiveness profile (Xiaomi/HyperOS,
+     * Huawei, Oppo, Vivo, Samsung…) plus the state of the two actionable levers. Use
+     * [io.bearound.sdk.models.ReliabilityStatus.recommendsUserAction] to automatically
+     * decide when to show the "allow background detection" onboarding.
      */
     fun reliabilityStatus(): io.bearound.sdk.models.ReliabilityStatus {
         val profile = OemPowerProfile.get()

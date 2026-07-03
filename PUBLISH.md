@@ -10,14 +10,14 @@ Checklist completo para publicar uma atualizacao do BeAround Android SDK.
   merge → `git checkout main && git pull` → conferir `SDK_VERSION` → taggear na `main`.
 - CI verde na `main` apos o merge (aguardar o `ci.yml` do push do bump).
 - Build passando localmente: `./gradlew :sdk:test :sdk:lint` (o `release.yml` roda os
-  testes e **bloqueia** a release se falharem — o gate de PR do `ci.yml` so emite warning
-  para teste vermelho, entao a tag e o primeiro ponto que trava de verdade).
+  testes e **bloqueia** a release se falharem; o gate de PR do `ci.yml` tambem trava
+  com teste vermelho).
 - Secrets do repositorio validos (Settings → Secrets): `JITPACK_TOKEN` (trigger do build
   JitPack) e `GH_PUSH_TOKEN` (criacao da GitHub Release). Se o `GH_PUSH_TOKEN` estiver
   expirado, a release falha DEPOIS de o JitPack ja ter sido disparado (estado
   meio-publicado — ver Rollback).
 
-> ⚠️ **Nao usar o workflow `gradle-publish.yml`** (workflow_dispatch "Gradle Package").
+> ⚠️ **Nao usar o workflow `gradle-publish.yml`** (workflow_dispatch "Publish SDK and Create TAG and Release").
 > Ele e um fluxo paralelo que reescreve o pin do README via sed, cria/pusha a tag por
 > conta propria e publica no GitHub Packages — a tag pushada dispara o `release.yml`
 > tambem, resultando em execucao dupla e duas escritas concorrentes na mesma Release.
@@ -39,7 +39,7 @@ Dessa unica fonte, o valor flui automaticamente para:
 
 Nao ha outro lugar para editar a versao **em codigo**. Nao hardcode a versao em codigo.
 
-> **Excecao documental:** o snippet de instalacao do `README.md` (secao Quick Start) tem o
+> **Excecao documental:** o snippet de instalacao do `README.md` (secao Installation) tem o
 > pin manual `com.github.Bearound:bearound-android-sdk:vX.Y.Z` — atualizar junto no mesmo
 > commit do bump (entra no passo 4).
 

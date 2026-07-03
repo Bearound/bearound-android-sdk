@@ -25,6 +25,8 @@ your Control Hub account.
 
 - Android 6.0+ (API 23+)
 - Bluetooth LE hardware
+- Your app's build: `compileSdk` 35+ and Android Gradle Plugin 8.6.0+ (required
+  transitively by `androidx.core` 1.16.0)
 - A Bearound **business token** (see [Getting a business token](#getting-a-business-token))
 - **Android 12+**: `BLUETOOTH_SCAN` ("Nearby devices") starts the scan; grant
   `ACCESS_FINE_LOCATION` alongside it for full beacon coverage (the SDK declares location and
@@ -86,7 +88,30 @@ If you don't have one, ask your Bearound contact or write to `contact@bearound.c
 
 ### JitPack
 
-1. Add the JitPack repository to your root `build.gradle`:
+1. Add the JitPack repository under `dependencyResolutionManagement` in your
+   `settings.gradle(.kts)` (the standard layout in current projects):
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        ...
+        maven("https://jitpack.io")
+    }
+}
+```
+
+```gradle
+// settings.gradle
+dependencyResolutionManagement {
+    repositories {
+        ...
+        maven { url 'https://jitpack.io' }
+    }
+}
+```
+
+Legacy projects that still declare repositories in the root `build.gradle`:
 
 ```gradle
 allprojects {
@@ -97,20 +122,17 @@ allprojects {
 }
 ```
 
-Or if using `settings.gradle` (newer projects):
+2. Add the dependency (the version badge above always points at the latest release):
 
-```gradle
-dependencyResolutionManagement {
-    repositories {
-        ...
-        maven { url 'https://jitpack.io' }
-    }
+```kotlin
+// build.gradle.kts
+dependencies {
+    implementation("com.github.Bearound:bearound-android-sdk:v3.4.5")
 }
 ```
 
-2. Add the dependency (the version badge above always points at the latest release):
-
 ```gradle
+// build.gradle
 dependencies {
     implementation 'com.github.Bearound:bearound-android-sdk:v3.4.5'
 }
@@ -158,12 +180,15 @@ start scanning.
 ```kotlin
 import android.Manifest
 import android.os.Build
+import android.os.Bundle
+import android.util.Log
+import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import io.bearound.sdk.BeAroundSDK
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.models.Beacon
 
-class MainActivity : AppCompatActivity(), BeAroundSDKListener {
+class MainActivity : ComponentActivity(), BeAroundSDKListener {
 
     private lateinit var sdk: BeAroundSDK
 
@@ -202,6 +227,8 @@ class MainActivity : AppCompatActivity(), BeAroundSDKListener {
                 add(Manifest.permission.BLUETOOTH_SCAN)
             }
             add(Manifest.permission.ACCESS_FINE_LOCATION)
+            // Android 12+ ignores a FINE request unless COARSE is requested together.
+            add(Manifest.permission.ACCESS_COARSE_LOCATION)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 // Android 13+: without this the (optional) foreground-service
                 // notification is silently invisible.
@@ -255,9 +282,9 @@ sdk.clearUserProperties()
 
 ### Push notifications (FCM)
 
-If your app ships Firebase, `configure(...)` auto-collects the FCM token and sends it on the
-next sync. Firebase is a soft dependency (`compileOnly`): apps without it are unaffected. If
-you don't use Firebase, provide the token yourself:
+If your app ships Firebase, `configure(...)` auto-collects the FCM token and pushes it to
+the backend immediately. Firebase is a soft dependency (`compileOnly`): apps without it are
+unaffected. If you don't use Firebase, provide the token yourself:
 
 ```kotlin
 sdk.setPushToken(token)
@@ -287,8 +314,10 @@ Android equivalent of iOS's `CLBeaconRegion` monitoring. No notification require
 **Architecture under the hood:**
 
 - **`BluetoothScanReceiver`** — wakes the app via `PendingIntent` when a `0xBEAD` beacon is
-  observed by the OS scanner. Requires only `BLUETOOTH_SCAN` (`neverForLocation`) — **no
-  Location authorization at all** on Android 12+.
+  observed by the OS scanner. Requires only `BLUETOOTH_SCAN` as the technical gate on
+  Android 12+ — the SDK no longer uses `neverForLocation`, and keeping location granted
+  alongside improves OEM coverage (see
+  [Why location, and no `neverForLocation`](#why-location-and-no-neverforlocation)).
 - **`ScanWatchdogReceiver`** — `AlarmManager` heartbeat (inexact alarms — no exact-alarm
   permission, no Play policy impact) plus `BOOT_COMPLETED` listener. Re-registers the BLE
   scan filter if it ever gets evicted by the OS.
@@ -494,7 +523,7 @@ sdk.disableForegroundScanning()
 // User identity & push
 sdk.setUserProperties(properties: UserProperties)   // merges; internalId is persisted
 sdk.clearUserProperties()
-sdk.setPushToken(token: String)                     // re-registers immediately if scanning
+sdk.setPushToken(token: String)                     // re-registers immediately if configured
 
 // Background reliability (Doze / OEM killers)
 sdk.reliabilityStatus(): ReliabilityStatus          // OEM ROM + aggressiveness + recommendsUserAction
@@ -551,6 +580,9 @@ interface BeAroundSDKListener {
 }
 ```
 
+All callbacks are dispatched on the main thread, except `onProvideNotificationContent`,
+which runs synchronously on the SDK scan thread — keep it lightweight.
+
 ### Diagnostics
 
 `diagnostics()` returns a point-in-time snapshot for support/triage. `summary()` renders it
@@ -558,19 +590,24 @@ as a printable multi-line string.
 
 ```kotlin
 data class BeAroundDiagnostics(
-    val deviceId: String,
-    val pushTokenMasked: String?,       // masked, never the raw token
-    val pushTokenLastSentAt: Long?,     // epoch ms
-    val isScanning: Boolean,
-    val pendingBatches: Int,
-    val lastScanAt: Long?,
-    val lastScanBeaconCount: Int?,
-    val lastSyncAt: Long?,
-    val lastSyncSuccess: Boolean?,
-    val lastSyncBeaconCount: Int?,
-    val recentErrors: List<String>,
-    val sdkVersion: Int                 // ⚠️ this is the OS API level (Build.VERSION.SDK_INT),
-                                        // not the SDK release version
+    val deviceId: String,                        // stable per-install device id
+    val pushTokenMasked: String?,                // masked, never the raw token
+    val pushTokenLastSentAt: Long?,              // epoch ms, null if never sent
+    val isScanning: Boolean,                     // scanning currently active
+    val pendingBatches: Int,                     // upload batches waiting for retry
+    val lastScanAt: Long?,                       // epoch ms of the last scan cycle
+    val lastScanBeaconCount: Int?,               // beacons seen in that cycle
+    val lastSyncAt: Long?,                       // epoch ms of the last upload attempt
+    val lastSyncSuccess: Boolean?,               // whether that upload succeeded
+    val lastSyncBeaconCount: Int?,               // beacons in that upload
+    val recentErrors: List<String>,              // most recent SDK errors
+    val sdkVersion: String,                      // SDK release version, e.g. "3.4.5"
+    val osApiLevel: Int,                         // Android OS API level (Build.VERSION.SDK_INT)
+    val hasBluetoothScanPermission: Boolean,     // BLUETOOTH_SCAN granted (always true on ≤ 11)
+    val bluetoothEnabled: Boolean,               // Bluetooth adapter powered on
+    val foregroundServiceActive: Boolean,        // foreground scan service running
+    val backgroundScanRegistered: Boolean,       // low-power PendingIntent scan registered
+    val isIgnoringBatteryOptimizations: Boolean  // exempt from battery optimizations (Doze)
 )
 ```
 
@@ -661,6 +698,18 @@ data class ReliabilityStatus(
 )
 ```
 
+#### HttpException
+
+`io.bearound.sdk.network.HttpException` is delivered via `onError` whenever the ingest API
+responds with a non-2xx status (e.g. HTTP 401 on a wrong business token):
+
+```kotlin
+class HttpException(
+    val statusCode: Int,   // HTTP status, e.g. 401
+    val body: String       // raw response body (best-effort)
+) : Exception()
+```
+
 ## Troubleshooting
 
 ### Beacons not detected
@@ -679,7 +728,9 @@ data class ReliabilityStatus(
 ### Device doesn't appear in the Control Hub / sync fails
 
 1. **Check the business token.** A wrong token fails every upload with HTTP 401 — filter
-   logcat by `BeAroundSDK-APIClient`. There is no local validation of the token value.
+   logcat by `BeAroundSDK-APIClient`, or check programmatically in `onError`:
+   `(error as? HttpException)?.statusCode == 401`. There is no local validation of the
+   token value.
 2. Check internet connectivity; failed batches accumulate in `pendingBatchCount` and are
    retried with backoff.
 3. Watch `onSyncCompleted(beaconCount, success, error)` on the listener.
@@ -713,8 +764,8 @@ data class ReliabilityStatus(
 ## Migrating from 2.x to 3.x
 
 3.x is the hybrid wake-up generation (kernel-registered `PendingIntent` scan, force-stop
-survival on Android 14+, `neverForLocation`). Update the dependency to the latest 3.x tag,
-then review:
+survival on Android 14+, `BLUETOOTH_SCAN`-gated scanning with location declared on all
+versions). Update the dependency to the latest 3.x tag, then review:
 
 1. **`BLUETOOTH_CONNECT` is no longer declared by the SDK manifest** (3.0.0). If your app
    uses GATT operations of its own, declare it in your own manifest.
@@ -724,9 +775,10 @@ then review:
 3. **Location-capture APIs were removed** (3.3.1): `LocationCaptureResult`,
    `onStartLocationCapture`, `onCompleteLocationCapture` no longer exist. Delete any
    overrides — the SDK no longer touches GPS at all.
-4. **Permission requests**: stop requesting location on Android 12+; request `BLUETOOTH_SCAN`
-   instead (see Quick Start). Remove any `ACCESS_BACKGROUND_LOCATION` requests made for the
-   SDK's benefit.
+4. **Permission requests**: on Android 12+, add `BLUETOOTH_SCAN` to your permission request
+   and keep requesting `ACCESS_FINE_LOCATION` (+ `ACCESS_COARSE_LOCATION`) alongside it (see
+   Quick Start). What you should drop is `ACCESS_BACKGROUND_LOCATION` — remove any requests
+   made for the SDK's benefit.
 5. Coming from **2.3.6 or older**: `configure()` takes `scanPrecision: ScanPrecision` instead
    of `foregroundScanInterval`/`backgroundScanInterval` (changed in 2.3.7).
 6. Coming from **1.x**: the entry point is `BeAroundSDK.getInstance(context)` +
