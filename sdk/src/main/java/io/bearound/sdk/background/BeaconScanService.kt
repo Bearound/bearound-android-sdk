@@ -166,6 +166,7 @@ class BeaconScanService : Service() {
             }
         } catch (e: SecurityException) {
             Log.e(TAG, "Cannot start FGS connectedDevice without Bluetooth permission — stopping service instead of crashing", e)
+            io.bearound.sdk.telemetry.ErrorReporter.report(e, "BeaconScanService.onStartCommand")
             stopSelf()
             return START_NOT_STICKY
         }

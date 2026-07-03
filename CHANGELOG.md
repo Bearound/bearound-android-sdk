@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Isolated SDK error telemetry (`ErrorReporter`).** The SDK now reports its own errors to the ingest backend (`POST /sdk-errors`): a chained default uncaught-exception handler captures crashes whose stack contains SDK frames (and ALWAYS delegates to the previously-installed handler — host crash flow untouched), a `CoroutineExceptionHandler` on the SDK scope reports coroutine failures without rethrowing, and existing catch blocks in `BeaconScanService`, `BackgroundScanManager`, `BeaconSyncWorker` and `BeaconManager` report in place without changing their flow. Payloads carry the error (type/message/stack truncated to 8 000 chars/context) plus cheap device info (model, OS version/API level, OEM ROM, locale, battery, app state). Hardened by design: in-memory rate limit (max 20/h), 5-min dedupe by error hash, 5 s timeouts on a private IO scope, and every entry point swallows its own failures — the reporter never throws, never blocks and never interferes with the host app. Opt-out via `BeAroundSDK.setErrorReportingEnabled(false)`.
+
 ## [3.4.5] - 2026-07-03
 
 ### Fixed
