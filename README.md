@@ -33,22 +33,21 @@ your Control Hub account.
 
 ### Recommended setup — keep Bluetooth AND Location fully on
 
-For the best detection coverage on **every** Android version, guide your users to:
+For the best detection coverage on **every** Android version, we recommend encouraging your
+users to keep the following on:
 
-1. **Bluetooth ON, and kept on.** Detection rides entirely on BLE, so Bluetooth is the one
-   hard switch — while it is off, nothing is detected. When the user toggles it back on the
-   SDK re-arms every scan automatically (no restart needed), but it can't scan during the
-   off window. If your product depends on always-on detection, surface a persistent prompt
-   whenever `sdk.diagnostics().bluetoothEnabled` is false rather than assuming it stays on —
-   Airplane mode, "Bluetooth timeout" ROM features, and quick-settings taps all turn it off.
-2. **Location Services ON** (the system toggle) — several OEM ROMs gate BLE scan delivery on
-   the global Location toggle regardless of `neverForLocation`, and on Android ≤ 11 it is a
-   hard requirement.
-3. **Grant both runtime permissions** — "Nearby devices" (12+) **and** location. Location is
-   what unlocks the scan on ≤ 11, and keeping it granted on 12+ maximizes reliability across
-   OEMs and enables the richest positioning data.
+1. **Bluetooth on** — detection runs entirely over BLE, so it's best to keep Bluetooth
+   enabled for continuous detection. (If it gets turned off and back on, the SDK re-arms the
+   scan on its own.)
+2. **Location Services on** — keeping the system Location toggle enabled improves detection
+   across OEM devices (several ROMs tie BLE scan delivery to it), and on Android ≤ 11 it's
+   required.
+3. **Both permissions granted** — "Nearby devices" (Android 12+) and location. Keeping
+   location granted alongside Bluetooth gives the most reliable detection across devices and
+   the richest positioning data.
 
-The Quick Start below requests exactly this set. On aggressive ROMs (Xiaomi/HyperOS,
+In short: the more of these the user keeps on, the better and more consistently the SDK
+works. The Quick Start below requests exactly this set. On aggressive ROMs (Xiaomi/HyperOS,
 Huawei, Oppo, Vivo…) also run the [Background reliability](#background-reliability)
 onboarding — the SDK detects those devices automatically via `reliabilityStatus()`.
 
