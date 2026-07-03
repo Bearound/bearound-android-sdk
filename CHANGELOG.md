@@ -47,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - README: new **"Recommended setup"** section steering integrators to the full-reliability configuration (Bluetooth ON + Location Services ON + both "Nearby devices" and location granted) with the Quick Start requesting that exact set; "What the SDK detects" updated for the iBeacon-frame detection added in 3.4.5 (the old "generic iBeacons are not detected" note was removed — the Bearound iBeacon frame now IS a detection signature); Background reliability rewritten around `reliabilityStatus()` with an expanded OEM matrix (HyperOS validated on device, ColorOS/Vivo rows added); troubleshooting updated accordingly.
 - README rewritten from the actual code: install snippet pinned to the current version, single support matrix, "detects 0xBEAD, not generic iBeacon", a Google Play review section (FGS `connectedDevice` → declaration + video), an integrated Quick Start, and corrected troubleshooting. Backfilled the 3.4.1/3.4.2 CHANGELOG entries and rewrote the sample READMEs.
-- Purged stale `neverForLocation` references from the READMEs and the migration guide; documented the real `BeAroundDiagnostics` shape, the `HttpException` error type, Kotlin DSL install snippets, and consumer build requirements (compileSdk 35+ / AGP 8.6+).
+- READMEs and the migration guide made consistent with the final permission model (`neverForLocation` kept + location declared on all versions — see the new "Permission model" README section with the on-device evidence); documented the real `BeAroundDiagnostics` shape, the `HttpException` error type, Kotlin DSL install snippets, and consumer build requirements (compileSdk 35+ / AGP 8.6+).
 
 ## [3.4.4] - 2026-07-01
 
