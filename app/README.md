@@ -53,6 +53,33 @@ permanece ativo quando a Activity é destruída — é ele que notifica quando o
 processo em background. O `BeaconViewModel` assume o listener enquanto a UI está viva e o
 restaura no `onCleared()`.
 
+## 🎯 Casos de uso (roteiro de teste)
+
+### Permissões
+1. Abrir o app e ver o status de cada permissão (localização, Bluetooth, notificações)
+2. Testar com permissões negadas/concedidas
+3. Verificar o comportamento do SDK em cada combinação (no 12+, `BLUETOOTH_SCAN` é o que destrava)
+
+### Modos de scan
+1. Alternar a precisão **HIGH** (contínuo, detecção máxima) e **MEDIUM/LOW** (duty cycle, economia)
+2. Observar as transições foreground/background
+3. Verificar ranging ativo/pausado
+
+### Sync e fila offline
+1. Observar o intervalo de sync por precisão e o countdown até o próximo envio
+2. Deixar sem rede e ver os lotes acumularem na aba **Retry Queue**
+3. Monitorar o consumo de bateria por modo
+
+### Detecção
+1. Aproximar de um beacon Bearound real
+2. Ver distância e RSSI em tempo real
+3. Testar a ordenação por proximidade/ID e os indicadores de cor
+
+### Notificações
+1. Sair e entrar na região dos beacons
+2. Verificar a notificação local (detecção, scan, sync)
+3. Confirmar o cooldown (sem spam)
+
 ## 🚀 Integração demonstrada (código real)
 
 ```kotlin
@@ -94,6 +121,21 @@ app/src/main/java/io/bearound/scan/
 ├── NotificationManager.kt      # Notificações locais dos eventos do SDK
 └── ui/theme/Theme.kt           # Material Design 3
 ```
+
+## 📊 Comparação com o sample iOS
+
+Os apps de exemplo Android e iOS foram construídos com paridade de funcionalidade:
+
+| Feature | iOS BeAroundScan | Android BeAroundScan |
+|---------|------------------|----------------------|
+| UI moderna | SwiftUI | Jetpack Compose |
+| Status de permissões | ✅ | ✅ |
+| Info de scan ao vivo | ✅ | ✅ |
+| Controles (precisão, fila) | ✅ | ✅ |
+| Lista de beacons | ✅ | ✅ |
+| Notificações locais | ✅ | ✅ |
+| Auto-start | ✅ | ✅ |
+| Indicadores de cor | ✅ | ✅ |
 
 ## 📱 Requisitos
 
