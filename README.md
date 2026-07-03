@@ -26,8 +26,9 @@ your Control Hub account.
 - Android 6.0+ (API 23+)
 - Bluetooth LE hardware
 - A Bearound **business token** (see [Getting a business token](#getting-a-business-token))
-- **Android 12+**: the `BLUETOOTH_SCAN` runtime permission ("Nearby devices") is what unlocks
-  beacon detection (declared with `neverForLocation`).
+- **Android 12+**: `BLUETOOTH_SCAN` ("Nearby devices") starts the scan; grant
+  `ACCESS_FINE_LOCATION` alongside it for full beacon coverage (the SDK declares location and
+  does **not** use `neverForLocation` — see [Why location](#why-location-and-no-neverforlocation)).
 - **Android ≤ 11**: `ACCESS_FINE_LOCATION` granted and Location Services on (the legacy BLE
   gate — there is no `BLUETOOTH_SCAN` before API 31).
 
@@ -123,25 +124,29 @@ dependencies {
 | Merged into your app | Purpose |
 |---|---|
 | `BLUETOOTH`, `BLUETOOTH_ADMIN` (`maxSdkVersion=30`) | Legacy Bluetooth, Android ≤ 11 |
-| `BLUETOOTH_SCAN` (`neverForLocation`) | BLE scan on Android 12+, no location implied |
-| `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` (`maxSdkVersion=30`) | Legacy BLE-scan gate, Android ≤ 11 only |
+| `BLUETOOTH_SCAN` | BLE scan on Android 12+ — **without** `neverForLocation` (see below) |
+| `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` | Beacon detection on **all** versions (foreground) |
 | `INTERNET`, `ACCESS_NETWORK_STATE` | Upload to the ingest API |
 | `POST_NOTIFICATIONS` | Foreground-service notification on Android 13+ |
 | `RECEIVE_BOOT_COMPLETED` | Re-arm scanning after reboot |
 | `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE` | Optional foreground service (see [Google Play review](#google-play-review--what-the-manifest-merge-means-for-your-app)) |
 
-The SDK's own manifest caps the location permissions at Android ≤ 11 (`maxSdkVersion=30`).
-To follow the [recommended setup](#recommended-setup--keep-bluetooth-and-location-fully-on)
-and request location on 12+ too, declare it in **your app's** manifest (no `maxSdkVersion`):
+### Why location, and no `neverForLocation`
 
-```xml
-<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-```
+This is a **proximity/beacon SDK**: it uses BLE scan results to derive the user's physical
+location, so it declares `ACCESS_FINE_LOCATION` on every version and does **not** assert
+`neverForLocation` on `BLUETOOTH_SCAN`. Android's own docs warn that `neverForLocation` *can
+filter beacons out of the scan results* — the opposite of what you want. On Android 12+ the
+scan starts on `BLUETOOTH_SCAN`; keeping location granted alongside it is what guarantees
+full beacon coverage across OEMs (the [recommended setup](#recommended-setup--keep-bluetooth-and-location-fully-on)).
 
-The SDK deliberately does **not** declare `ACCESS_BACKGROUND_LOCATION` (foreground location
-is all the recommended setup needs; background location would drag your app into Google
-Play's background-location review) and does **not** declare `BLUETOOTH_CONNECT` (add it to
-your own manifest only if your app does GATT operations).
+> 📋 **Google Play Data Safety:** because the SDK derives location, declare **Location** in
+> your app's Data Safety form. This is a standard declaration — the SDK requests
+> **foreground** location only and never declares `ACCESS_BACKGROUND_LOCATION`, so it does
+> **not** trigger the heavier background-location review (prominent-disclosure video).
+
+The SDK does **not** declare `BLUETOOTH_CONNECT` (the SDK only scans; it never connects to
+the beacon — add it to your own manifest only if your app does GATT operations).
 
 What you DO need to do is **request the runtime permissions** — see the Quick Start below.
 
@@ -346,11 +351,9 @@ foreground service.** Consequences on the Play Console:
   After removing it, do **not** call the foreground-service APIs — the service cannot start
   without the permission. All other detection paths (foreground scan, `PendingIntent`
   background scan) are unaffected.
-- The SDK also merges `<uses-feature android:name="android.hardware.bluetooth_le"
-  android:required="true" />`, which **filters your app out of the Play Store on devices
-  without BLE**. That is correct for beacon-driven apps; if your app must remain installable
-  on such devices, override the feature with `tools:node` and `required="false"` and gate the
-  SDK calls at runtime.
+- The SDK merges `<uses-feature android:name="android.hardware.bluetooth_le"
+  android:required="false" />` — it does **not** restrict your app's Play Store availability.
+  If your app genuinely requires BLE, override it to `required="true"` in your own manifest.
 
 ### Background reliability
 

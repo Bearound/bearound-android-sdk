@@ -5,16 +5,14 @@
     <!-- Bluetooth permissions -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <!-- No neverForLocation: this is a beacon/proximity app — scan results derive location,
+         and neverForLocation can filter beacons out of the results (Android docs). -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
-        android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
-    
-    <!-- Location permissions — legacy only: required to run a BLE scan on API ≤ 30.
-         On API 31+ BLUETOOTH_SCAN (neverForLocation) covers scanning, so location is not requested. -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
-        android:maxSdkVersion="30" />
+
+    <!-- Location for BLE beacon detection on all versions (foreground only; no background). -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!-- Internet for API communication -->
     <uses-permission android:name="android.permission.INTERNET" />

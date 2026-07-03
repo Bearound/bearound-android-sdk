@@ -859,11 +859,12 @@ class BeaconManager(private val context: Context) {
 
     private fun checkPermissions(): Boolean {
         // The BLE-scan gate is version-dependent:
-        // - Android 12+ (S+): ONLY BLUETOOTH_SCAN unlocks the scan (manifest uses
-        //   neverForLocation). Location does NOT unlock it — the OS BluetoothLeScanner
-        //   requires BLUETOOTH_SCAN, so passing with location-only made the SDK attempt a
-        //   scan the OS then blocked with a (caught) SecurityException — polluting the log
-        //   with no detection. So on 12+ we require BLUETOOTH_SCAN directly.
+        // - Android 12+ (S+): BLUETOOTH_SCAN is the hard gate — the OS BluetoothLeScanner
+        //   rejects startScan without it. The manifest does NOT use neverForLocation and also
+        //   declares ACCESS_FINE_LOCATION: as a proximity/beacon SDK we want location granted
+        //   too, both for compliance and because neverForLocation can filter beacons out of
+        //   the results. Location is strongly recommended (requested in the Quick Start) but
+        //   not part of the gate — the scan runs with BLUETOOTH_SCAN alone.
         // - Android <12: legacy model — ACCESS_FINE/COARSE_LOCATION unlocks the BLE scan
         //   (BLUETOOTH/BLUETOOTH_ADMIN are install-time normal permissions).
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -897,14 +898,13 @@ class BeaconManager(private val context: Context) {
     }
 
     /**
-     * Version-accurate message for the missing-permission case. Reflects the real gate of
-     * the current SDK: on Android 12+ only BLUETOOTH_SCAN unlocks the BLE scan (manifest
-     * declares neverForLocation, so location does NOT unlock it); on Android ≤11 the legacy
-     * model applies and location is what unlocks the scan.
+     * Version-accurate message for the missing-permission case: on Android 12+ BLUETOOTH_SCAN
+     * ("Nearby devices") is the hard gate (location is recommended alongside it but not
+     * required to start the scan); on Android ≤11 location is what unlocks the BLE scan.
      */
     private fun missingPermissionMessage(): String {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            "BLUETOOTH_SCAN (Nearby devices) required on Android 12+ — location does not unlock BLE scan; location only unlocks it on Android ≤11"
+            "BLUETOOTH_SCAN (Nearby devices) required on Android 12+ to start the BLE scan; also grant location for full beacon coverage"
         } else {
             "ACCESS_FINE_LOCATION or ACCESS_COARSE_LOCATION required on Android ≤11 to unlock the BLE scan"
         }
