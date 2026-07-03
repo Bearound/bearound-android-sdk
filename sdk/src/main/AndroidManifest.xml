@@ -38,9 +38,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
-    <!-- Required hardware features -->
-    <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
-    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+    <!-- Hardware features. required="false" ON PURPOSE: this manifest merges into the HOST
+         app's, and uses-feature merges with OR (true wins) — required="true" here would make
+         every client app invisible on the Play Store for devices without BLE, even when the
+         app has plenty of non-beacon functionality. The SDK degrades gracefully at runtime
+         (adapter == null → no scanning). -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <application>
         <!-- BroadcastReceiver for PendingIntent-based BLE scan (API 26+) -->

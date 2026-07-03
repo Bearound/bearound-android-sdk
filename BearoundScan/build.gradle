@@ -4,6 +4,18 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.0"
 }
 
+// Read BUSINESS_TOKEN from local.properties (gitignored) or env var, falling back to the
+// PUBLIC test token — intentionally published so anyone can run the sample out of the box.
+def localProps = new Properties()
+def localPropsFile = rootProject.file("local.properties")
+if (localPropsFile.exists()) {
+    localProps.load(new FileInputStream(localPropsFile))
+}
+def businessToken = localProps.getProperty(
+    "BUSINESS_TOKEN",
+    System.getenv("BUSINESS_TOKEN") ?: "ee2ec9c46d2b2ad99bddcdd0afe224e6"
+)
+
 android {
     namespace = "io.bearound.bearoundscan"
     compileSdk = 36
@@ -17,6 +29,8 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         multiDexEnabled = true
+
+        buildConfigField "String", "BUSINESS_TOKEN", "\"${businessToken}\""
     }
 
     signingConfigs {
@@ -41,6 +55,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {

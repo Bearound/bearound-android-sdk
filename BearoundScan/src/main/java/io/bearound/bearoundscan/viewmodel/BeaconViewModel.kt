@@ -12,6 +12,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import io.bearound.bearoundscan.BuildConfig
 import io.bearound.bearoundscan.model.DetectionLogEntry
 import io.bearound.bearoundscan.notification.BeaconNotificationManager
 import io.bearound.sdk.BeAroundSDK
@@ -192,7 +193,9 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         maxQueued: MaxQueuedPayloads
     ) {
         sdk.configure(
-            businessToken = "ee2ec9c46d2b2ad99bddcdd0afe224e6",
+            // From local.properties / env var, falling back to the public test token
+            // (see BearoundScan/build.gradle).
+            businessToken = BuildConfig.BUSINESS_TOKEN,
             scanPrecision = precision,
             maxQueuedPayloads = maxQueued
         )

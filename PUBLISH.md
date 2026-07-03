@@ -4,9 +4,24 @@ Checklist completo para publicar uma atualizacao do BeAround Android SDK.
 
 ## Pre-requisitos
 
-- Branch `main` atualizada e estavel
-- Todas as alteracoes commitadas
-- Build passando: `./gradlew :sdk:lint`
+- **PR mergeada na `main` antes de taggear.** O `release.yml` valida a tag contra o commit
+  apontado por ela — taggear uma branch "funciona", mas publica um commit fora da `main`
+  (e com squash merge a tag fica em linhagem orfa). Sequencia: PR ready → CI verde →
+  merge → `git checkout main && git pull` → conferir `SDK_VERSION` → taggear na `main`.
+- CI verde na `main` apos o merge (aguardar o `ci.yml` do push do bump).
+- Build passando localmente: `./gradlew :sdk:test :sdk:lint` (o `release.yml` roda os
+  testes e **bloqueia** a release se falharem — o gate de PR do `ci.yml` so emite warning
+  para teste vermelho, entao a tag e o primeiro ponto que trava de verdade).
+- Secrets do repositorio validos (Settings → Secrets): `JITPACK_TOKEN` (trigger do build
+  JitPack) e `GH_PUSH_TOKEN` (criacao da GitHub Release). Se o `GH_PUSH_TOKEN` estiver
+  expirado, a release falha DEPOIS de o JitPack ja ter sido disparado (estado
+  meio-publicado — ver Rollback).
+
+> ⚠️ **Nao usar o workflow `gradle-publish.yml`** (workflow_dispatch "Gradle Package").
+> Ele e um fluxo paralelo que reescreve o pin do README via sed, cria/pusha a tag por
+> conta propria e publica no GitHub Packages — a tag pushada dispara o `release.yml`
+> tambem, resultando em execucao dupla e duas escritas concorrentes na mesma Release.
+> O fluxo oficial e o deste documento (tag manual → `release.yml`).
 
 ---
 
@@ -22,7 +37,11 @@ Dessa unica fonte, o valor flui automaticamente para:
 - `BuildConfig.SDK_VERSION` (via `buildConfigField` em `sdk/build.gradle`) — usado em runtime por `SDKInfo.version`
 - a versao da publicacao Maven/JitPack (via `version = findProperty("SDK_VERSION")` em `sdk/build.gradle`)
 
-Nao ha outro lugar para editar a versao. Nao hardcode a versao em codigo.
+Nao ha outro lugar para editar a versao **em codigo**. Nao hardcode a versao em codigo.
+
+> **Excecao documental:** o snippet de instalacao do `README.md` (secao Quick Start) tem o
+> pin manual `com.github.Bearound:bearound-android-sdk:vX.Y.Z` — atualizar junto no mesmo
+> commit do bump (entra no passo 4).
 
 > **Nota:** `technology` em `SDKInfo` e uma constante hardcoded (`"android-native"`), nao versionada nem configuravel — nao mexer ao publicar.
 
@@ -52,33 +71,41 @@ Mover o conteudo de `[Unreleased]` para uma nova secao com a versao e data:
 
 ```bash
 ./gradlew clean
+./gradlew :sdk:test
 ./gradlew :sdk:lint
 ./gradlew :sdk:assembleRelease
 ```
 
-Confirmar que nao ha erros (warnings pre-existentes sao OK).
+Confirmar que nao ha erros (warnings pre-existentes sao OK). Os testes sao obrigatorios:
+o `release.yml` os executa na validacao da tag e **bloqueia** a release se falharem.
 
 ## 4. Commit de versao
 
 ```bash
-git add gradle.properties CHANGELOG.md
+git add gradle.properties CHANGELOG.md README.md
 git commit -m "bump: version X.Y.Z"
 ```
 
+(`README.md` entra por causa do pin manual do snippet de instalacao — ver passo 1.)
+
 ## 5. Criar e push da tag
 
+**A tag deve apontar para o commit da `main` ja mergeado** (ver Pre-requisitos):
+
 ```bash
+git checkout main && git pull
+grep SDK_VERSION gradle.properties   # conferir que e X.Y.Z
 git tag vX.Y.Z
-git push origin main
 git push origin vX.Y.Z
 ```
 
 > **Importante:** A tag DEVE ter o prefixo `v` (ex: `v2.4.0`).
 > O push da tag dispara automaticamente o workflow `release.yml` que:
 > 1. Valida que `gradle.properties` e `CHANGELOG.md` estao de acordo com a tag
-> 2. Roda lint e build do AAR
-> 3. Dispara o build no JitPack
-> 4. Cria a GitHub Release com as notas do CHANGELOG
+> 2. Roda **testes**, lint e build do AAR
+> 3. Dispara o build no JitPack (precisa do secret `JITPACK_TOKEN`; falha do trigger vira
+>    so warning — o job pode ficar verde sem o JitPack ter aceitado; conferir no passo 6)
+> 4. Cria a GitHub Release com as notas do CHANGELOG (precisa do secret `GH_PUSH_TOKEN`)
 
 ## 6. Verificar publicacao
 
@@ -98,13 +125,29 @@ Acessar https://github.com/Bearound/bearound-android-sdk/actions e confirmar que
 
 ## 7. Testar integracao
 
-Num projeto consumidor, atualizar a dependencia:
+Num projeto consumidor, atualizar a dependencia (**com** o prefixo `v`, igual ao README —
+o JitPack resolve as duas formas, mas sao coordenadas/caches distintos; padronizamos a
+`vX.Y.Z`, que e a que o `release.yml` pre-aquece no trigger):
 
 ```gradle
-implementation 'com.github.Bearound:bearound-android-sdk:X.Y.Z'
+implementation 'com.github.Bearound:bearound-android-sdk:vX.Y.Z'
 ```
 
 Fazer sync do Gradle e confirmar que compila e funciona.
+
+---
+
+## Rollback / tag errada
+
+- **GitHub Release + tag:** deletar a Release (UI ou `gh release delete vX.Y.Z`) e a tag
+  (`git push origin :refs/tags/vX.Y.Z`).
+- **JitPack cacheia o build por coordenada** — deletar e re-pushar a MESMA tag **nao**
+  rebuilda. Para invalidar: deletar o build na UI do JitPack (logado com acesso ao repo,
+  botao de lixeira na versao) ou via API, e so entao re-pushar a tag. Na duvida, o caminho
+  mais seguro e soltar um patch novo (X.Y.Z+1) em vez de reutilizar a tag.
+- **Release meio-publicada** (JitPack ok, GitHub Release falhou por secret expirado):
+  renovar o secret e re-rodar so o job da Release pelo Actions (re-run), ou criar a
+  Release manualmente com as notas do CHANGELOG — nao re-pushar a tag.
 
 ---
 
@@ -113,18 +156,20 @@ Fazer sync do Gradle e confirmar que compila e funciona.
 ```bash
 # Exemplo completo para publicar a versao 2.4.0:
 
-# 1. Editar gradle.properties: SDK_VERSION=2.4.0
-# 2. Editar CHANGELOG.md: adicionar secao [2.4.0]
-# 3. Verificar build
-./gradlew clean :sdk:lint :sdk:assembleRelease
+# 0. Garantir que a PR do release foi MERGEADA na main e o CI esta verde
 
-# 4. Commit
-git add gradle.properties CHANGELOG.md
+# 1. Editar gradle.properties: SDK_VERSION=2.4.0
+# 2. Editar CHANGELOG.md ([2.4.0]) e README.md (pin do snippet: v2.4.0)
+# 3. Verificar build
+./gradlew clean :sdk:test :sdk:lint :sdk:assembleRelease
+
+# 4. Commit (via PR; nao commitar direto na main)
+git add gradle.properties CHANGELOG.md README.md
 git commit -m "bump: version 2.4.0"
 
-# 5. Tag + push
+# 5. Depois do merge: tag no commit da main
+git checkout main && git pull
 git tag v2.4.0
-git push origin main
 git push origin v2.4.0
 
 # 6. Aguardar e verificar:

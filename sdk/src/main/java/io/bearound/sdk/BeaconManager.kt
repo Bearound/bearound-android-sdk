@@ -37,6 +37,15 @@ class BeaconManager(private val context: Context) {
 
         /** Batch report delay for the slow-beacon iBeacon scan (see [startSlowBeaconBatchScan]). */
         private const val SLOW_BEACON_BATCH_DELAY_MS = 2000L
+
+        /**
+         * Window during which a batch-delivered sample is dropped when the regular scan has
+         * already sampled the same beacon. Beacons matched by BOTH scanners (0xBEAD in the
+         * primary PDU and the iBeacon frame) would otherwise feed [rssiAccumulators] twice
+         * and skew the RSSI statistics synced to the backend. Scan-response-only beacons
+         * (never matched by the regular scan) are unaffected — their samples always land.
+         */
+        private const val SLOW_BEACON_DEDUP_MS = 5000L
         /** Past this gap with no packet, the beacon is rendered as stale (faded) but kept. */
         private const val STALE_THRESHOLD_MS = 5000L
         /**
@@ -67,8 +76,13 @@ class BeaconManager(private val context: Context) {
     var isScanning = false
     var isRanging = false
     private var isBatchScanning = false
-        private set
     private var isInForeground = true
+
+    /**
+     * Last time the REGULAR scan (ranging / PendingIntent) fed a sample for each beacon
+     * identifier. Used to drop batch-delivered duplicates (see [SLOW_BEACON_DEDUP_MS]).
+     */
+    private val lastRegularSampleAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
     /**
      * True while at least one beacon is currently detected (after rising edge in [processBeacon]
      * and before falling edge in [cleanupExpiredBeacons]). Active scanning is gated by this
@@ -227,15 +241,17 @@ class BeaconManager(private val context: Context) {
      * Kept separate from [scanCallback] so the batch scanner can be started/stopped
      * independently of the regular 0xBEAD scan. Results are parsed by the same
      * [processScanResult] — the batched ScanRecord carries the 0xBEAD payload (scan response),
-     * so the existing BEAD parser handles them unchanged.
+     * so the existing BEAD parser handles them unchanged. `fromBatch = true` lets
+     * [processScanResult] drop samples for beacons the regular scan is already feeding,
+     * so RSSI statistics don't get double-counted (see [SLOW_BEACON_DEDUP_MS]).
      */
     private val batchScanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            processScanResult(result)
+            processScanResult(result, fromBatch = true)
         }
 
         override fun onBatchScanResults(results: List<ScanResult>) {
-            results.forEach { processScanResult(it) }
+            results.forEach { processScanResult(it, fromBatch = true) }
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -267,6 +283,10 @@ class BeaconManager(private val context: Context) {
     fun startScanning() {
         if (isScanning) {
             Log.d(TAG, "Already scanning")
+            // Watchdog/restart path: the regular ranging has its own health-check, but the
+            // batch scanner doesn't — re-arm it here (idempotent via isBatchScanning) so a
+            // batch client dropped by the controller comes back on the next watchdog tick.
+            if (checkPermissions()) startSlowBeaconBatchScan()
             return
         }
 
@@ -320,6 +340,7 @@ class BeaconManager(private val context: Context) {
             beaconLastSeen.clear()
             rssiAccumulators.clear()
         }
+        lastRegularSampleAt.clear()
         rssiFilter.clear()
         lastBeaconSeenAt = null
 
@@ -434,8 +455,10 @@ class BeaconManager(private val context: Context) {
      * and never catches them, even though the controller receives the packet. This scan:
      *  - filters on the Bearound iBeacon frame (present in the PRIMARY PDU, so the offloaded
      *    hardware filter matches it — the 0xBEAD service-data filter can't, being scan-response),
-     *  - uses a non-zero reportDelay (batch), so the controller accumulates matches continuously
-     *    and delivers them via onBatchScanResults regardless of the host duty cycle.
+     *  - uses a non-zero reportDelay (batch), so — where the controller supports offloaded
+     *    batching — matches are accumulated continuously and delivered via onBatchScanResults
+     *    regardless of the host duty cycle. Devices without offloaded batching fall back to
+     *    framework-emulated batching (still functional; the regular scan keeps running too).
      * Runs alongside the regular 0xBEAD scan; the delivered ScanRecord still carries the 0xBEAD
      * payload, so [processScanResult]/[IBeaconParser.parseServiceData] handle it unchanged.
      */
@@ -444,6 +467,13 @@ class BeaconManager(private val context: Context) {
         if (isBatchScanning) return
         val scanner = bluetoothLeScanner ?: return
         try {
+            // Field observability: offloaded batching is the premise of this scan — log where
+            // the device only emulates it in software, so "batch didn't help" is diagnosable.
+            val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE)
+                as? android.bluetooth.BluetoothManager)?.adapter
+            if (adapter?.isOffloadedScanBatchingSupported == false) {
+                Log.i(TAG, "Offloaded scan batching NOT supported — batch scan will be software-emulated")
+            }
             val ibFilter = ScanFilter.Builder()
                 .setManufacturerData(
                     IBeaconParser.APPLE_MANUFACTURER_ID,
@@ -475,7 +505,7 @@ class BeaconManager(private val context: Context) {
         isBatchScanning = false
     }
 
-    private fun processScanResult(result: ScanResult) {
+    private fun processScanResult(result: ScanResult, fromBatch: Boolean = false) {
         val scanRecord = result.scanRecord ?: return
 
         val serviceData = IBeaconParser.parseServiceData(scanRecord, result.rssi) ?: return
@@ -484,6 +514,18 @@ class BeaconManager(private val context: Context) {
         val identifier = "${serviceData.major}.${serviceData.minor}"
         val rawRssi = serviceData.rssi
         val nowMs = System.currentTimeMillis()
+
+        // Beacons matched by BOTH scanners (0xBEAD in the primary + iBeacon frame) would be
+        // processed twice — once by the regular scan, once by the batch — inflating the RSSI
+        // statistics synced to the backend. Drop the batch copy while the regular scan is
+        // actively feeding this beacon; scan-response-only beacons (e.g. B:0.135) are never
+        // matched by the regular scan, so their batch samples always pass.
+        if (fromBatch) {
+            val lastRegular = lastRegularSampleAt[identifier] ?: 0L
+            if (nowMs - lastRegular < SLOW_BEACON_DEDUP_MS) return
+        } else {
+            lastRegularSampleAt[identifier] = nowMs
+        }
 
         val smoothedRssi = rssiFilter.smooth(identifier, rawRssi)
 
