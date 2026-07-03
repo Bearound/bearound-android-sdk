@@ -8,26 +8,44 @@ Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by
 
 ## What the SDK detects
 
-The SDK detects **Bearound proprietary BLE beacons only**. The scan filter matches
-advertisements carrying the Bearound identifier `0xBEAD` — as **service data** (16-bit
-service UUID `0xBEAD`, an 11-byte payload with major/minor, firmware, battery, motion and
-temperature) or as **manufacturer data** (manufacturer ID `0xBEAD`).
+The SDK detects **Bearound BLE beacons** — every hardware generation. Detection matches any
+of the beacon's Bearound signatures in the advertisement:
 
-> ⚠️ **Generic iBeacons are NOT detected.** An iPhone (or any app) advertising a classic
-> iBeacon frame — even one using the Bearound UUID `E25B8D3C-947A-452F-A13F-589CB706D2E5` —
-> will not show up. That UUID is a fixed label attached to the `Beacon` model after parsing;
-> it plays no role in detection. To test the SDK you need a physical Bearound beacon.
+- the `0xBEAD` **service data** (11-byte payload with major/minor, firmware, battery, motion
+  and temperature),
+- the `0xBEAD` **manufacturer data**, or
+- the **Bearound iBeacon frame** — which also covers beacons that advertise the sensor
+  payload only in the scan response (their identity is picked up from the primary
+  advertisement, and battery/temperature fill in as soon as a full frame is captured).
+
+To validate the integration end to end, test with a **physical Bearound beacon** paired to
+your Control Hub account.
 
 ## Requirements
 
 - Android 6.0+ (API 23+)
-- Bluetooth LE hardware (the SDK manifest declares `bluetooth_le` as a required feature)
+- Bluetooth LE hardware
 - A Bearound **business token** (see [Getting a business token](#getting-a-business-token))
 - **Android 12+**: the `BLUETOOTH_SCAN` runtime permission ("Nearby devices") is what unlocks
-  beacon detection. It is declared with `neverForLocation` — **location permission is neither
-  required nor useful on 12+; it does not unlock the scan**.
-- **Android ≤ 11**: the legacy BLE gate is `ACCESS_FINE_LOCATION` (there is no
-  `BLUETOOTH_SCAN` before API 31).
+  beacon detection (declared with `neverForLocation`).
+- **Android ≤ 11**: `ACCESS_FINE_LOCATION` granted and Location Services on (the legacy BLE
+  gate — there is no `BLUETOOTH_SCAN` before API 31).
+
+### Recommended setup — keep Bluetooth AND Location fully on
+
+For the best detection coverage on **every** Android version, guide your users to:
+
+1. **Bluetooth ON** — mandatory; no Bluetooth, no detection.
+2. **Location Services ON** (the system toggle) — several OEM ROMs gate BLE scan delivery on
+   the global Location toggle regardless of `neverForLocation`, and on Android ≤ 11 it is a
+   hard requirement.
+3. **Grant both runtime permissions** — "Nearby devices" (12+) **and** location. Location is
+   what unlocks the scan on ≤ 11, and keeping it granted on 12+ maximizes reliability across
+   OEMs and enables the richest positioning data.
+
+The Quick Start below requests exactly this set. On aggressive ROMs (Xiaomi/HyperOS,
+Huawei, Oppo, Vivo…) also run the [Background reliability](#background-reliability)
+onboarding — the SDK detects those devices automatically via `reliabilityStatus()`.
 
 ### Support matrix
 
@@ -108,8 +126,17 @@ dependencies {
 | `RECEIVE_BOOT_COMPLETED` | Re-arm scanning after reboot |
 | `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE` | Optional foreground service (see [Google Play review](#google-play-review--what-the-manifest-merge-means-for-your-app)) |
 
-The SDK deliberately does **not** declare `ACCESS_BACKGROUND_LOCATION` (background detection
-on Android 12+ does not use location) and does **not** declare `BLUETOOTH_CONNECT` (add it to
+The SDK's own manifest caps the location permissions at Android ≤ 11 (`maxSdkVersion=30`).
+To follow the [recommended setup](#recommended-setup--keep-bluetooth-and-location-fully-on)
+and request location on 12+ too, declare it in **your app's** manifest (no `maxSdkVersion`):
+
+```xml
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+```
+
+The SDK deliberately does **not** declare `ACCESS_BACKGROUND_LOCATION` (foreground location
+is all the recommended setup needs; background location would drag your app into Google
+Play's background-location review) and does **not** declare `BLUETOOTH_CONNECT` (add it to
 your own manifest only if your app does GATT operations).
 
 What you DO need to do is **request the runtime permissions** — see the Quick Start below.
@@ -158,15 +185,14 @@ class MainActivity : AppCompatActivity(), BeAroundSDKListener {
     }
 
     private fun requestScanPermissions() {
+        // Recommended setup: request "Nearby devices" AND location together. BLUETOOTH_SCAN
+        // is what unlocks detection on 12+; location covers Android ≤ 11 and maximizes
+        // reliability across OEM ROMs (several gate BLE delivery on the Location toggle).
         val permissions = buildList {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                // Android 12+: BLUETOOTH_SCAN ("Nearby devices") is THE detection permission.
-                // Location does NOT unlock the scan on 12+.
                 add(Manifest.permission.BLUETOOTH_SCAN)
-            } else {
-                // Android <= 11: FINE_LOCATION is the legacy BLE-scan gate.
-                add(Manifest.permission.ACCESS_FINE_LOCATION)
             }
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 // Android 13+: without this the (optional) foreground-service
                 // notification is silently invisible.
@@ -325,24 +351,36 @@ foreground service.** Consequences on the Play Console:
 ### Background reliability
 
 Keeping the process eligible to wake under Doze and aggressive OEM battery managers is the
-real Android equivalent of the resilience the iOS "second eye" (Location monitoring)
-provides — and it needs **no location permission**. The SDK exposes:
+number-one field factor for reliable detection. Since 3.4.5 the SDK **detects the device's
+ROM automatically** and tells you when user action is needed — gate your onboarding on it
+instead of hardcoding manufacturer lists:
 
 ```kotlin
-// Battery optimization — opens the system Settings screen so the user can exempt the app.
-// Uses ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS (the Settings list), NOT the restricted
-// REQUEST_IGNORE_BATTERY_OPTIMIZATIONS permission — so it triggers no Google Play review.
-if (!sdk.isIgnoringBatteryOptimizations()) {
-    sdk.openBatteryOptimizationSettings()
-}
+val status = sdk.reliabilityStatus()
+// status.oemRom            → "HyperOS", "MIUI", "One UI", "ColorOS", … (null on stock Android)
+// status.oemAggressiveness → "standard" | "moderate" | "aggressive"
+// status.recommendsUserAction → true when this device likely needs the flow below
 
-// OEM autostart / protected-apps — deep-links to the manufacturer's screen when one exists
-// (Xiaomi/MIUI, Huawei, Oppo/Vivo, OnePlus, Letv). Returns false on stock Android (Pixel)
-// or unmapped OEMs — where the battery-optimization screen above already covers it.
-if (sdk.isAutostartManageable()) {
-    sdk.openManufacturerAutostartSettings()
+if (status.recommendsUserAction) {
+    // 1. Battery optimization — opens the system Settings screen so the user can exempt the
+    //    app. Uses ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS (the Settings list), NOT the
+    //    restricted REQUEST_IGNORE_BATTERY_OPTIMIZATIONS permission — no Google Play review.
+    if (!status.isIgnoringBatteryOptimizations) {
+        sdk.openBatteryOptimizationSettings()
+    }
+    // 2. OEM autostart / protected-apps — deep-links to the manufacturer's screen when one
+    //    exists (Xiaomi/HyperOS, Huawei, Oppo/Vivo, OnePlus…). Returns false on stock
+    //    Android, where the battery screen above already covers it.
+    if (status.isAutostartManageable) {
+        sdk.openManufacturerAutostartSettings()
+    }
 }
 ```
+
+On aggressive ROMs the SDK also logs the detected profile once at `configure()` (e.g.
+`OEM power profile: HyperOS OS3.0 (AGGRESSIVE)`), and it self-heals at runtime: a central
+scan-start budget prevents the silent OS scan-quota starvation, dead scan clients are
+revived by the watchdog, and a Bluetooth off→on toggle re-arms everything immediately.
 
 > **Samsung** is intentionally not in the autostart deep-link list: its "app power
 > management" screen requires the system permission `READ_SEARCH_INDEXABLES`, which
@@ -355,13 +393,15 @@ Stock Android (Pixel) honors the `PendingIntent` scan exactly as documented. Sev
 ship aggressive battery managers that kill third-party `PendingIntent` and broadcast
 receivers regardless of Android version:
 
-| OEM | Behavior | Mitigation |
-|---|---|---|
-| Samsung (One UI 6+) | Generally honors the scan; some restrictions on apps marked "Sleeping" | Ask user to add app to "Never sleeping apps" |
-| Xiaomi / Redmi (MIUI / HyperOS) | Aggressively kills background broadcast receivers | `openManufacturerAutostartSettings()` + lock app in recents |
-| Huawei / Honor (EMUI / HarmonyOS) | Same as Xiaomi | `openManufacturerAutostartSettings()` → "Manage manually" |
-| OnePlus (OxygenOS 11+) | Less aggressive but still restricts | Disable "Deep optimization" for the app |
-| Pixel / Stock | Honors PendingIntent scan | No action |
+| OEM | Detected as | Behavior | Mitigation |
+|---|---|---|---|
+| Samsung (One UI 6+) | `One UI` (moderate) | Generally honors the scan; restricts apps marked "Sleeping" | Ask user to add app to "Never sleeping apps" |
+| Xiaomi / Redmi / POCO (MIUI / **HyperOS**) | `MIUI` / `HyperOS` (aggressive) | Kills background broadcast receivers; autostart off by default; may deliver batched scans without the scan response (handled since 3.4.5) | `openManufacturerAutostartSettings()` + battery "No restrictions" + lock app in recents |
+| Huawei / Honor (EMUI / MagicOS) | `EMUI` / `MagicOS` (aggressive) | Same as Xiaomi | `openManufacturerAutostartSettings()` → "Manage manually" |
+| Oppo / Realme (ColorOS) | `ColorOS` (aggressive) | Restricts background services like Xiaomi | `openManufacturerAutostartSettings()` |
+| Vivo / iQOO (Funtouch / OriginOS) | `Funtouch/OriginOS` (aggressive) | Restricts background services like Xiaomi | `openManufacturerAutostartSettings()` |
+| OnePlus (OxygenOS 11+) | `OxygenOS`/`ColorOS` (aggressive) | Aggressive doze beyond AOSP | Disable "Deep optimization" for the app |
+| Pixel / Stock | *(null, standard)* | Honors PendingIntent scan | No action — `recommendsUserAction` is false |
 
 See [dontkillmyapp.com](https://dontkillmyapp.com) for the full per-vendor matrix.
 
@@ -450,6 +490,7 @@ sdk.clearUserProperties()
 sdk.setPushToken(token: String)                     // re-registers immediately if scanning
 
 // Background reliability (Doze / OEM killers)
+sdk.reliabilityStatus(): ReliabilityStatus          // OEM ROM + aggressiveness + recommendsUserAction
 sdk.isIgnoringBatteryOptimizations(): Boolean
 sdk.openBatteryOptimizationSettings(): Boolean
 sdk.isAutostartManageable(): Boolean
@@ -600,17 +641,31 @@ data class ForegroundScanConfig(
 data class NotificationContent(val title: String, val text: String)
 ```
 
+#### ReliabilityStatus
+
+```kotlin
+data class ReliabilityStatus(
+    val oemRom: String?,                        // "HyperOS", "MIUI", "One UI", "ColorOS"… (null on stock)
+    val oemRomVersion: String?,                 // e.g. "OS3.0"
+    val oemAggressiveness: String,              // "standard" | "moderate" | "aggressive"
+    val isIgnoringBatteryOptimizations: Boolean,
+    val isAutostartManageable: Boolean,
+    val recommendsUserAction: Boolean           // gate your reliability onboarding on this
+)
+```
+
 ## Troubleshooting
 
 ### Beacons not detected
 
-1. **Are you testing with a real Bearound beacon?** The SDK only detects `0xBEAD`
-   service/manufacturer data. A phone simulating a generic iBeacon — even with the "right"
-   UUID — is invisible to the scan filter (see [What the SDK detects](#what-the-sdk-detects)).
-2. **Android 12+**: is `BLUETOOTH_SCAN` ("Nearby devices") granted? That is the only
-   permission that unlocks the scan — granting location does **not** help on 12+.
-   **Android ≤ 11**: is `ACCESS_FINE_LOCATION` granted and location services on?
-3. Is Bluetooth enabled?
+1. **Are you testing with a physical Bearound beacon?** That is the supported way to
+   validate the integration (see [What the SDK detects](#what-the-sdk-detects)).
+2. **Follow the [recommended setup](#recommended-setup--keep-bluetooth-and-location-fully-on)**:
+   Bluetooth ON, Location Services ON, and both "Nearby devices" (12+) and location granted.
+   On Android 12+ `BLUETOOTH_SCAN` is the permission that unlocks the scan; on ≤ 11 it is
+   `ACCESS_FINE_LOCATION` + Location Services.
+3. Check `sdk.reliabilityStatus()` — on aggressive ROMs (`recommendsUserAction == true`) run
+   the [Background reliability](#background-reliability) onboarding.
 4. Are you on a physical device? Emulators have no usable BLE.
 5. Call `sdk.diagnostics()` and check `lastScanAt` / `recentErrors`.
 
@@ -630,13 +685,14 @@ data class NotificationContent(val title: String, val text: String)
 
 ### No beacons in background
 
-1. Ensure `BLUETOOTH_SCAN` ("Nearby devices") is granted (Android 12+) — that is what
-   unlocks detection, **not** location.
+1. Ensure the [recommended setup](#recommended-setup--keep-bluetooth-and-location-fully-on)
+   is in place — "Nearby devices" granted (12+), location granted, Bluetooth and Location
+   Services ON.
 2. `PendingIntent` background scan requires Android 8+ (API 26+); force-stop survival
    requires Android 14+ (see the [support matrix](#support-matrix)).
-3. On aggressive OEMs (Xiaomi, Huawei, Samsung…), run the
-   [Background reliability](#background-reliability) flow: `openBatteryOptimizationSettings()`
-   and `openManufacturerAutostartSettings()`.
+3. Check `sdk.reliabilityStatus()` — when `recommendsUserAction` is true (Xiaomi/HyperOS,
+   Huawei, Oppo, Vivo, Samsung…), run the [Background reliability](#background-reliability)
+   flow: `openBatteryOptimizationSettings()` and `openManufacturerAutostartSettings()`.
 
 ### App crashes with SecurityException
 

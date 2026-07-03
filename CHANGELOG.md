@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- README: new **"Recommended setup"** section steering integrators to the full-reliability configuration (Bluetooth ON + Location Services ON + both "Nearby devices" and location granted) with the Quick Start requesting that exact set; "What the SDK detects" updated for the iBeacon-frame detection added in 3.4.5 (the old "generic iBeacons are not detected" note was removed — the Bearound iBeacon frame now IS a detection signature); Background reliability rewritten around `reliabilityStatus()` with an expanded OEM matrix (HyperOS validated on device, ColorOS/Vivo rows added); troubleshooting updated accordingly.
 - README rewritten from the actual code: install snippet pinned to the current version, single support matrix, "detects 0xBEAD, not generic iBeacon", a Google Play review section (FGS `connectedDevice` → declaration + video), an integrated Quick Start, and corrected troubleshooting. Backfilled the 3.4.1/3.4.2 CHANGELOG entries and rewrote the sample READMEs.
 
 ## [3.4.4] - 2026-07-01
