@@ -159,7 +159,7 @@ class BluetoothManager(private val context: Context) {
             major = serviceData.major,
             minor = serviceData.minor,
             rssi = rssi,
-            txPower = serviceData.metadata.txPower ?: -59,
+            txPower = serviceData.metadata?.txPower ?: -59,
             metadata = serviceData.metadata,
             isConnectable = isConnectable
         )

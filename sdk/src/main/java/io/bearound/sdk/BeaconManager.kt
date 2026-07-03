@@ -46,6 +46,13 @@ class BeaconManager(private val context: Context) {
          * (never matched by the regular scan) are unaffected — their samples always land.
          */
         private const val SLOW_BEACON_DEDUP_MS = 5000L
+
+        /**
+         * No batch delivery for this long while the batch scanner claims to be running →
+         * assume the client was starved by the OS scan-start quota and revive it. Restarting
+         * at most once per window keeps the revive itself far below the quota (5/30 s).
+         */
+        private const val BATCH_LIVENESS_TIMEOUT_MS = 120_000L
         /** Past this gap with no packet, the beacon is rendered as stale (faded) but kept. */
         private const val STALE_THRESHOLD_MS = 5000L
         /**
@@ -76,6 +83,15 @@ class BeaconManager(private val context: Context) {
     var isScanning = false
     var isRanging = false
     private var isBatchScanning = false
+
+    /**
+     * Last time the batch scanner delivered anything. The OS scan-start quota (5 starts per
+     * 30 s per app) silently starves a scan client that registered over quota — "started"
+     * with no error, zero deliveries, forever. The watchdog uses this timestamp to detect
+     * the starved state and revive the batch (see [checkRangingHealth]).
+     */
+    @Volatile
+    private var lastBatchDeliveryAt = 0L
     private var isInForeground = true
 
     /**
@@ -247,10 +263,12 @@ class BeaconManager(private val context: Context) {
      */
     private val batchScanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
+            lastBatchDeliveryAt = System.currentTimeMillis()
             processScanResult(result, fromBatch = true)
         }
 
         override fun onBatchScanResults(results: List<ScanResult>) {
+            lastBatchDeliveryAt = System.currentTimeMillis()
             results.forEach { processScanResult(it, fromBatch = true) }
         }
 
@@ -488,6 +506,7 @@ class BeaconManager(private val context: Context) {
                 .build()
             scanner.startScan(listOf(ibFilter), settings, batchScanCallback)
             isBatchScanning = true
+            lastBatchDeliveryAt = System.currentTimeMillis() // liveness baseline
             Log.d(TAG, "Slow-beacon batch scan started (reportDelay=${SLOW_BEACON_BATCH_DELAY_MS}ms)")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to start slow-beacon batch scan: ${e.message}")
@@ -508,9 +527,14 @@ class BeaconManager(private val context: Context) {
     private fun processScanResult(result: ScanResult, fromBatch: Boolean = false) {
         val scanRecord = result.scanRecord ?: return
 
-        val serviceData = IBeaconParser.parseServiceData(scanRecord, result.rssi) ?: return
+        // Prefer the 0xBEAD sensor payload; fall back to the iBeacon frame when the scan
+        // response wasn't captured (observed on Xiaomi batched results) — detection still
+        // works, metadata stays null until a 0xBEAD frame arrives ("first sighting" case).
+        val serviceData = IBeaconParser.parseServiceData(scanRecord, result.rssi)
+            ?: IBeaconParser.parseIBeaconFrame(scanRecord, result.rssi)
+            ?: return
 
-        val txPower = serviceData.metadata.txPower ?: DEFAULT_TX_POWER
+        val txPower = serviceData.metadata?.txPower ?: serviceData.txPower ?: DEFAULT_TX_POWER
         val identifier = "${serviceData.major}.${serviceData.minor}"
         val rawRssi = serviceData.rssi
         val nowMs = System.currentTimeMillis()
@@ -731,7 +755,20 @@ class BeaconManager(private val context: Context) {
     }
 
     private fun checkRangingHealth() {
-        if (!isScanning || !isInBeaconRegion) return
+        if (!isScanning) return
+
+        // Batch liveness — runs regardless of region (the batch IS the out-of-region
+        // detector for scan-response beacons). A client starved by the OS scan-start quota
+        // stays "started" with zero deliveries forever; revive it after a silent window.
+        if (isBatchScanning &&
+            System.currentTimeMillis() - lastBatchDeliveryAt > BATCH_LIVENESS_TIMEOUT_MS
+        ) {
+            Log.w(TAG, "Batch scan silent for ${BATCH_LIVENESS_TIMEOUT_MS / 1000}s — reviving")
+            stopSlowBeaconBatchScan()
+            startSlowBeaconBatchScan()
+        }
+
+        if (!isInBeaconRegion) return
 
         val lastUpdate = lastBeaconUpdate
         if (lastUpdate != null) {

@@ -62,11 +62,12 @@ class IBeaconParserTest {
         assertEquals(0, parsed.major)
         assertEquals(135, parsed.minor)
         assertEquals(-35, parsed.rssi)
-        assertEquals("1", parsed.metadata.firmwareVersion)
-        assertEquals(92, parsed.metadata.movements)
-        assertEquals(27, parsed.metadata.temperature)
-        assertEquals(3220, parsed.metadata.batteryLevel)
-        assertEquals(-35, parsed.metadata.rssiFromBLE)
+        val metadata = parsed.metadata!!
+        assertEquals("1", metadata.firmwareVersion)
+        assertEquals(92, metadata.movements)
+        assertEquals(27, metadata.temperature)
+        assertEquals(3220, metadata.batteryLevel)
+        assertEquals(-35, metadata.rssiFromBLE)
     }
 
     @Test
@@ -75,7 +76,7 @@ class IBeaconParserTest {
             byteArrayOf(0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xF6.toByte(), 0x00, 0x00)
         )
 
-        assertEquals(-10, IBeaconParser.parseServiceData(record, rssi = -50)!!.metadata.temperature)
+        assertEquals(-10, IBeaconParser.parseServiceData(record, rssi = -50)!!.metadata!!.temperature)
     }
 
     @Test
@@ -87,17 +88,46 @@ class IBeaconParserTest {
 
     @Test
     fun `returns null when the record carries only an iBeacon frame (no BEAD service data)`() {
-        // iBeacon-only primary PDU — exactly what B:0.135 advertises without the scan response.
-        val manufacturerData = IBeaconParser.BEAROUND_IBEACON_PREFIX +
-            byteArrayOf(0x00, 0x00, 0x00, 0x87.toByte(), 0xC3.toByte()) // major, minor, txPower
+        assertNull(IBeaconParser.parseServiceData(iBeaconOnlyRecord(), rssi = -40))
+    }
+
+    // ── iBeacon frame fallback parsing ──
+
+    @Test
+    fun `parses identity and txPower from an iBeacon-only frame with null metadata`() {
+        // What Xiaomi batched results deliver for B:0.135 when the scan response is missing.
+        val parsed = IBeaconParser.parseIBeaconFrame(iBeaconOnlyRecord(), rssi = -62)!!
+
+        assertEquals(0, parsed.major)
+        assertEquals(135, parsed.minor)
+        assertEquals(-61, parsed.txPower) // 0xC3 sign-extended
+        assertEquals(-62, parsed.rssi)
+        assertNull(parsed.metadata) // "first sighting without data" — fills in via 0xBEAD later
+    }
+
+    @Test
+    fun `rejects iBeacon frames from foreign UUIDs`() {
+        val foreign = IBeaconParser.BEAROUND_IBEACON_PREFIX.clone()
+        foreign[2] = 0x00 // corrupt the first UUID byte
+        val manufacturerData = foreign + byteArrayOf(0x00, 0x00, 0x00, 0x87.toByte(), 0xC3.toByte())
         val advBytes = byteArrayOf(
             (3 + manufacturerData.size).toByte(), 0xFF.toByte(), 0x4C, 0x00
         ) + manufacturerData
 
-        assertNull(IBeaconParser.parseServiceData(parseScanRecord(advBytes), rssi = -40))
+        assertNull(IBeaconParser.parseIBeaconFrame(parseScanRecord(advBytes), rssi = -40))
     }
 
     // ── helpers ──
+
+    /** iBeacon-only primary PDU — B:0.135's advertisement without the scan response. */
+    private fun iBeaconOnlyRecord(): ScanRecord {
+        val manufacturerData = IBeaconParser.BEAROUND_IBEACON_PREFIX +
+            byteArrayOf(0x00, 0x00, 0x00, 0x87.toByte(), 0xC3.toByte()) // major 0, minor 135, txPower -61
+        val advBytes = byteArrayOf(
+            (3 + manufacturerData.size).toByte(), 0xFF.toByte(), 0x4C, 0x00
+        ) + manufacturerData
+        return parseScanRecord(advBytes)
+    }
 
     /** Builds a ScanRecord whose 16-bit service data (0xBEAD) is [payload]. */
     private fun scanRecordWithBeadServiceData(payload: ByteArray): ScanRecord {

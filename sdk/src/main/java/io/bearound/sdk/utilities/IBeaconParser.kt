@@ -41,13 +41,20 @@ object IBeaconParser {
             .array()
 
     /**
-     * Data class representing parsed BEAD Service Data
+     * Data class representing a parsed Bearound beacon frame.
+     *
+     * [metadata] is non-null when the 0xBEAD service data was present (sensor payload:
+     * battery, temperature, movements, firmware) and null when the beacon was parsed from
+     * its iBeacon frame alone (see [parseIBeaconFrame]) — the "first sighting without data"
+     * case; metadata fills in once a scan response carrying 0xBEAD is captured.
+     * [txPower] is the calibrated 1 m power from the iBeacon frame, when parsed from it.
      */
     data class BeadServiceData(
         val major: Int,
         val minor: Int,
-        val metadata: BeaconMetadata,
-        val rssi: Int
+        val metadata: BeaconMetadata?,
+        val rssi: Int,
+        val txPower: Int? = null
     )
 
     /**
@@ -80,6 +87,38 @@ object IBeaconParser {
             minor = minor,
             metadata = metadata,
             rssi = rssi
+        )
+    }
+
+    /**
+     * Fallback parse from the Bearound iBeacon frame (Apple `0x004C` manufacturer data) when
+     * the 0xBEAD service data is absent. Some beacons carry 0xBEAD only in the SCAN RESPONSE,
+     * and on some OEMs (observed on Xiaomi/HyperOS) batched scan results may be delivered
+     * without the scan response — the iBeacon frame in the primary PDU is all we get. It has
+     * no sensor payload, but uuid/major/minor identify the beacon, so detection still works;
+     * [BeadServiceData.metadata] stays null until a 0xBEAD frame is captured.
+     *
+     * Frame layout after the manufacturer id: `02 15 <16-byte UUID> <major BE> <minor BE> <txPower>`.
+     * Only frames carrying [BEAROUND_UUID] are accepted.
+     */
+    fun parseIBeaconFrame(scanRecord: ScanRecord, rssi: Int): BeadServiceData? {
+        val data = scanRecord.getManufacturerSpecificData(APPLE_MANUFACTURER_ID) ?: return null
+        if (data.size < 23) return null
+        if (data[0] != 0x02.toByte() || data[1] != 0x15.toByte()) return null
+        for (i in 0 until 16) {
+            if (data[2 + i] != BEAROUND_IBEACON_PREFIX[2 + i]) return null
+        }
+
+        val major = ((data[18].toInt() and 0xFF) shl 8) or (data[19].toInt() and 0xFF)
+        val minor = ((data[20].toInt() and 0xFF) shl 8) or (data[21].toInt() and 0xFF)
+        val txPower = data[22].toInt() // sign-extended int8 (calibrated RSSI @ 1 m)
+
+        return BeadServiceData(
+            major = major,
+            minor = minor,
+            metadata = null,
+            rssi = rssi,
+            txPower = txPower
         )
     }
 }
