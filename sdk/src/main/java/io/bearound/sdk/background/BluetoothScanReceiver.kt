@@ -60,6 +60,7 @@ class BluetoothScanReceiver : BroadcastReceiver() {
 
         } catch (e: Exception) {
             Log.e(TAG, "Error processing scan: ${e.message}")
+            io.bearound.sdk.telemetry.ErrorReporter.report(e, "BluetoothScanReceiver.onReceive")
         }
     }
 
