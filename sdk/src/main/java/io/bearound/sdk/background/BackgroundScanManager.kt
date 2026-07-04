@@ -164,6 +164,7 @@ class BackgroundScanManager(private val context: Context) {
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to setup background scanning: ${e.message}")
+            io.bearound.sdk.telemetry.ErrorReporter.report(e, "BackgroundScanManager.enableBluetoothScanBroadcast")
         }
     }
 
@@ -208,6 +209,7 @@ class BackgroundScanManager(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to disable background scanning: ${e.message}")
+            io.bearound.sdk.telemetry.ErrorReporter.report(e, "BackgroundScanManager.disableBluetoothScanBroadcast")
         }
     }
 

@@ -62,7 +62,8 @@ class BeaconSyncWorker(
             
         } catch (e: Exception) {
             Log.e(TAG, "Error in BeaconSyncWorker: ${e.message}")
-            
+            io.bearound.sdk.telemetry.ErrorReporter.report(e, "BeaconSyncWorker.doWork")
+
             // Retry if this is a transient failure
             if (runAttemptCount < 3) {
                 Result.retry()

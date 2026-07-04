@@ -29,6 +29,7 @@ import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.ScanPrecision
 import io.bearound.sdk.models.UserProperties
 import io.bearound.sdk.network.APIClient
+import io.bearound.sdk.telemetry.ErrorReporter
 import io.bearound.sdk.utilities.BackgroundReliabilityHelper
 import io.bearound.sdk.utilities.OemPowerProfile
 import io.bearound.sdk.utilities.DeviceIdentifier
@@ -89,7 +90,10 @@ class BeAroundSDK private constructor() {
     private val collectedBeacons = mutableMapOf<String, Beacon>()
     private val beaconLock = ReentrantLock()
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // ErrorReporter's handler: SDK coroutine failures are logged + reported, never rethrown.
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + ErrorReporter.coroutineExceptionHandler
+    )
     private val handler = Handler(Looper.getMainLooper())
 
     /**
@@ -422,6 +426,14 @@ class BeAroundSDK private constructor() {
 
         SDKConfigStorage.saveConfiguration(context, config)
 
+        // Error telemetry — isolated reporter ("try/catch around the library"). Own
+        // try/catch: a telemetry failure must never break configure().
+        try {
+            ErrorReporter.install(context, businessToken)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Error telemetry install failed: ${t.message}")
+        }
+
         tryAutoCollectFcmToken(context)
 
         // First-access contract: the device must appear in the backend as soon as the SDK
@@ -510,6 +522,23 @@ class BeAroundSDK private constructor() {
         } catch (t: Throwable) {
             Log.i(TAG, "Firebase not available; client must call setPushToken() to provide the FCM token")
         }
+    }
+
+    /**
+     * Enables or disables the SDK's error telemetry (enabled by default).
+     *
+     * When enabled, errors originating in SDK code — uncaught exceptions whose stack
+     * contains SDK frames, SDK coroutine failures, and errors caught inside SDK
+     * components — are reported to the Bearound backend (`POST /sdk-errors`) together
+     * with basic device info (model, OS version, ROM, locale, battery, app state).
+     * Reporting is fire-and-forget, rate-limited (max 20/h) and deduplicated; it never
+     * throws and never interferes with the host app's own crash handling.
+     *
+     * Call `setErrorReportingEnabled(false)` at any time (before or after `configure()`)
+     * to opt out.
+     */
+    fun setErrorReportingEnabled(enabled: Boolean) {
+        ErrorReporter.setEnabled(enabled)
     }
 
     /**

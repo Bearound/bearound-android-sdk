@@ -80,9 +80,10 @@ class ScanWatchdogReceiver : BroadcastReceiver() {
             
         } catch (e: Exception) {
             Log.e(TAG, "Watchdog error: ${e.message}")
+            io.bearound.sdk.telemetry.ErrorReporter.report(e, "ScanWatchdogReceiver.handleWatchdog")
         }
     }
-    
+
     private fun handleBootCompleted(context: Context) {
         Log.d(TAG, "Device boot completed - checking if scanning should restart")
         
@@ -108,6 +109,7 @@ class ScanWatchdogReceiver : BroadcastReceiver() {
             
         } catch (e: Exception) {
             Log.e(TAG, "Boot handler error: ${e.message}")
+            io.bearound.sdk.telemetry.ErrorReporter.report(e, "ScanWatchdogReceiver.handleBootCompleted")
         }
     }
 }

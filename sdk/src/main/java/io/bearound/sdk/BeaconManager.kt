@@ -361,6 +361,7 @@ class BeaconManager(private val context: Context) {
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start scanning: ${e.message}")
+            io.bearound.sdk.telemetry.ErrorReporter.report(e, "BeaconManager.startScanning")
             onError?.invoke(e)
         }
     }
