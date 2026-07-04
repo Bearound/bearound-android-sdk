@@ -631,7 +631,18 @@ issues can be diagnosed without adb access. Enabled by default.
 - **What is collected:** the error itself (exception type, message, stack trace truncated
   to 8 000 chars, originating SDK component) plus basic device info — model, manufacturer,
   OS version/API level, OEM ROM (e.g. HyperOS), locale, battery level and app state
-  (foreground/background). No location, no personal data beyond the SDK's stable device id.
+  (foreground/background). It also captures a **full snapshot of the SDK-relevant runtime
+  permissions and device system state at the exact moment of the error**, so field issues
+  can be triaged by permission/state (e.g. "all Location-denied crashes") without adb access:
+  - `device.permissions` — `bluetoothScan`, `bluetoothConnect`, `bluetoothAdvertise`
+    (Android 12+), `fineLocation`, `coarseLocation`, `backgroundLocation` (Android 10+) and
+    `postNotifications` (Android 13+), each reported as `granted`, `denied` or
+    `not_applicable` (the permission does not exist on that OS version).
+  - `device.systemState` — `bluetoothEnabled`, `locationServicesEnabled`,
+    `notificationsEnabled`, `ignoringBatteryOptimizations`, `powerSaveMode` and
+    `foregroundServiceActive` (each optional; a field that cannot be read is omitted).
+
+  No location coordinates, no personal data beyond the SDK's stable device id.
 - **What triggers a report:** uncaught exceptions whose stack contains SDK frames (the
   handler always delegates to the previously-installed one — your own crash reporting is
   untouched), SDK coroutine failures, and errors already caught inside SDK components.

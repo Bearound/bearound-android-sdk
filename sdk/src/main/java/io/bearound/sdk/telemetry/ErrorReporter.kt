@@ -1,13 +1,22 @@
 package io.bearound.sdk.telemetry
 
+import android.Manifest
+import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.BatteryManager
 import android.os.Build
+import android.os.PowerManager
 import android.util.Log
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import io.bearound.sdk.BuildConfig
+import io.bearound.sdk.background.BeaconScanService
 import io.bearound.sdk.models.SDKConfiguration
+import io.bearound.sdk.utilities.BackgroundReliabilityHelper
 import io.bearound.sdk.utilities.DeviceIdentifier
 import io.bearound.sdk.utilities.OemPowerProfile
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -63,6 +72,11 @@ object ErrorReporter {
 
     private const val SDK_PACKAGE_PREFIX = "io.bearound.sdk"
     private const val TELEMETRY_PACKAGE_PREFIX = "io.bearound.sdk.telemetry"
+
+    // Permission-state vocabulary reported in device.permissions.
+    private const val PERMISSION_GRANTED = "granted"
+    private const val PERMISSION_DENIED = "denied"
+    private const val PERMISSION_NOT_APPLICABLE = "not_applicable"
     /** How deep the cause chain is walked when looking for SDK frames. */
     private const val MAX_CAUSE_DEPTH = 5
 
@@ -304,6 +318,8 @@ object ErrorReporter {
             put("locale", Locale.getDefault().toLanguageTag())
             batteryLevel(context)?.let { put("batteryLevel", it) }
             currentAppState()?.let { put("appState", it) }
+            put("permissions", permissionsSnapshot(context))
+            put("systemState", systemStateSnapshot(context))
         }
 
         val sdk = JSONObject().apply {
@@ -372,6 +388,140 @@ object ErrorReporter {
     } catch (_: Throwable) {
         null
     }
+
+    // region permission + system-state snapshot
+
+    /**
+     * Full snapshot of the SDK-relevant runtime permissions AT THE MOMENT OF THE ERROR.
+     * Each value is `"granted"`, `"denied"`, or `"not_applicable"` (the permission does not
+     * exist on this API level). Every probe is individually try/catch'd — a failing getter
+     * yields `"not_applicable"` and never aborts the report.
+     *
+     * The runtime-BT permissions (scan/connect/advertise) only exist on API 31+
+     * (Android 12 / [Build.VERSION_CODES.S]); [Manifest.permission.POST_NOTIFICATIONS] on
+     * API 33+ ([Build.VERSION_CODES.TIRAMISU]); [Manifest.permission.ACCESS_BACKGROUND_LOCATION]
+     * on API 29+ ([Build.VERSION_CODES.Q]).
+     */
+    internal fun permissionsSnapshot(context: Context): JSONObject = JSONObject().apply {
+        put(
+            "bluetoothScan",
+            permissionState(context, Manifest.permission.BLUETOOTH_SCAN, Build.VERSION_CODES.S)
+        )
+        put(
+            "bluetoothConnect",
+            permissionState(context, Manifest.permission.BLUETOOTH_CONNECT, Build.VERSION_CODES.S)
+        )
+        put(
+            "bluetoothAdvertise",
+            permissionState(context, Manifest.permission.BLUETOOTH_ADVERTISE, Build.VERSION_CODES.S)
+        )
+        put("fineLocation", permissionState(context, Manifest.permission.ACCESS_FINE_LOCATION))
+        put("coarseLocation", permissionState(context, Manifest.permission.ACCESS_COARSE_LOCATION))
+        put(
+            "backgroundLocation",
+            permissionState(
+                context,
+                Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+                Build.VERSION_CODES.Q
+            )
+        )
+        put(
+            "postNotifications",
+            permissionState(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+                Build.VERSION_CODES.TIRAMISU
+            )
+        )
+    }
+
+    /**
+     * `"granted"` / `"denied"` for a runtime permission, or `"not_applicable"` when the
+     * device's API level is below [minApiLevel] (the permission does not exist there) or the
+     * probe itself throws. Never propagates.
+     */
+    private fun permissionState(
+        context: Context,
+        permission: String,
+        minApiLevel: Int = 1
+    ): String = try {
+        if (Build.VERSION.SDK_INT < minApiLevel) {
+            PERMISSION_NOT_APPLICABLE
+        } else if (
+            ContextCompat.checkSelfPermission(context, permission) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            PERMISSION_GRANTED
+        } else {
+            PERMISSION_DENIED
+        }
+    } catch (_: Throwable) {
+        PERMISSION_NOT_APPLICABLE
+    }
+
+    /**
+     * Snapshot of the device system state relevant to background BLE detection AT THE MOMENT
+     * OF THE ERROR. Every field is optional/nullable: a probe that throws is simply omitted,
+     * so a partial snapshot never aborts the report.
+     *
+     * `foregroundServiceActive` reads the cheap static [BeaconScanService.isRunning] flag —
+     * no coupling to a live SDK instance. `backgroundScanRegistered` and `scanning` are
+     * intentionally omitted: they hang off the initialized `BeAroundSDK` instance and are not
+     * reachable cheaply/safely from this object without new coupling.
+     */
+    internal fun systemStateSnapshot(context: Context): JSONObject = JSONObject().apply {
+        bluetoothEnabled(context)?.let { put("bluetoothEnabled", it) }
+        locationServicesEnabled(context)?.let { put("locationServicesEnabled", it) }
+        notificationsEnabled(context)?.let { put("notificationsEnabled", it) }
+        ignoringBatteryOptimizations(context)?.let { put("ignoringBatteryOptimizations", it) }
+        powerSaveMode(context)?.let { put("powerSaveMode", it) }
+        foregroundServiceActive()?.let { put("foregroundServiceActive", it) }
+    }
+
+    private fun bluetoothEnabled(context: Context): Boolean? = try {
+        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        manager?.adapter?.isEnabled
+    } catch (_: Throwable) {
+        null
+    }
+
+    /** GPS or network provider enabled — same logic as [io.bearound.sdk.BeAroundSDK.isLocationAvailable]. */
+    private fun locationServicesEnabled(context: Context): Boolean? = try {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        lm?.let {
+            it.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                it.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        }
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun notificationsEnabled(context: Context): Boolean? = try {
+        NotificationManagerCompat.from(context).areNotificationsEnabled()
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun ignoringBatteryOptimizations(context: Context): Boolean? = try {
+        BackgroundReliabilityHelper.isIgnoringBatteryOptimizations(context)
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun powerSaveMode(context: Context): Boolean? = try {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        pm?.isPowerSaveMode
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun foregroundServiceActive(): Boolean? = try {
+        BeaconScanService.isRunning
+    } catch (_: Throwable) {
+        null
+    }
+
+    // endregion
 
     private fun isoUtcNow(): String =
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)

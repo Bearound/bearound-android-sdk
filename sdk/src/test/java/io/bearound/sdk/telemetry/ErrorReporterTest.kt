@@ -227,6 +227,93 @@ class ErrorReporterTest {
     }
 
     @Test
+    fun `device carries a permissions snapshot with the expected keys and vocabulary`() {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        ErrorReporter.install(appContext, token)
+
+        val payload = ErrorReporter.buildPayload(
+            SecurityException("x"),
+            "BeaconScanService.onStartCommand",
+            "stack",
+            appContext
+        )
+        val permissions = payload.getJSONObject("device").getJSONObject("permissions")
+
+        val expectedKeys = listOf(
+            "bluetoothScan", "bluetoothConnect", "bluetoothAdvertise",
+            "fineLocation", "coarseLocation", "backgroundLocation", "postNotifications"
+        )
+        val vocabulary = setOf("granted", "denied", "not_applicable")
+        expectedKeys.forEach { key ->
+            assertTrue("permission key '$key' present", permissions.has(key))
+            assertTrue(
+                "permission '$key' value must be in the granted/denied/not_applicable vocabulary",
+                permissions.getString(key) in vocabulary
+            )
+        }
+    }
+
+    @Test
+    fun `device carries a systemState snapshot`() {
+        val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
+        ErrorReporter.install(appContext, token)
+
+        val payload = ErrorReporter.buildPayload(
+            Exception("x"),
+            "coroutine",
+            "stack",
+            appContext
+        )
+        val device = payload.getJSONObject("device")
+
+        assertTrue("systemState object present", device.has("systemState"))
+        val systemState = device.getJSONObject("systemState")
+        // All fields are optional/nullable; whichever are present must be booleans.
+        listOf(
+            "bluetoothEnabled", "locationServicesEnabled", "notificationsEnabled",
+            "ignoringBatteryOptimizations", "powerSaveMode", "foregroundServiceActive"
+        ).forEach { key ->
+            if (systemState.has(key)) {
+                // getBoolean throws if the value is not a boolean -> asserts the type.
+                systemState.getBoolean(key)
+            }
+        }
+    }
+
+    @Test
+    fun `a throwing permission getter does not break the report`() {
+        // A Context whose permission/service probes all throw exercises every try/catch in the
+        // snapshot helpers. The report must still be built and still carry the snapshots.
+        val real = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val hostile = object : android.content.ContextWrapper(real) {
+            override fun checkPermission(permission: String, pid: Int, uid: Int): Int =
+                throw RuntimeException("permission probe blew up")
+
+            override fun checkSelfPermission(permission: String): Int =
+                throw RuntimeException("permission probe blew up")
+
+            override fun getSystemService(name: String): Any? =
+                throw RuntimeException("service probe blew up")
+        }
+        ErrorReporter.install(real, token)
+
+        val payload = ErrorReporter.buildPayload(
+            SecurityException("boom"),
+            "BeaconScanService.onStartCommand",
+            "stack",
+            hostile
+        )
+
+        val device = payload.getJSONObject("device")
+        val permissions = device.getJSONObject("permissions")
+        // Every permission fell back to not_applicable instead of throwing.
+        assertEquals("not_applicable", permissions.getString("fineLocation"))
+        assertEquals("not_applicable", permissions.getString("bluetoothScan"))
+        // systemState is present (possibly with fields omitted) and the report did not throw.
+        assertTrue(device.has("systemState"))
+    }
+
+    @Test
     fun `payload stack trace respects the 8000 char cap`() {
         val appContext = ApplicationProvider.getApplicationContext<android.content.Context>()
         ErrorReporter.install(appContext, token)
