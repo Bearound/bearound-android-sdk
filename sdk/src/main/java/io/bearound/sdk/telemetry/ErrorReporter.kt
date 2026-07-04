@@ -73,6 +73,18 @@ object ErrorReporter {
     private const val SDK_PACKAGE_PREFIX = "io.bearound.sdk"
     private const val TELEMETRY_PACKAGE_PREFIX = "io.bearound.sdk.telemetry"
 
+    /**
+     * Language/OS runtime packages skipped when locating the ORIGINATING application
+     * frame. These are never "the culprit" — a real bug (NPE, ISE, etc.) surfaces
+     * through a runtime class (e.g. `java.util.ArrayList.get`) but originates in the
+     * first NON-runtime frame below it. Skipping them lets us attribute ownership to
+     * the first real application frame.
+     */
+    private val RUNTIME_FRAME_PREFIXES = listOf(
+        "java.", "javax.", "kotlin.", "kotlinx.", "sun.", "libcore.",
+        "dalvik.", "android.", "androidx.", "com.android.", "org.json.",
+    )
+
     // Permission-state vocabulary reported in device.permissions.
     private const val PERMISSION_GRANTED = "granted"
     private const val PERMISSION_DENIED = "denied"
@@ -189,6 +201,11 @@ object ErrorReporter {
             val token = businessToken ?: return
             if (token.isBlank()) return
 
+            // Single choke point for the origin filter: EVERY path (uncaught handler,
+            // coroutine handler, and manual reports from catch sites that may wrap a
+            // host callback) is gated here — we never capture a host-app error.
+            if (!isFromSdk(throwable)) return
+
             val stack = stackTraceOf(throwable)
             val hash = computeHash(throwable.javaClass.name, context, stack)
             if (!shouldReport(hash)) return
@@ -212,9 +229,8 @@ object ErrorReporter {
     ) : Thread.UncaughtExceptionHandler {
         override fun uncaughtException(thread: Thread, throwable: Throwable) {
             try {
-                if (isFromSdk(throwable)) {
-                    report(throwable, "uncaught-handler")
-                }
+                // report() applies the origin filter itself (single choke point).
+                report(throwable, "uncaught-handler")
             } catch (_: Throwable) {
                 // Never let telemetry interfere with the host's crash handling.
             } finally {
@@ -224,23 +240,47 @@ object ErrorReporter {
     }
 
     /**
-     * True when the stack trace (or a cause up to [MAX_CAUSE_DEPTH] deep) contains a frame
-     * from the SDK package — excluding this telemetry package, so reporter-internal errors
-     * are never classified as SDK crashes.
+     * True ONLY when the crash ORIGINATED in SDK code — never for a host-app error.
+     *
+     * Ownership = the FIRST application frame (skipping the language/OS runtime, see
+     * [RUNTIME_FRAME_PREFIXES]) reading from the top of the stack. This is the culprit.
+     * A host crash that merely passes THROUGH an SDK callback has the client's frame on
+     * top and our frames below it — the old "any SDK frame in the stack" test captured
+     * those (a privacy leak of the host app's errors); the origin test does not.
+     *
+     * The cause chain is walked ONLY while the current level has no identifiable
+     * application frame (all-runtime), never to reach an SDK frame buried under a host
+     * frame. Reporter-internal frames ([TELEMETRY_PACKAGE_PREFIX]) never qualify.
      */
     internal fun isFromSdk(throwable: Throwable): Boolean {
         var current: Throwable? = throwable
         var depth = 0
         while (current != null && depth < MAX_CAUSE_DEPTH) {
-            val hit = current.stackTrace.any { frame ->
-                frame.className.startsWith(SDK_PACKAGE_PREFIX) &&
-                    !frame.className.startsWith(TELEMETRY_PACKAGE_PREFIX)
+            when (originIsSdk(current.stackTrace)) {
+                true -> return true    // first app frame is ours → our bug
+                false -> return false  // first app frame is the host's/third-party → not ours
+                null -> {              // only runtime frames → inconclusive, try the cause
+                    current = current.cause
+                    depth++
+                }
             }
-            if (hit) return true
-            current = current.cause
-            depth++
         }
-        return false
+        return false // could not positively attribute to the SDK → do not report
+    }
+
+    /**
+     * null  = no application frame found (all runtime); caller should inspect the cause.
+     * true  = the first application frame belongs to the SDK (excluding telemetry).
+     * false = the first application frame belongs to the host app or a third-party lib.
+     */
+    private fun originIsSdk(frames: Array<StackTraceElement>): Boolean? {
+        for (frame in frames) {
+            val name = frame.className
+            if (RUNTIME_FRAME_PREFIXES.any { name.startsWith(it) }) continue
+            if (name.startsWith(TELEMETRY_PACKAGE_PREFIX)) continue // ignore our own reporter frames
+            return name.startsWith(SDK_PACKAGE_PREFIX)
+        }
+        return null
     }
 
     /** Full stack trace string, truncated to [MAX_STACK_CHARS] chars. */

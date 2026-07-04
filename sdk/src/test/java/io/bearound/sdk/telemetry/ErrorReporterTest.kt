@@ -126,6 +126,19 @@ class ErrorReporterTest {
             }.toTypedArray()
         }
 
+    /**
+     * An exception whose ORIGIN is SDK code, so it passes the origin filter and
+     * exercises the delivery path. (A bare `Exception()` created in this test class
+     * originates in `io.bearound.sdk.telemetry.*`, which the filter skips.)
+     */
+    private fun sdkException(message: String): Exception =
+        Exception(message).apply {
+            stackTrace = arrayOf(
+                StackTraceElement("io.bearound.sdk.BeaconManager", "scan", "BeaconManager.kt", 1),
+                StackTraceElement("io.bearound.sdk.BeAroundSDK", "start", "BeAroundSDK.kt", 1),
+            )
+        }
+
     @Test
     fun `stack containing an SDK frame is classified as from-SDK`() {
         val e = exceptionWithFrames(
@@ -153,13 +166,51 @@ class ErrorReporterTest {
     }
 
     @Test
-    fun `SDK frame in the cause chain is detected`() {
-        val cause = exceptionWithFrames("io.bearound.sdk.background.BackgroundScanManager")
-        val wrapper = Exception("wrapper", cause).apply {
+    fun `a HOST error thrown inside an SDK callback is NOT captured`() {
+        // The critical privacy case: the host's listener throws, we're only in the
+        // stack because we invoked the callback. The client's frame is on top, our
+        // frames are below. This MUST NOT be reported — it is the host app's bug.
+        val e = exceptionWithFrames(
+            "com.example.host.MyListener", // ← the culprit (first app frame)
+            "io.bearound.sdk.BeaconManager", // we merely called the listener
+            "io.bearound.sdk.BeAroundSDK",
+            "android.os.Handler"
+        )
+
+        assertFalse(ErrorReporter.isFromSdk(e))
+    }
+
+    @Test
+    fun `an NPE surfacing through the runtime inside SDK code IS captured`() {
+        // Real bugs surface through a runtime class but originate in the first
+        // application frame below it — here, ours.
+        val e = exceptionWithFrames(
+            "java.util.ArrayList", // runtime — skipped
+            "io.bearound.sdk.utilities.IBeaconParser", // ← origin is ours
+            "com.example.host.MainActivity"
+        )
+
+        assertTrue(ErrorReporter.isFromSdk(e))
+    }
+
+    @Test
+    fun `cause is consulted ONLY when the top level has no application frame`() {
+        // Top level is all-runtime (inconclusive) → walk the cause.
+        val sdkCause = exceptionWithFrames(
+            "java.lang.Thread",
+            "io.bearound.sdk.background.BackgroundScanManager"
+        )
+        val runtimeTop = Exception("wrapper", sdkCause).apply {
+            stackTrace = arrayOf(StackTraceElement("java.lang.Thread", "run", "Thread.java", 1))
+        }
+        assertTrue(ErrorReporter.isFromSdk(runtimeTop))
+
+        // But a host frame on top wins over an SDK cause — the host took ownership
+        // by wrapping, so we never capture it (conservative, no host data leak).
+        val hostTop = Exception("wrapper", sdkCause).apply {
             stackTrace = arrayOf(StackTraceElement("com.example.host.App", "run", "App.kt", 1))
         }
-
-        assertTrue(ErrorReporter.isFromSdk(wrapper))
+        assertFalse(ErrorReporter.isFromSdk(hostTop))
     }
 
     // endregion
@@ -343,7 +394,7 @@ class ErrorReporterTest {
             latch.countDown()
         }
 
-        ErrorReporter.report(Exception("delivery test"), "BeaconManager.startScanning")
+        ErrorReporter.report(sdkException("delivery test"), "BeaconManager.startScanning")
 
         assertTrue("transport should be invoked", latch.await(5, TimeUnit.SECONDS))
         assertEquals(token, sentToken.get())
@@ -359,7 +410,7 @@ class ErrorReporterTest {
         ErrorReporter.transport = { _, _ -> throw RuntimeException("network down") }
 
         // Must not propagate — fire-and-forget with all failures swallowed.
-        ErrorReporter.report(Exception("boom"), "coroutine")
+        ErrorReporter.report(sdkException("boom"), "coroutine")
 
         // And the synchronous send wrapper itself must swallow transport failures.
         ErrorReporter.safeSend("{}", token)
@@ -370,7 +421,7 @@ class ErrorReporterTest {
         val latch = CountDownLatch(1)
         ErrorReporter.transport = { _, _ -> latch.countDown() }
 
-        ErrorReporter.report(Exception("no context yet"), "coroutine")
+        ErrorReporter.report(sdkException("no context yet"), "coroutine")
 
         assertFalse("nothing must be sent without install()", latch.await(300, TimeUnit.MILLISECONDS))
     }
@@ -384,7 +435,7 @@ class ErrorReporterTest {
         ErrorReporter.transport = { _, _ -> latch.countDown() }
         ErrorReporter.setEnabled(false)
 
-        ErrorReporter.report(Exception("disabled"), "coroutine")
+        ErrorReporter.report(sdkException("disabled"), "coroutine")
 
         assertFalse("disabled reporter must not send", latch.await(300, TimeUnit.MILLISECONDS))
     }
