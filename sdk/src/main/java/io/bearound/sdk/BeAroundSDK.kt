@@ -396,8 +396,16 @@ class BeAroundSDK private constructor() {
         maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
         technology: String = "android-native"
     ) {
-        if(businessToken.trim().isEmpty()){
-            throw IllegalArgumentException("Business token cannot be empty")
+        // NEVER-CRASH-THE-HOST: an embedded SDK must not throw from a public entry
+        // point — a host wired to an empty BuildConfig field would crash on startup.
+        // Fail silently-but-visibly instead: log, report to telemetry, surface via
+        // onError, and leave the SDK unconfigured (every other API no-ops safely).
+        if (businessToken.trim().isEmpty()) {
+            Log.e(TAG, "Business token cannot be empty — configure() skipped, SDK stays inactive")
+            val error = IllegalArgumentException("Business token cannot be empty")
+            ErrorReporter.report(error, "configure")
+            listener?.onError(error)
+            return
         }
 
         val appId = context.packageName

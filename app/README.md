@@ -20,7 +20,7 @@ Alternativamente, defina a variável de ambiente `BUSINESS_TOKEN` antes do build
 
 > ⚠️ **Sem o token o app abre, mas o scan não inicia**: o `BeaconViewModel` detecta o
 > token vazio e exibe o card "Configuração necessária" em vez de chamar `configure()`
-> (que lançaria `IllegalArgumentException`). Se vir esse card, configure o
+> (o SDK fica inativo, sem lançar exceção). Se vir esse card, configure o
 > `BUSINESS_TOKEN` em `local.properties` (ou na variável de ambiente) e reinstale o app.
 
 O token é fornecido pelo time Bearound junto com o acesso ao Control Hub — veja

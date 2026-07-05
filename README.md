@@ -75,7 +75,7 @@ If you don't have one, ask your Bearound contact or write to `contact@bearound.c
 
 **Behavior with a wrong or missing token:**
 
-- An **empty/blank** token makes `configure()` throw `IllegalArgumentException` immediately.
+- An **empty/blank** token makes `configure()` a safe no-op: the SDK logs the problem, reports it to error telemetry, emits `onError`, and stays inactive — it never throws into the host.
 - A **non-empty but invalid** token is not validated locally: scanning starts normally, but
   every upload to `https://ingest.bearound.io` fails with HTTP 401. You will see it as
   `BeAroundSDK-APIClient` errors in logcat, `onSyncCompleted(success = false, error = ...)`
@@ -225,7 +225,7 @@ class MainActivity : ComponentActivity(), BeAroundSDKListener {
         sdk = BeAroundSDK.getInstance(this)
         sdk.listener = this
 
-        // Throws IllegalArgumentException if the token is blank.
+        // A blank token is a safe no-op (logged + onError) — the SDK never throws into the host.
         sdk.configure(businessToken = "your-business-token")
 
         requestScanPermissions()
@@ -516,7 +516,7 @@ Main SDK class (singleton).
 val sdk = BeAroundSDK.getInstance(context)
 sdk.listener = myListener            // BeAroundSDKListener
 
-// Configuration — throws IllegalArgumentException on blank token
+// Configuration — a blank token is a safe no-op (onError), never a throw
 sdk.configure(
     businessToken: String,
     scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
