@@ -39,9 +39,19 @@ class BluetoothManager(private val context: Context) {
         get() = bluetoothAdapter?.isEnabled == true
 
     init {
-        val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as AndroidBluetoothManager
-        bluetoothAdapter = bluetoothManager.adapter
-        bluetoothLeScanner = bluetoothAdapter?.bluetoothLeScanner
+        // NEVER-CRASH-THE-HOST: on devices without a Bluetooth radio (some emulators,
+        // Android TV/Auto, Wi-Fi-only tablets — the SDK declares bluetooth_le as
+        // required=false on purpose) getSystemService(BLUETOOTH_SERVICE) returns null.
+        // A non-null cast here would NPE synchronously inside the host's very first
+        // call (getInstance() in onCreate). Degrade gracefully instead: no adapter →
+        // no scanning, the rest of the class already null-guards both fields.
+        try {
+            val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? AndroidBluetoothManager
+            bluetoothAdapter = bluetoothManager?.adapter
+            bluetoothLeScanner = bluetoothAdapter?.bluetoothLeScanner
+        } catch (t: Throwable) {
+            Log.w(TAG, "Bluetooth unavailable on this device — SDK will stay idle: ${t.message}")
+        }
     }
 
     private val scanCallback = object : ScanCallback() {
