@@ -6,6 +6,11 @@
 
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by BeAround.
 
+> [!TIP]
+> **⚡ Set it up with an AI agent.** Don't wire the Android background integration by hand — hand [one prompt](./AI-AGENT-SETUP.md) to your AI coding agent (Claude Code, Cursor, Copilot) and let it pilot the whole install, pausing only for the few human-only steps. → [Set up with an AI agent](#set-up-with-an-ai-agent)
+
+[![Agent setup prompt](https://img.shields.io/badge/Agent_setup_prompt-open_%26_copy-2563eb?style=for-the-badge)](./AI-AGENT-SETUP.md)
+
 ## What the SDK detects
 
 The SDK detects **Bearound BLE beacons** — every hardware generation. Detection matches any
@@ -138,6 +143,21 @@ dependencies {
     implementation 'com.github.Bearound:bearound-android-sdk:v3.4.5'
 }
 ```
+
+## Set up with an AI agent
+
+Instead of wiring the Android background setup by hand, hand it to an **AI coding agent** (Claude Code, Cursor, Copilot, …). This README is written to be **agent-readable** — the agent reads it and does the whole integration. There's one ready-made prompt to give it:
+
+[![Agent setup prompt](https://img.shields.io/badge/Agent_setup_prompt-open_%26_copy-2563eb?style=for-the-badge)](./AI-AGENT-SETUP.md)
+
+Open [`AI-AGENT-SETUP.md`](./AI-AGENT-SETUP.md) and click the **copy icon** on its code block — GitHub shows one on every code block, and it drops the prompt on your clipboard. Then paste it into your agent with your app's repo open. Web-capable agents can fetch its [raw URL](https://raw.githubusercontent.com/Bearound/bearound-android-sdk/main/AI-AGENT-SETUP.md) directly.
+
+**The agent will pause for these human-only steps** — they need your Google Play account and a physical device, so no SDK or agent can do them:
+
+- **Google Play Console:** the `connectedDevice` foreground-service declaration + demonstration video required at review — the SDK's manifest merge carries `FOREGROUND_SERVICE_CONNECTED_DEVICE` even if you never start the service (see [Google Play review](#google-play-review--what-the-manifest-merge-means-for-your-app)).
+- **On device:** grant the battery-optimization exemption and the OEM autostart / protected-apps permission on aggressive ROMs (Xiaomi/HyperOS, Huawei, Oppo, Vivo…) — see [Background reliability](#background-reliability).
+
+Prefer to wire it by hand? Everything the prompt references is spelled out in the sections below.
 
 ## Permissions
 
