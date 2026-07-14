@@ -133,14 +133,14 @@ allprojects {
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("com.github.Bearound:bearound-android-sdk:v3.4.5")
+    implementation("com.github.Bearound:bearound-android-sdk:v3.5.0")
 }
 ```
 
 ```gradle
 // build.gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:v3.4.5'
+    implementation 'com.github.Bearound:bearound-android-sdk:v3.5.0'
 }
 ```
 
