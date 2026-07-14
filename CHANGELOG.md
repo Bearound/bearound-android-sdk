@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Silent-push wake-up (FCM).** The backend can now trigger an on-demand scan + sync by sending a data-only, high-priority FCM message — the Android counterpart of the iOS silent push. New `BeAroundSDK.handleRemoteMessage(data): Boolean` (returns `true` only for Bearound wake-ups, marked `bearound`; third-party pushes pass through untouched) plus an optional `io.bearound.sdk.push.BearoundMessagingService` the host registers in its manifest (or forwards to from its own `FirebaseMessagingService`). On a wake-up the SDK restores config if the app was killed, restarts scanning and flushes pending detections. Not auto-registered in the SDK manifest (`firebase-messaging` stays `compileOnly`, so auto-registering would crash apps without Firebase). See README → *Push notifications (FCM) → Silent-push wake-up*.
+
 ### Fixed
 
 - **Never-crash-the-host hardening.** Two synchronous crash vectors reachable from the host were closed: (1) `BluetoothManager` cast the Bluetooth system service non-null — on devices without a Bluetooth radio (some emulators, Android TV/Auto, Wi-Fi-only tablets; the SDK declares `bluetooth_le` as `required=false` on purpose) the host's very first `getInstance()` call would NPE. Now a safe cast + try/catch: no radio → the SDK stays idle. (2) `configure()` threw `IllegalArgumentException` on a blank business token — a host wired to an empty BuildConfig field would crash on startup. Now a safe no-op: logged, reported to error telemetry, surfaced via `onError`, SDK stays unconfigured. Doctrine: the SDK may fail silently, but it must NEVER crash the host — and every silent failure is reported to `POST /sdk-errors`.

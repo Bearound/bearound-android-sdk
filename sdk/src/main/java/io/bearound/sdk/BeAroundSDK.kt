@@ -576,6 +576,32 @@ class BeAroundSDK private constructor() {
         }
     }
 
+    /**
+     * Handles a Bearound silent-push wake-up (FCM data message). Call this from your
+     * `FirebaseMessagingService.onMessageReceived` — or register the SDK's
+     * [io.bearound.sdk.push.BearoundMessagingService] in your manifest and it calls this
+     * for you. Returns `true` if the message was a Bearound wake-up (handled here); `false`
+     * for third-party messages (which the host should keep handling itself).
+     *
+     * On a Bearound push the SDK restores its config if the app was killed, restarts
+     * scanning and flushes pending detections — the Android counterpart of the iOS
+     * silent-push wake-up, letting the backend trigger an on-demand scan + sync.
+     */
+    fun handleRemoteMessage(data: Map<String, String>): Boolean {
+        // Marker set by the backend FCM payload (buildFcmPayload → data["bearound"]).
+        // Guards against acting on third-party pushes routed through the same service.
+        if (data["bearound"] == null) return false
+        Log.d(TAG, "Bearound wake-up push received — restarting scan + flushing sync")
+        try {
+            restartScanningFromBackground()
+            performBackgroundSync()
+        } catch (e: Exception) {
+            Log.e(TAG, "handleRemoteMessage error: ${e.message}")
+            io.bearound.sdk.telemetry.ErrorReporter.report(e, "BeAroundSDK.handleRemoteMessage")
+        }
+        return true
+    }
+
     /** Clears all user properties, including the persisted internalId. */
     fun clearUserProperties() {
         userProperties = null

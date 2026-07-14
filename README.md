@@ -326,6 +326,41 @@ sdk.setPushToken(token)
 Calling `setPushToken` **after** `startScanning()` is fine — since 3.4.1 the SDK pushes a
 new/changed token to the backend immediately instead of waiting for the next sync cycle.
 
+#### Silent-push wake-up (optional)
+
+The backend can trigger an **on-demand scan + sync** by sending a data-only, high-priority FCM
+message — the Android counterpart of the iOS silent push. Wire it one of two ways:
+
+**A. No `FirebaseMessagingService` of your own** — register the SDK's in your manifest:
+
+```xml
+<service
+    android:name="io.bearound.sdk.push.BearoundMessagingService"
+    android:exported="false">
+    <intent-filter>
+        <action android:name="com.google.firebase.MESSAGING_EVENT" />
+    </intent-filter>
+</service>
+```
+
+**B. You already have a `FirebaseMessagingService`** — forward to the SDK from yours:
+
+```kotlin
+override fun onMessageReceived(message: RemoteMessage) {
+    if (BeAroundSDK.getInstance(this).handleRemoteMessage(message.data)) return
+    // ...your own push handling...
+}
+override fun onNewToken(token: String) {
+    BeAroundSDK.getInstance(this).setPushToken(token)
+}
+```
+
+`handleRemoteMessage` returns `true` only for Bearound wake-up messages (marked `bearound`);
+third-party pushes pass through untouched. On a wake-up the SDK restores its config if the app
+was killed, restarts scanning and flushes pending detections. Requires the host to bundle
+Firebase — the SDK never auto-registers the service (`compileOnly`, so auto-registering would
+crash apps without Firebase).
+
 ## Background scanning
 
 **Background scanning is automatically enabled** by `startScanning()`. On Android 8+ the SDK
