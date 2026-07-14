@@ -116,8 +116,8 @@ below refine it).
    your own handling; in onNewToken, `BeAroundSDK.getInstance(this).setPushToken(token)`.
    handleRemoteMessage returns true ONLY for Bearound wake-up messages (third-party pushes
    pass through untouched); on a wake-up the SDK restores its config if the app was killed,
-   restarts scanning (only if the host had scanning enabled — an explicit stopScanning()
-   is respected), and flushes sync. See README → Silent-push wake-up.
+   restarts scanning (always — a backend wake-up overrides a previous stopScanning()),
+   and flushes sync. See README → Silent-push wake-up.
 
 6. Verify (build only — your deliverable ends here): build the project and confirm it
    COMPILES and the SDK is wired (singleton + listener + configure + permission launcher +

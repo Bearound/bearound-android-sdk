@@ -357,8 +357,8 @@ override fun onNewToken(token: String) {
 
 `handleRemoteMessage` returns `true` only for Bearound wake-up messages (marked `bearound`);
 third-party pushes pass through untouched. On a wake-up the SDK restores its config if the app
-was killed, restarts scanning (only if the host had scanning enabled — an explicit
-`stopScanning()` is respected) and flushes pending sync. Requires the host to bundle
+was killed, restarts scanning (always — a backend wake-up overrides a previous
+`stopScanning()`) and flushes pending sync. Requires the host to bundle
 Firebase — the SDK never auto-registers the service (`compileOnly`, so auto-registering would
 crash apps without Firebase).
 
