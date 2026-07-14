@@ -102,7 +102,24 @@ below refine it).
    show a one-time onboarding screen that calls openBatteryOptimizationSettings() and
    (when isAutostartManageable) openManufacturerAutostartSettings().
 
-5. Verify (build only — your deliverable ends here): build the project and confirm it
+5. Silent-push wake-up (OPTIONAL — wire ONLY if the backend wakes the device by FCM;
+   skip otherwise): it lets the backend trigger an on-demand scan + sync via a data-only
+   push (the Android counterpart of the iOS silent push), and requires the host to already
+   bundle Firebase. If the app bundles Firebase and does NOT have its own
+   FirebaseMessagingService, register the SDK's in AndroidManifest.xml (inside
+   <application>): `<service android:name="io.bearound.sdk.push.BearoundMessagingService"
+   android:exported="false"><intent-filter><action
+   android:name="com.google.firebase.MESSAGING_EVENT" /></intent-filter></service>`. If
+   the app ALREADY has its own FirebaseMessagingService, do NOT register this one (the two
+   would collide) — FORWARD to the SDK from yours instead: in onMessageReceived,
+   `if (BeAroundSDK.getInstance(this).handleRemoteMessage(message.data)) return` before
+   your own handling; in onNewToken, `BeAroundSDK.getInstance(this).setPushToken(token)`.
+   handleRemoteMessage returns true ONLY for Bearound wake-up messages (third-party pushes
+   pass through untouched); on a wake-up the SDK restores its config if the app was killed,
+   restarts scanning (always — a backend wake-up overrides a previous stopScanning()),
+   and flushes sync. See README → Silent-push wake-up.
+
+6. Verify (build only — your deliverable ends here): build the project and confirm it
    COMPILES and the SDK is wired (singleton + listener + configure + permission launcher +
    startScanning). Report it as "compiles and wired", NOT as "detection observed" — the
    on-device beacon walk is HUMAN-ONLY: walking a PHYSICAL device (Bluetooth on) near a
