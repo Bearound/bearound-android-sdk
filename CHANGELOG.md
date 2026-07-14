@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Never-crash-the-host hardening.** Two synchronous crash vectors reachable from the host were closed: (1) `BluetoothManager` cast the Bluetooth system service non-null — on devices without a Bluetooth radio (some emulators, Android TV/Auto, Wi-Fi-only tablets; the SDK declares `bluetooth_le` as `required=false` on purpose) the host's very first `getInstance()` call would NPE. Now a safe cast + try/catch: no radio → the SDK stays idle. (2) `configure()` threw `IllegalArgumentException` on a blank business token — a host wired to an empty BuildConfig field would crash on startup. Now a safe no-op: logged, reported to error telemetry, surfaced via `onError`, SDK stays unconfigured. Doctrine: the SDK may fail silently, but it must NEVER crash the host — and every silent failure is reported to `POST /sdk-errors`.
 
+## [3.4.6] - 2026-07-14
+
+- chore(release): alinha versão 3.4.6 (version-only; sem mudança funcional — o fix de scan BLE 3.4.6 é iOS-only, o Android já filtra por Service Data)
+
 ## [3.4.5] - 2026-07-03
 
 ### Fixed
