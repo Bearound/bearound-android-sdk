@@ -584,16 +584,29 @@ class BeAroundSDK private constructor() {
      * for third-party messages (which the host should keep handling itself).
      *
      * On a Bearound push the SDK restores its config if the app was killed, restarts
-     * scanning and flushes pending detections — the Android counterpart of the iOS
+     * scanning (only if the host had scanning enabled — an explicit [stopScanning] is
+     * respected) and flushes pending sync — the Android counterpart of the iOS
      * silent-push wake-up, letting the backend trigger an on-demand scan + sync.
      */
     fun handleRemoteMessage(data: Map<String, String>): Boolean {
         // Marker set by the backend FCM payload (buildFcmPayload → data["bearound"]).
         // Guards against acting on third-party pushes routed through the same service.
         if (data["bearound"] == null) return false
-        Log.d(TAG, "Bearound wake-up push received — restarting scan + flushing sync")
+        Log.d(TAG, "Bearound wake-up push received")
         try {
-            restartScanningFromBackground()
+            // Same restore + gate as the watchdog/boot paths: restore config if the app was
+            // killed, and only (re)start scanning if the host had it enabled — a backend push
+            // must not override an explicit stopScanning(). Pending sync is flushed either way.
+            if (!isConfigured) attemptConfigRestore()
+            if (!isConfigured) {
+                Log.w(TAG, "Wake-up ignored - SDK not configured")
+                return true
+            }
+            if (wasScanningEnabled()) {
+                restartScanningFromBackground()
+            } else {
+                Log.d(TAG, "Wake-up: scanning disabled by host - flushing sync only")
+            }
             performBackgroundSync()
         } catch (e: Exception) {
             Log.e(TAG, "handleRemoteMessage error: ${e.message}")
