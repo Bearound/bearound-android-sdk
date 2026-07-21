@@ -359,6 +359,22 @@ class BeaconManager(private val context: Context) {
             isScanning = true
             onScanningStateChanged?.invoke(true)
 
+            // Reconfig-safe zone restore: a stop()+start() cycle (settings apply) must not
+            // lose a live in-zone state. Restores the snapshot persisted by stopScanning()
+            // and — when the last advert is fresh (within the exit grace) — re-fires the
+            // active-scan path the rising edge would normally fire, so HIGH precision
+            // starts ranging immediately instead of waiting for the next broadcast.
+            // If the zone is genuinely gone, the exit grace shuts active scanning down.
+            restorePersistedZoneState()
+            val last = lastBeaconSeenAt
+            if (isInBeaconRegion && last != null &&
+                System.currentTimeMillis() - last < ZONE_EXIT_GRACE_MS
+            ) {
+                Log.d(TAG, "Zone state fresh (${(System.currentTimeMillis() - last) / 1000}s since last ad) — re-arming active scan")
+                startRegionCleanupTimer()
+                onActiveScanShouldStart?.invoke()
+            }
+
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start scanning: ${e.message}")
             io.bearound.sdk.telemetry.ErrorReporter.report(e, "BeaconManager.startScanning")
@@ -384,6 +400,14 @@ class BeaconManager(private val context: Context) {
         }
         stopSlowBeaconBatchScan()
 
+        // Snapshot the TRUE zone state BEFORE tearing it down. stop()+start() is also the
+        // reconfigure path (settings apply): persisting `false` here made the next start
+        // skip ranging ("startRanging skipped — not inside beacon region") until a
+        // PendingIntent broadcast happened to revive it — in the field, precision changes
+        // looked like they didn't apply (realme C61, 2026-07-22). The fresh snapshot lets
+        // startScanning() restore the zone and re-arm active scanning immediately.
+        persistZoneState()
+
         beaconLock.withLock {
             detectedBeacons.clear()
             beaconLastSeen.clear()
@@ -394,7 +418,6 @@ class BeaconManager(private val context: Context) {
         lastBeaconSeenAt = null
 
         isInBeaconRegion = false
-        persistZoneState()
         emptyBeaconCount = 0
         isScanning = false
         onScanningStateChanged?.invoke(false)
@@ -536,12 +559,20 @@ class BeaconManager(private val context: Context) {
                     IBeaconParser.BEAROUND_IBEACON_MASK
                 )
                 .build()
+            // fw v4+ transmite o 0xBEAD como advertisement PRIMÁRIO (fase alternada) —
+            // o filtro offloaded de service data agora casa. Sem ele o batch é CEGO pros
+            // frames BEAD-puros (validado em campo 2026-07-21: o batch via filtro iBeacon
+            // não enxergava a fase B do fw v4). Lista de filtros = OR: cobre beacons
+            // antigos (iBeacon no primário) E novos (0xBEAD no primário).
+            val beadFilter = ScanFilter.Builder()
+                .setServiceData(IBeaconParser.BEAD_SERVICE_UUID, byteArrayOf(), byteArrayOf())
+                .build()
             val settings = ScanSettings.Builder()
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
                 .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
                 .setReportDelay(SLOW_BEACON_BATCH_DELAY_MS)
                 .build()
-            scanner.startScan(listOf(ibFilter), settings, batchScanCallback)
+            scanner.startScan(listOf(ibFilter, beadFilter), settings, batchScanCallback)
             isBatchScanning = true
             lastBatchDeliveryAt = System.currentTimeMillis() // liveness baseline
             Log.d(TAG, "Slow-beacon batch scan started (reportDelay=${SLOW_BEACON_BATCH_DELAY_MS}ms)")
@@ -662,14 +693,9 @@ class BeaconManager(private val context: Context) {
 
         cleanupExpiredBeacons()
 
-        // Refresh stale flag for every beacon in the snapshot — emit reflects current freshness
-        val currentBeacons = beaconLock.withLock {
-            detectedBeacons.values.map { b ->
-                val lastSeen = beaconLastSeen[b.identifier] ?: now
-                val staleNow = (now - lastSeen) > STALE_THRESHOLD_MS
-                if (staleNow != b.isStale) b.copy(isStale = staleNow) else b
-            }
-        }
+        // Refresh stale flag for every beacon — emit reflects current freshness
+        refreshStaleFlags(now)
+        val currentBeacons = beaconLock.withLock { detectedBeacons.values.toList() }
 
         if (currentBeacons.isNotEmpty()) {
             onBeaconsUpdated?.invoke(currentBeacons)
@@ -678,7 +704,29 @@ class BeaconManager(private val context: Context) {
         startWatchdog()
     }
 
-    private fun cleanupExpiredBeacons() {
+    /**
+     * Recomputes the per-beacon staleness flag IN the detected map. Returns true when any
+     * flag flipped since the last pass — the periodic cleanup uses this to know the host's
+     * list needs a refresh (fade-in/fade-out) without spamming identical emissions.
+     */
+    private fun refreshStaleFlags(now: Long = System.currentTimeMillis()): Boolean =
+        beaconLock.withLock {
+            var changed = false
+            for (id in detectedBeacons.keys.toList()) {
+                val b = detectedBeacons[id] ?: continue
+                val lastSeen = beaconLastSeen[id] ?: now
+                val staleNow = (now - lastSeen) > STALE_THRESHOLD_MS
+                if (staleNow != b.isStale) {
+                    detectedBeacons[id] = b.copy(isStale = staleNow)
+                    changed = true
+                }
+            }
+            changed
+        }
+
+    /** Removes timed-out beacons from the detected map. Returns true when any was removed. */
+    private fun cleanupExpiredBeacons(): Boolean {
+        var removedAny = false
         val (hadBeaconsBefore, hasBeaconsAfter) = beaconLock.withLock {
             val before = detectedBeacons.isNotEmpty()
             val now = System.currentTimeMillis()
@@ -693,6 +741,7 @@ class BeaconManager(private val context: Context) {
                 rssiFilter.remove(key)
                 rssiAccumulators.remove(key)
             }
+            removedAny = expiredKeys.isNotEmpty()
             Pair(before, detectedBeacons.isNotEmpty())
         }
 
@@ -718,6 +767,7 @@ class BeaconManager(private val context: Context) {
                 Log.d(TAG, "Detected map drained but zone-exit grace not yet elapsed (${sinceLast}s since last ad, grace=${ZONE_EXIT_GRACE_MS / 1000}s) — staying in region")
             }
         }
+        return removedAny
     }
 
     private fun startRegionCleanupTimer() {
@@ -728,7 +778,17 @@ class BeaconManager(private val context: Context) {
                     stopRegionCleanupTimer()
                     return
                 }
-                cleanupExpiredBeacons()
+                val removed = cleanupExpiredBeacons()
+                val staleChanged = refreshStaleFlags()
+                if (removed || staleChanged) {
+                    // Push the post-expiry snapshot (possibly EMPTY) to the host. Without
+                    // this emit, a beacon that left the air stayed frozen on the host's
+                    // list until the next packet from any OTHER beacon arrived — the
+                    // "ghost beacon" seen in the example app. An empty list is a valid
+                    // emission: it is how the host learns the last beacon is gone.
+                    val snapshot = beaconLock.withLock { detectedBeacons.values.toList() }
+                    onBeaconsUpdated?.invoke(snapshot)
+                }
                 if (regionCleanupRunnable != null) {
                     handler.postDelayed(this, REGION_CLEANUP_INTERVAL_MS)
                 }
@@ -789,6 +849,17 @@ class BeaconManager(private val context: Context) {
     private fun stopRangingRefreshTimer() {
         rangingRefreshRunnable?.let { handler.removeCallbacks(it) }
         rangingRefreshRunnable = null
+    }
+
+    /**
+     * Re-registra o batch scan (anti-downgrade) — par do BluetoothManager.restartScanning().
+     * Se o ScanStartBudget negar o re-start, isBatchScanning fica false e o próprio
+     * watchdog ([checkRangingHealth]) re-arma no próximo ciclo — sem estado perdido.
+     */
+    fun refreshBatchScan() {
+        if (!isScanning || !isBatchScanning) return
+        stopSlowBeaconBatchScan()
+        startSlowBeaconBatchScan()
     }
 
     private fun checkRangingHealth() {

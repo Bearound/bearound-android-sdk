@@ -129,6 +129,38 @@ class BluetoothManager(private val context: Context) {
         }
     }
 
+    /**
+     * Re-registra o scan de metadata (stop+start) SEM mudar o estado do ciclo de vida.
+     * Anti-downgrade: sessões de scan longas são rebaixadas pelo sistema (AOSP: >30 min
+     * vira opportunistic; OEMs Android 13+ aplicam adaptive throttling antes disso —
+     * sessões AMBIENT_DISCOVERY/OPPORTUNISTIC observadas em campo no Moto G35/realme C61).
+     * Uma sessão recém-registrada volta ao duty pleno. Chamado pelo refresh periódico do
+     * SDK (~20 min). Se o ScanStartBudget não tiver folga, mantém a sessão atual como
+     * está (pular um refresh é inofensivo; matar o scan sem conseguir religar não é).
+     */
+    @SuppressLint("MissingPermission")
+    fun restartScanning() {
+        if (!isScanning) return
+        if (!checkPermissions()) return
+        if (!ScanStartBudget.tryAcquire("metadata-restart")) return
+        try {
+            bluetoothLeScanner?.stopScan(scanCallback)
+        } catch (_: Exception) {
+            /* sessão já morta no stack — o start abaixo recria */
+        }
+        try {
+            val settings = ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
+                .setReportDelay(0)
+                .build()
+            bluetoothLeScanner?.startScan(metadataScanFilters(), settings, scanCallback)
+            Log.d(TAG, "Metadata scan re-registered (anti-downgrade refresh)")
+        } catch (e: Exception) {
+            isScanning = false
+            Log.w(TAG, "Anti-downgrade restart failed: ${e.message}")
+        }
+    }
+
     @SuppressLint("MissingPermission")
     fun stopScanning() {
         if (!isScanning) return

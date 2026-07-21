@@ -56,6 +56,16 @@ import kotlin.math.pow
 class BeAroundSDK private constructor() {
     companion object {
         private const val TAG = "BeAroundSDK"
+
+        /**
+         * Anti-downgrade scan refresh (Fix B, 2026-07). OEMs on Android 13+ silently
+         * downgrade long-lived scan sessions (field-observed: requested BALANCED/LOW_LATENCY
+         * demoted to AMBIENT_DISCOVERY/OPPORTUNISTIC on Moto G35 / realme C61, shrinking
+         * listening to ~10% duty), and AOSP drops any scan older than 30 min to opportunistic.
+         * Re-registering the client restores full duty. 20 min stays safely under the AOSP
+         * 30-min cliff and is far above ScanStartBudget's 4-starts/30 s throttle window.
+         */
+        private const val SCAN_REFRESH_INTERVAL_MS = 20 * 60 * 1000L
         
         @SuppressLint("StaticFieldLeak")
         @Volatile
@@ -88,6 +98,23 @@ class BeAroundSDK private constructor() {
 
     private val metadataCache = mutableMapOf<String, BeaconMetadata>()
     private val collectedBeacons = mutableMapOf<String, Beacon>()
+
+    /**
+     * TTL applied when emitting [collectedBeacons] to the host. The map is ALSO the sync
+     * buffer — unsynced entries must be retained until sent — so expired beacons are
+     * hidden from listener emissions instead of being removed. Kept in step with the
+     * BeaconManager eviction timeout (see startSyncTimer). Without this filter, the
+     * metadata-scan and post-sync emission paths re-surfaced beacons long gone from the
+     * air ("ghost beacons" on the host list).
+     */
+    @Volatile
+    private var listenerBeaconTtlMs: Long = 30_000L
+
+    /** TTL-filtered snapshot of [collectedBeacons] for host emission. Call under [beaconLock]. */
+    private fun collectedForListenerLocked(): List<Beacon> {
+        val cutoff = System.currentTimeMillis() - listenerBeaconTtlMs
+        return collectedBeacons.values.filter { it.timestamp.time >= cutoff }
+    }
     private val beaconLock = ReentrantLock()
 
     // ErrorReporter's handler: SDK coroutine failures are logged + reported, never rethrown.
@@ -120,6 +147,7 @@ class BeAroundSDK private constructor() {
 
     private var syncRunnable: Runnable? = null
     private var dutyCycleRunnable: Runnable? = null
+    private var scanRefreshRunnable: Runnable? = null
 
     private var isSyncing = false
     private lateinit var offlineBatchStorage: OfflineBatchStorage
@@ -319,7 +347,7 @@ class BeAroundSDK private constructor() {
                         beacon
                     }
                     collectedBeacons[beacon.identifier] = updated
-                    collectedBeacons.values.toList()
+                    collectedForListenerLocked()
                 }
 
                 dispatchToListener { it.onBeaconsUpdated(beaconsForListener) }
@@ -353,7 +381,14 @@ class BeAroundSDK private constructor() {
         isInBackground = false
         Log.d(TAG, "App foregrounded")
 
-        backgroundScanManager.disableBackgroundScanning()
+        // O scan por PendingIntent fica ATIVO também em foreground (antes era desligado
+        // aqui). Motivo (campo, 2026-07-21): nos Android 14 AOSP-like (Moto stock, realme
+        // ColorOS) o enforcement do neverForLocation filtra os frames de beacon de TODOS
+        // os scanners regulares — o caminho de broadcast/PendingIntent é o único que
+        // entrega. Desligá-lo em foreground deixava esses aparelhos praticamente cegos
+        // exatamente com o app em uso. Custo: é o mesmo scan filtrado de baixo consumo
+        // que já roda o dia inteiro em background; o kernel deduplica o trabalho de rádio
+        // com os scanners regulares ativos.
 
         if (BeaconScanService.isRunning) {
             BeaconScanService.stop(context)
@@ -735,6 +770,9 @@ class BeAroundSDK private constructor() {
         // Equivalent in spirit to iOS's CLBeaconRegion monitoring.
         backgroundScanManager.enableBackgroundScanning()
 
+        // Fix B — keep long-lived scan sessions at full duty (anti-downgrade re-register).
+        startScanRefreshTimer()
+
         // Persist scanning state for recovery after kill/reboot
         SDKConfigStorage.saveScanningEnabled(context, true)
 
@@ -831,6 +869,7 @@ class BeAroundSDK private constructor() {
         backgroundScanManager.disableBackgroundScanning()
         backgroundScheduler.disableAll()
         stopSyncTimer()
+        stopScanRefreshTimer()
 
         if (BeaconScanService.isRunning) {
             BeaconScanService.stop(context)
@@ -964,6 +1003,9 @@ class BeAroundSDK private constructor() {
         // Adaptive beacon timeout: cover scan + pause + 5s buffer so beacons don't expire mid-duty-cycle
         val beaconTimeout = config.precisionScanDuration + config.precisionPauseDuration + 5_000L
         beaconManager.setBeaconTimeout(beaconTimeout)
+        // Listener emissions of collectedBeacons expire on the same clock as the manager
+        // (setBeaconTimeout clamps to its 30s floor — mirror that so the two lists agree).
+        listenerBeaconTtlMs = maxOf(beaconTimeout, 30_000L)
         Log.d(TAG, "Beacon timeout set to ${beaconTimeout}ms")
 
         when (config.scanPrecision) {
@@ -1068,6 +1110,37 @@ class BeAroundSDK private constructor() {
         dutyCycleRunnable = null
     }
 
+    /**
+     * Fix B — periodic anti-downgrade refresh (see [SCAN_REFRESH_INTERVAL_MS]).
+     *
+     * Every tick re-registers the two long-lived scan clients so the platform treats them
+     * as fresh sessions at full duty:
+     *  - [BluetoothManager.restartScanning] — the metadata (BALANCED) scan;
+     *  - [BeaconManager.refreshBatchScan] — the batch scan.
+     * Both are budget-aware internally (ScanStartBudget): when the budget has no headroom
+     * they keep the current session instead of killing it, so a tick can only ever be a
+     * no-op — never a regression. The PendingIntent scan is NOT restarted here: it is
+     * kernel-managed, exempt from session downgrade, and re-arming it costs budget.
+     */
+    private fun startScanRefreshTimer() {
+        stopScanRefreshTimer()
+        scanRefreshRunnable = object : Runnable {
+            override fun run() {
+                Log.d(TAG, "Scan refresh tick — re-registering scan sessions (anti-downgrade)")
+                bluetoothManager.restartScanning()
+                beaconManager.refreshBatchScan()
+                handler.postDelayed(this, SCAN_REFRESH_INTERVAL_MS)
+            }
+        }
+        handler.postDelayed(scanRefreshRunnable!!, SCAN_REFRESH_INTERVAL_MS)
+        Log.d(TAG, "Scan refresh timer armed (every ${SCAN_REFRESH_INTERVAL_MS / 60000} min)")
+    }
+
+    private fun stopScanRefreshTimer() {
+        scanRefreshRunnable?.let { handler.removeCallbacks(it) }
+        scanRefreshRunnable = null
+    }
+
     private fun syncBeacons(forceBackground: Boolean = false) {
         scope.launch {
             if (isSyncing) return@launch
@@ -1149,9 +1222,10 @@ class BeAroundSDK private constructor() {
                         }
                         Log.d(TAG, "Marked ${syncedIds.size} beacons as synced")
 
-                        // Notify listener so UI reflects sync state
+                        // Notify listener so UI reflects sync state (TTL-filtered: beacons
+                        // already gone from the air must not resurface here)
                         val updatedBeacons = beaconLock.withLock {
-                            collectedBeacons.values.toList()
+                            collectedForListenerLocked()
                         }
                         dispatchToListener { it.onBeaconsUpdated(updatedBeacons) }
 
@@ -1414,13 +1488,19 @@ class BeAroundSDK private constructor() {
         
         // Scanning mode is automatic based on app state
         beaconManager.startScanning()
-        
+
         // Re-enable background mechanisms
         backgroundScanManager.enableBackgroundScanning()
         backgroundScheduler.enableAll()
-        
+
         // Bluetooth scanning is always enabled in v2.2.0+
         bluetoothManager.startScanning()
+
+        // Fix B — this revive path starts the same long-lived scan sessions as
+        // startScanning(), so it needs the same anti-downgrade refresh. Without this,
+        // a process revived by the watchdog/boot receiver ran unprotected until the
+        // host happened to call startScanning() again.
+        startScanRefreshTimer()
 
         // Restore foreground service if it was enabled
         val fgConfig = foregroundScanConfig
