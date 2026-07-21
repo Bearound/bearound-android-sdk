@@ -3,6 +3,7 @@ package io.bearound.sdk
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
@@ -146,7 +147,6 @@ class BeAroundSDK private constructor() {
     }
 
     private var syncRunnable: Runnable? = null
-    private var dutyCycleRunnable: Runnable? = null
     private var scanRefreshRunnable: Runnable? = null
 
     private var isSyncing = false
@@ -1010,7 +1010,7 @@ class BeAroundSDK private constructor() {
 
         when (config.scanPrecision) {
             ScanPrecision.HIGH -> startHighPrecision(config)
-            ScanPrecision.MEDIUM, ScanPrecision.LOW -> startDutyCycle(config)
+            ScanPrecision.MEDIUM, ScanPrecision.LOW -> startContinuousLowDuty(config)
         }
     }
 
@@ -1020,6 +1020,7 @@ class BeAroundSDK private constructor() {
     private fun startHighPrecision(config: SDKConfiguration) {
         Log.d(TAG, "HIGH precision: continuous scan, sync every ${config.syncInterval / 1000}s")
 
+        beaconManager.rangingScanMode = null
         beaconManager.startRanging()
 
         syncRunnable = object : Runnable {
@@ -1032,69 +1033,44 @@ class BeAroundSDK private constructor() {
     }
 
     /**
-     * MEDIUM/LOW precision: duty cycle with scan+pause windows
-     * MEDIUM: 3 cycles of 10s scan + 10s pause per 60s window
-     * LOW: 1 cycle of 10s scan + 50s pause per 60s window
+     * MEDIUM/LOW: ONE continuous scan registration with a hardware-managed duty cycle.
+     *
+     * MEDIUM → SCAN_MODE_BALANCED (controller listens ~1 s every ~5 s, ~20% duty);
+     * LOW → SCAN_MODE_LOW_POWER (~0.5 s every ~5 s, ~10% duty). Detections land every
+     * few seconds in both modes; sync stays on the 60 s timer.
+     *
+     * Replaces the manual 10 s-scan/10 s-pause duty cycle: that design consumed 3-4 of
+     * the 5 scan-starts/30 s the OS allows BY DESIGN, so any extra start (watchdog,
+     * batch revive, anti-downgrade refresh, fg/bg flip) tripped the quota and the OS
+     * silently starved every scanner for 30 s+ — field-observed on Moto G35 as
+     * "minutes without a beacon". One registration = zero start churn: the whole
+     * budget stays available for the recovery paths, and beacons never expire inside
+     * an artificial pause window.
      */
-    private fun startDutyCycle(config: SDKConfiguration) {
-        val scanDuration = config.precisionScanDuration
-        val pauseDuration = config.precisionPauseDuration
-        val cycleCount = config.precisionCycleCount
-        val cycleInterval = config.precisionCycleInterval
-
-        Log.d(TAG, "${config.scanPrecision} precision: ${cycleCount}x (${scanDuration/1000}s scan + ${pauseDuration/1000}s pause) per ${cycleInterval/1000}s window")
-
-        runDutyCycleWindow(scanDuration, pauseDuration, cycleCount, cycleInterval)
-    }
-
-    private fun runDutyCycleWindow(
-        scanDuration: Long,
-        pauseDuration: Long,
-        cycleCount: Int,
-        cycleInterval: Long
-    ) {
-        var currentCycle = 0
-
-        fun scheduleCycle() {
-            if (currentCycle >= cycleCount) {
-                // All cycles in this window done — sync and schedule next window
-                Log.d(TAG, "Duty cycle window complete — syncing and scheduling next window")
-                syncBeacons()
-
-                // Calculate remaining time until next window
-                val elapsedInWindow = cycleCount.toLong() * (scanDuration + pauseDuration)
-                val remainingDelay = maxOf(0L, cycleInterval - elapsedInWindow)
-
-                dutyCycleRunnable = Runnable {
-                    runDutyCycleWindow(scanDuration, pauseDuration, cycleCount, cycleInterval)
-                }
-                handler.postDelayed(dutyCycleRunnable!!, remainingDelay)
-                return
-            }
-
-            // Start scan phase
-            Log.d(TAG, "Duty cycle ${currentCycle + 1}/$cycleCount: starting scan (${scanDuration / 1000}s)")
-            beaconManager.resumeRanging()
-            bluetoothManager.resumeScanning()
-
-            // Schedule pause after scan duration
-            dutyCycleRunnable = Runnable {
-                Log.d(TAG, "Duty cycle ${currentCycle + 1}/$cycleCount: pausing (${pauseDuration / 1000}s)")
-                beaconManager.pauseRanging()
-                bluetoothManager.pauseScanning()
-                currentCycle++
-
-                // Schedule next cycle after pause
-                dutyCycleRunnable = Runnable {
-                    scheduleCycle()
-                }
-                handler.postDelayed(dutyCycleRunnable!!, pauseDuration)
-            }
-            handler.postDelayed(dutyCycleRunnable!!, scanDuration)
+    private fun startContinuousLowDuty(config: SDKConfiguration) {
+        val lowPower = config.scanPrecision == ScanPrecision.LOW
+        beaconManager.rangingScanMode = if (lowPower) {
+            ScanSettings.SCAN_MODE_LOW_POWER
+        } else {
+            ScanSettings.SCAN_MODE_BALANCED
         }
 
-        // Start first cycle immediately
-        scheduleCycle()
+        Log.d(
+            TAG,
+            "${config.scanPrecision} precision: continuous " +
+                (if (lowPower) "LOW_POWER (~10% hardware duty)" else "BALANCED (~20% hardware duty)") +
+                " scan, sync every ${config.syncInterval / 1000}s"
+        )
+
+        beaconManager.startRanging()
+
+        syncRunnable = object : Runnable {
+            override fun run() {
+                syncBeacons()
+                handler.postDelayed(this, config.syncInterval)
+            }
+        }
+        handler.postDelayed(syncRunnable!!, config.syncInterval)
     }
 
     private fun restartSyncTimer() {
@@ -1106,8 +1082,6 @@ class BeAroundSDK private constructor() {
     private fun stopSyncTimer() {
         syncRunnable?.let { handler.removeCallbacks(it) }
         syncRunnable = null
-        dutyCycleRunnable?.let { handler.removeCallbacks(it) }
-        dutyCycleRunnable = null
     }
 
     /**

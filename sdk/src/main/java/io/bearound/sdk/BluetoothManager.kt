@@ -28,6 +28,8 @@ class BluetoothManager(private val context: Context) {
     }
 
     var listener: BluetoothManagerListener? = null
+
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     
     private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothLeScanner: BluetoothLeScanner? = null
@@ -67,6 +69,21 @@ class BluetoothManager(private val context: Context) {
             Log.e(TAG, "BLE scan failed with error code: $errorCode")
             if (errorCode == 6 /* SCAN_FAILED_SCANNING_TOO_FREQUENTLY, API 30+ */) {
                 ScanStartBudget.freeze()
+            }
+            if (errorCode == 1 /* SCAN_FAILED_ALREADY_STARTED */) {
+                // Stack/SDK state desync: the controller thinks this callback is still
+                // registered (failed stop, BT cycle) while isScanning here says otherwise.
+                // Without healing, the metadata scan stays a zombie until a full app
+                // restart (field: Moto G35, code-1 loop). Clear the stale registration and
+                // re-arm once — startScanning() re-checks the ScanStartBudget, which also
+                // acts as the natural brake against a heal loop.
+                try {
+                    bluetoothLeScanner?.stopScan(this)
+                } catch (_: Exception) {
+                    /* stale registration — nothing to stop */
+                }
+                isScanning = false
+                handler.postDelayed({ startScanning() }, 500L)
             }
         }
     }

@@ -109,6 +109,19 @@ class BeaconManager(private val context: Context) {
     var isInBeaconRegion: Boolean = false
         private set
 
+    /**
+     * Scan mode for the ranging client, set by the SDK from the active precision.
+     * MEDIUM → BALANCED (~20% hardware duty, listen window every ~5 s);
+     * LOW → LOW_POWER (~10%, every ~5 s); null (HIGH) → legacy behavior
+     * (LOW_LATENCY in foreground, BALANCED in background). Continuous registration:
+     * the controller manages the duty in hardware, so the client is registered ONCE —
+     * unlike the old manual start/stop duty cycle, which spent 3-4 of the 5
+     * scan-starts/30 s the OS allows and starved every scanner when anything else
+     * (watchdog, batch revive, refresh) needed a start (field: Moto G35).
+     */
+    @Volatile
+    var rangingScanMode: Int? = null
+
     // Callbacks
     var onBeaconsUpdated: ((List<Beacon>) -> Unit)? = null
     var onError: ((Exception) -> Unit)? = null
@@ -448,9 +461,11 @@ class BeaconManager(private val context: Context) {
                 .build()
         )
 
-        // Foreground service is active -> BALANCED (not LOW_POWER) for faster detection; Android throttles anyway without a FG service.
-        val scanMode = if (isInForeground) ScanSettings.SCAN_MODE_LOW_LATENCY
-                       else ScanSettings.SCAN_MODE_BALANCED
+        // Precision override first (MEDIUM/LOW continuous hardware duty); HIGH falls back
+        // to the legacy rule: LOW_LATENCY in foreground, BALANCED in background.
+        val scanMode = rangingScanMode
+            ?: if (isInForeground) ScanSettings.SCAN_MODE_LOW_LATENCY
+               else ScanSettings.SCAN_MODE_BALANCED
 
         val settings = ScanSettings.Builder()
             .setScanMode(scanMode)
