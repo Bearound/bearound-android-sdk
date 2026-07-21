@@ -278,6 +278,7 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
 
 @Composable
 fun PermissionsCard(state: BeAroundScanState) {
+    val context = LocalContext.current
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -307,6 +308,29 @@ fun PermissionsCard(state: BeAroundScanState) {
                 value = state.bluetoothStatus,
                 color = getBluetoothColor(state.bluetoothStatus)
             )
+
+            // Radio off = no detection at all. Offer the fix instead of pretending to scan.
+            // System Bluetooth panel (no extra permission — ACTION_REQUEST_ENABLE would
+            // need BLUETOOTH_CONNECT, which this test app deliberately does not declare).
+            if (state.bluetoothStatus == "Desligado") {
+                Button(
+                    onClick = {
+                        context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Bluetooth,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Bluetooth desligado — toque para ligar")
+                }
+            }
 
             PermissionRow(
                 icon = Icons.Default.Notifications,
