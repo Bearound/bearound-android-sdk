@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.5.0] - 2026-07-14
+## [3.5.1] - 2026-07-22
+
+### Fixed
+
+- **Ghost beacons on the host list ("beacon shown that is no longer detected").** Two independent causes, both closed: (1) `BeaconManager`'s periodic cleanup evicted timed-out beacons from the internal map but **never emitted** `onBeaconsUpdated` — the host only learned about the change when some *other* beacon delivered a packet, and with no beacons on the air the list froze forever. The cleanup tick now emits the post-expiry snapshot (**including the empty list** — that is how the host learns the last beacon is gone) and refreshes the per-beacon `isStale` flags in the map, so fade-in/out reaches the UI within one 2 s tick. (2) The SDK-level `collectedBeacons` accumulator was emitted whole by the metadata-scan and post-sync listener paths, resurfacing beacons long gone from the air. Those emissions are now TTL-filtered (same clock as the manager's eviction timeout) — the map itself stays intact as the **sync buffer**, so unsynced detections are never dropped. Validated on device (realme C61/Android 14): radio-off test logs `Beacon 0.199 expired` and the UI list clears at the timeout; radio back on → beacons return.
+- **Scan precision (HIGH/MEDIUM/LOW) appeared not to apply.** Applying settings goes through `stopScanning()` + `startScanning()` — and the stop persisted `inZone=false`, so the next start skipped ranging (`startRanging skipped — not inside beacon region`) until a PendingIntent broadcast happened to revive it. With a beacon right next to the phone, HIGH stayed dormant. `stopScanning()` now snapshots the TRUE zone state *before* teardown and `startScanning()` restores it, re-arming the active-scan path when the zone is fresh (within the 5-min exit grace); a genuinely-gone zone still shuts down naturally via the grace. Validated on device: `Zone state fresh — re-arming active scan` logged on both switch directions, and the `LOW_LATENCY` ranging client appears in the Bluetooth stack right after applying HIGH (before the fix, no client was ever registered).
+- **Batch scan was blind to pure-0xBEAD frames (firmware v4 beacons).** Firmware v4 separates the fused advertisement into a pure iBeacon frame and a pure Service Data `0xBEAD` frame (the fix for the Android 14 `neverForLocation` denylist that discarded fused records whole). The slow-beacon batch scan only filtered on the iBeacon frame, so it missed the pure-BEAD half entirely. It now also filters Service Data `0xBEAD`.
+
+### Added
+
+- **Periodic anti-downgrade scan refresh (20 min).** OEMs on Android 13+ silently downgrade long-lived scan sessions (requested BALANCED/LOW_LATENCY demoted to AMBIENT_DISCOVERY/OPPORTUNISTIC — observed in the field on Moto G35 / realme C61, shrinking listening to ~10% duty), and AOSP drops any scan older than 30 min to opportunistic. Every 20 min the SDK now re-registers the metadata and batch scan clients so the platform treats them as fresh sessions at full duty. Budget-aware by construction (`ScanStartBudget`): when there is no start-quota headroom the current session is kept — a tick can only ever be a no-op, never a regression. Also armed on the background revive path (`restartScanningFromBackground`), so a process revived by the watchdog or boot receiver is equally protected. Field-proven: first tick fired at exactly +20:00.000, re-registered both clients in 56 ms, and a beacon delivered and synced 1 s later — zero interruption across a 24-min background soak (60 syncs, no errors).
+
+### Changed
+
+- **PendingIntent filter scan stays armed in the foreground.** It was previously disabled while the app was foregrounded — but on AOSP-like OEMs that denylist fused iBeacon records it is the only delivery path, so disabling it in foreground silenced detection exactly where the user was looking. It is kernel-managed and low-power; keeping it armed costs nothing measurable.
 
 ### Added
 
