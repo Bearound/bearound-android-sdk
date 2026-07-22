@@ -86,6 +86,19 @@ class BeAroundSDK private constructor() {
 
     private lateinit var context: Context
     private var configuration: SDKConfiguration? = null
+
+    /**
+     * Credentials handoff for the companion Bearound Telemetry SDK
+     * (bearound-telemetry-android-sdk). Read-only; null until [configure] succeeds.
+     * Lets companion apps wire telemetry without re-entering credentials:
+     *
+     * ```
+     * val bearound = BeAroundSDK.getInstance(this).configure(businessToken = TOKEN)
+     * bearound.businessToken?.let { telemetry.configure(businessToken = it) }
+     * ```
+     */
+    val businessToken: String?
+        get() = configuration?.businessToken
     private var sdkInfo: SDKInfo? = null
     private var userProperties: UserProperties? = null
 
@@ -430,7 +443,7 @@ class BeAroundSDK private constructor() {
         scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
         maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
         technology: String = "android-native"
-    ) {
+    ): BeAroundSDK {
         // NEVER-CRASH-THE-HOST: an embedded SDK must not throw from a public entry
         // point — a host wired to an empty BuildConfig field would crash on startup.
         // Fail silently-but-visibly instead: log, report to telemetry, surface via
@@ -440,7 +453,7 @@ class BeAroundSDK private constructor() {
             val error = IllegalArgumentException("Business token cannot be empty")
             ErrorReporter.report(error, "configure")
             listener?.onError(error)
-            return
+            return this
         }
 
         val appId = context.packageName
@@ -491,6 +504,7 @@ class BeAroundSDK private constructor() {
         if (isScanning) {
             startSyncTimer()
         }
+        return this
     }
 
     /**

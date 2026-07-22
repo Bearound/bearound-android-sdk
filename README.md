@@ -170,6 +170,27 @@ also run **standalone** in apps that cannot ask for location (`neverForLocation`
 location permission): the manifest merge and its runtime detection sort the regime out
 automatically — no configuration needed.
 
+**Wiring both — credentials handoff.** `configure()` returns the instance (self), so the
+telemetry SDK can take its credentials straight from the tracking SDK instead of you
+re-entering them; plain fill-in also works, both paths are supported:
+
+```kotlin
+// tracking first — configure() returns self
+val bearound = BeAroundSDK.getInstance(this)
+    .configure(businessToken = "your-business-token")
+
+// companion: telemetry takes the credentials from the tracking instance…
+bearound.businessToken?.let {
+    BearoundTelemetrySDK.getInstance(this).configure(businessToken = it)
+}
+
+// …or fill it in normally (standalone style):
+BearoundTelemetrySDK.getInstance(this).configure(businessToken = "your-business-token")
+```
+
+A typed `configure(bearoundSdk)` overload — passing the instance itself — ships in the
+telemetry SDK once this split releases (it reads the handoff from the instance).
+
 > **Note (split proposal, this branch):** this branch removes `neverForLocation` from this
 > SDK's manifest, making it the honest **tracking** variant — scanning on Android 12+ then
 > requires fine location granted and Location on. The remaining README sections still
