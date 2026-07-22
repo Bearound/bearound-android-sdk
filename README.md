@@ -6,6 +6,18 @@
 
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by BeAround.
 
+**The Bearound platform ships as two SDKs**, and the recommended setup installs **both**:
+
+| SDK | Domain | Needs from the user |
+|---|---|---|
+| **Bearound SDK** (this repo) | Tracking — detection, proximity, indoor positioning | Location + Nearby devices |
+| [**Bearound Telemetry SDK**](https://github.com/Bearound/bearound-telemetry-android-sdk) | Fleet health — beacon battery, temperature, movement, firmware | Nearby devices only |
+
+They are plug & play: one dependency line each, one `configure()` handoff between them,
+and they coexist without conflicts. The split is what keeps **fleet telemetry flowing even
+when the user denies location** (tracking pauses, telemetry continues) — see
+[Bearound Telemetry SDK (companion)](#bearound-telemetry-sdk-companion).
+
 > [!TIP]
 > **⚡ Set it up with an AI agent.** Don't wire the Android background integration by hand — hand [one prompt](./AI-AGENT-SETUP.md) to your AI coding agent (Claude Code, Cursor, Copilot) and let it pilot the whole install, pausing only for the few human-only steps. → [Set up with an AI agent](#set-up-with-an-ai-agent)
 
@@ -141,6 +153,17 @@ dependencies {
 // build.gradle
 dependencies {
     implementation 'com.github.Bearound:bearound-android-sdk:v3.5.1'
+}
+```
+
+**Recommended — full Bearound (tracking + fleet telemetry).** Install both SDKs; they are
+built to run side by side (see [the companion section](#bearound-telemetry-sdk-companion)
+for how they wire together with one line):
+
+```gradle
+dependencies {
+    implementation 'com.github.Bearound:bearound-android-sdk:v3.5.1'
+    implementation 'com.github.Bearound:bearound-telemetry-android-sdk:<version>'
 }
 ```
 
