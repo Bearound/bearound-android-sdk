@@ -28,6 +28,8 @@ class BluetoothManager(private val context: Context) {
     }
 
     var listener: BluetoothManagerListener? = null
+
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     
     private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothLeScanner: BluetoothLeScanner? = null
@@ -68,7 +70,29 @@ class BluetoothManager(private val context: Context) {
             if (errorCode == 6 /* SCAN_FAILED_SCANNING_TOO_FREQUENTLY, API 30+ */) {
                 ScanStartBudget.freeze()
             }
+            if (errorCode == 1 /* SCAN_FAILED_ALREADY_STARTED */) {
+                healZombieScanRegistration()
+            }
         }
+    }
+
+    /**
+     * Self-heal for SCAN_FAILED_ALREADY_STARTED: stack/SDK state desync (failed stop,
+     * BT cycle) leaves the controller thinking this callback is still registered while
+     * [isScanning] says otherwise — the metadata scan stays a zombie until a full app
+     * restart (field: Moto G35, code-1 loop). Clear the stale registration and re-arm
+     * once; startScanning() re-checks the ScanStartBudget, which is also the natural
+     * brake against a heal loop.
+     */
+    @SuppressLint("MissingPermission")
+    private fun healZombieScanRegistration() {
+        try {
+            bluetoothLeScanner?.stopScan(scanCallback)
+        } catch (_: Exception) {
+            /* stale registration — nothing to stop */
+        }
+        isScanning = false
+        handler.postDelayed({ startScanning() }, 500L)
     }
 
     /**

@@ -125,6 +125,11 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         )
 
         startScanning()
+
+        // Zone card must reflect the SDK's real state: after a reconfigure the zone is
+        // RESTORED (no onEnterBeaconRegion is fired, by design), so initialize from the
+        // property instead of waiting for an edge event that will not come.
+        _state.value = _state.value.copy(isInBeaconRegion = sdk.isInBeaconRegion)
     }
 
     override fun onCleared() {
@@ -471,10 +476,14 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         viewModelScope.launch {
             appendGeofenceEvent(
                 if (isActive) GeofenceEvent.Kind.SCAN_ACTIVE else GeofenceEvent.Kind.SCAN_PAUSED,
-                if (isActive) "Scan ativo (BLE + duty cycle) LIGADO"
+                if (isActive) "Scan ativo (BLE) LIGADO"
                 else "Scan ativo PAUSADO — só PendingIntent scan rodando"
             )
-            _state.value = _state.value.copy(isActiveScanRunning = isActive)
+            _state.value = _state.value.copy(
+                isActiveScanRunning = isActive,
+                // Re-arm path (zone restored) changes region state without an edge event.
+                isInBeaconRegion = sdk.isInBeaconRegion
+            )
         }
     }
 

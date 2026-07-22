@@ -55,6 +55,9 @@ class BeaconNotificationManager(private val context: Context) {
     }
 
     private fun createNotificationChannel() {
+        // Channels exist only on API 26+ — on older devices (bench floor: Galaxy S7 / API 23)
+        // notifications go out channel-less.
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O) return
         val channel = NotificationChannel(
             CHANNEL_ID,
             CHANNEL_NAME,

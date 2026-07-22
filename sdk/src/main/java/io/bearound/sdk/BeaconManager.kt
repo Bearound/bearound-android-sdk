@@ -27,10 +27,14 @@ import kotlin.math.pow
 class BeaconManager(private val context: Context) {
     companion object {
         private const val TAG = "BeAroundSDK-BeaconM"
-        // Grace period before a beacon is considered "gone". Long enough to
-        // absorb BLE radio dropouts while the device is stationary inside the
-        // zone — short values caused enter/exit flicker (5s → 30s).
-        private const val BEACON_TIMEOUT_DEFAULT = 30000L
+        // Default/floor for the beacon eviction timeout. Region enter/exit flicker is
+        // no longer a concern here — the zone falling edge has its own 5-min grace
+        // (ZONE_EXIT_GRACE_MS), so this only controls how fast the host LIST drops a
+        // vanished beacon. With the continuous scan modes (3.5.2) a present beacon
+        // delivers every ~1-5 s, so the SDK sets 15-25 s per precision; 10 s is the
+        // hard floor for callers of setBeaconTimeout.
+        private const val BEACON_TIMEOUT_DEFAULT = 15000L
+        private const val BEACON_TIMEOUT_FLOOR = 10000L
         private const val WATCHDOG_INTERVAL = 30000L
         private const val RANGING_REFRESH_INTERVAL = 120000L
         private const val MAX_RESTARTS_PER_MINUTE = 3
@@ -54,8 +58,15 @@ class BeaconManager(private val context: Context) {
          * at most once per window keeps the revive itself far below the quota (5/30 s).
          */
         private const val BATCH_LIVENESS_TIMEOUT_MS = 120_000L
-        /** Past this gap with no packet, the beacon is rendered as stale (faded) but kept. */
-        private const val STALE_THRESHOLD_MS = 5000L
+        /**
+         * Past this gap with no packet, the beacon is rendered as stale (faded) but kept.
+         * 10 s (was 5 s): with sparse receivers (weak-RX devices, background windows)
+         * packets legally arrive every 3-8 s, and a 5 s threshold made rows blink
+         * opaque↔faded constantly. At 10 s the fade only shows as a short "leaving"
+         * warning right before the 15 s eviction — a detected beacon holds SOLID on
+         * screen through normal delivery gaps, and every new packet resets the clock.
+         */
+        private const val STALE_THRESHOLD_MS = 10_000L
         /**
          * How long the BLE eye waits without ANY beacon detection before firing
          * [onRegionExit]. Decoupled from [beaconTimeout] (which controls per-beacon
@@ -109,6 +120,19 @@ class BeaconManager(private val context: Context) {
     var isInBeaconRegion: Boolean = false
         private set
 
+    /**
+     * Scan mode for the ranging client, set by the SDK from the active precision.
+     * MEDIUM → BALANCED (~20% hardware duty, listen window every ~5 s);
+     * LOW → LOW_POWER (~10%, every ~5 s); null (HIGH) → legacy behavior
+     * (LOW_LATENCY in foreground, BALANCED in background). Continuous registration:
+     * the controller manages the duty in hardware, so the client is registered ONCE —
+     * unlike the old manual start/stop duty cycle, which spent 3-4 of the 5
+     * scan-starts/30 s the OS allows and starved every scanner when anything else
+     * (watchdog, batch revive, refresh) needed a start (field: Moto G35).
+     */
+    @Volatile
+    var rangingScanMode: Int? = null
+
     // Callbacks
     var onBeaconsUpdated: ((List<Beacon>) -> Unit)? = null
     var onError: ((Exception) -> Unit)? = null
@@ -147,6 +171,7 @@ class BeaconManager(private val context: Context) {
      * scan + pause + buffer for the active precision mode (5s HIGH, 25s MEDIUM, 65s LOW).
      */
     private var beaconTimeoutMs: Long = BEACON_TIMEOUT_DEFAULT
+    private var staleThresholdMs: Long = STALE_THRESHOLD_MS
     
     private var lastBeaconUpdate: Long? = null
     private var emptyBeaconCount = 0
@@ -233,8 +258,9 @@ class BeaconManager(private val context: Context) {
      * Should be set to cover the worst-case gap between packets for the active
      * scan precision (scan + pause + buffer).
      */
-    fun setBeaconTimeout(timeoutMs: Long) {
-        beaconTimeoutMs = timeoutMs.coerceAtLeast(BEACON_TIMEOUT_DEFAULT)
+    fun setBeaconTimeout(timeoutMs: Long, staleMs: Long = STALE_THRESHOLD_MS) {
+        beaconTimeoutMs = timeoutMs.coerceAtLeast(BEACON_TIMEOUT_FLOOR)
+        staleThresholdMs = staleMs.coerceAtLeast(5_000L)
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -297,6 +323,7 @@ class BeaconManager(private val context: Context) {
     }
 
     fun setForegroundState(inForeground: Boolean) {
+        val changed = isInForeground != inForeground
         isInForeground = inForeground
 
         if (!inForeground && isScanning) {
@@ -304,6 +331,28 @@ class BeaconManager(private val context: Context) {
         } else if (inForeground) {
             stopRangingRefreshTimer()
         }
+
+        // The effective scan mode depends on the app state (foreground → LOW_LATENCY,
+        // background → precision mode), so a fg/bg flip must re-register the ranging
+        // client with the new mode. Budget-aware via restartRanging(): when there is no
+        // start headroom the current session is kept — never killed without a replacement.
+        if (changed && isScanning && isRanging) {
+            restartRangingForModeChange()
+        }
+    }
+
+    /** Stop+start the ranging client so the scan mode matches the current app state. */
+    @SuppressLint("MissingPermission")
+    private fun restartRangingForModeChange() {
+        if (!ScanStartBudget.tryAcquire("ranging-mode-flip")) return
+        try {
+            bluetoothLeScanner?.stopScan(scanCallback)
+        } catch (_: Exception) {
+            /* session already gone in the stack — the start below recreates it */
+        }
+        isRanging = false
+        startRanging()
+        Log.d(TAG, "Ranging re-registered for app-state change (foreground=$isInForeground)")
     }
 
     /**
@@ -448,9 +497,17 @@ class BeaconManager(private val context: Context) {
                 .build()
         )
 
-        // Foreground service is active -> BALANCED (not LOW_POWER) for faster detection; Android throttles anyway without a FG service.
-        val scanMode = if (isInForeground) ScanSettings.SCAN_MODE_LOW_LATENCY
-                       else ScanSettings.SCAN_MODE_BALANCED
+        // Adaptive: in FOREGROUND every precision gets LOW_LATENCY — the user is looking
+        // at the screen, detection must feel fluid, and the display dwarfs the radio cost.
+        // In BACKGROUND each precision pays its own price: HIGH/MEDIUM → BALANCED (~20%
+        // hardware duty), LOW → LOW_POWER (~10%) — see [rangingScanMode]. This is what
+        // makes MEDIUM a safe default: integrators get best-in-class foreground detection
+        // automatically and a battery-honest background without configuring anything.
+        val scanMode = if (isInForeground) {
+            ScanSettings.SCAN_MODE_LOW_LATENCY
+        } else {
+            rangingScanMode ?: ScanSettings.SCAN_MODE_BALANCED
+        }
 
         val settings = ScanSettings.Builder()
             .setScanMode(scanMode)
@@ -715,7 +772,7 @@ class BeaconManager(private val context: Context) {
             for (id in detectedBeacons.keys.toList()) {
                 val b = detectedBeacons[id] ?: continue
                 val lastSeen = beaconLastSeen[id] ?: now
-                val staleNow = (now - lastSeen) > STALE_THRESHOLD_MS
+                val staleNow = (now - lastSeen) > staleThresholdMs
                 if (staleNow != b.isStale) {
                     detectedBeacons[id] = b.copy(isStale = staleNow)
                     changed = true
