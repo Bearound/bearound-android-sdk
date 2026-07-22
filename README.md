@@ -189,12 +189,22 @@ BearoundTelemetrySDK.getInstance(this).configure(businessToken = "your-business-
 ```
 
 A typed `configure(bearoundSdk)` overload — passing the instance itself — ships in the
-telemetry SDK once this split releases (it reads the handoff from the instance).
+telemetry SDK once this lands in a release (it reads the handoff from the instance).
 
-> **Note (split proposal, this branch):** this branch removes `neverForLocation` from this
-> SDK's manifest, making it the honest **tracking** variant — scanning on Android 12+ then
-> requires fine location granted and Location on. The remaining README sections still
-> describe the pre-split hybrid model and will be updated in the split PR.
+**Companion regime.** Both SDKs declare `BLUETOOTH_SCAN` **with** `neverForLocation`, so
+the manifest merge stays clean and the flag is preserved. The recommended runtime ask
+stays this SDK's usual one — **location + Nearby devices**:
+
+- user grants both → tracking detects (and the companion reports fleet telemetry too);
+- user denies location → tracking stops, but **fleet telemetry keeps flowing** through
+  the companion (Bluetooth alone is enough for it on Android 12+);
+- Nearby devices denied → neither can scan (platform rule).
+
+The two SDKs are engineered to coexist without stepping on each other: independent
+broadcast actions, WorkManager unique names, SharedPreferences namespaces, notification
+channels/ids and offline batch directories. If a **third-party** library drops the flag
+from the merge, both SDKs detect it at runtime and report it (fix with `tools:replace` —
+see the [AI setup prompt](./AI-AGENT-SETUP.md), step 2).
 
 ## Permissions
 

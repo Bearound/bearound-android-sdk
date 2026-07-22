@@ -490,6 +490,10 @@ class BeAroundSDK private constructor() {
             Log.w(TAG, "Error telemetry install failed: ${t.message}")
         }
 
+        // Guardrail: a third-party library can silently drop neverForLocation from the
+        // merged manifest — surface it (log + error telemetry) instead of silent decay.
+        io.bearound.sdk.utilities.ManifestPermissionCheck.verify(context)
+
         tryAutoCollectFcmToken(context)
 
         // First-access contract: the device must appear in the backend as soon as the SDK
