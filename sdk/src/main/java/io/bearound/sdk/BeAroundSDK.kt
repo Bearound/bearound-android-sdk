@@ -1017,11 +1017,19 @@ class BeAroundSDK private constructor() {
         // the list stays honest without flickering. LOW gets extra margin for its ~10%
         // duty. (The old formula covered the manual scan+pause duty cycle, which no
         // longer exists.)
-        val beaconTimeout = when (config.scanPrecision) {
+        val baseTimeout = when (config.scanPrecision) {
             ScanPrecision.HIGH, ScanPrecision.MEDIUM -> 15_000L
             ScanPrecision.LOW -> 25_000L
         }
-        beaconManager.setBeaconTimeout(beaconTimeout)
+        // Weak-receiver compensation (Unisoc/Spreadtrum class): the controller captures
+        // a fraction of the air, so useful frames arrive 10-45 s apart even at 25 cm —
+        // double the retention windows so the host list holds steady instead of
+        // flickering (bench: Moto G35 T760, realme C61 T612).
+        val weakRx = io.bearound.sdk.utilities.WeakReceiverProfile.isWeakReceiver
+        val beaconTimeout = if (weakRx) baseTimeout * 2 else baseTimeout
+        val staleMs = if (weakRx) 20_000L else 10_000L
+        if (weakRx) Log.i(TAG, "Weak-receiver SoC detected (${android.os.Build.HARDWARE}) — retention windows doubled")
+        beaconManager.setBeaconTimeout(beaconTimeout, staleMs)
         // Listener emissions of collectedBeacons expire on the same clock as the manager
         // (setBeaconTimeout clamps to its 30s floor — mirror that so the two lists agree).
         listenerBeaconTtlMs = maxOf(beaconTimeout, 30_000L)

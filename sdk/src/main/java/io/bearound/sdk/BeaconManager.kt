@@ -171,6 +171,7 @@ class BeaconManager(private val context: Context) {
      * scan + pause + buffer for the active precision mode (5s HIGH, 25s MEDIUM, 65s LOW).
      */
     private var beaconTimeoutMs: Long = BEACON_TIMEOUT_DEFAULT
+    private var staleThresholdMs: Long = STALE_THRESHOLD_MS
     
     private var lastBeaconUpdate: Long? = null
     private var emptyBeaconCount = 0
@@ -257,8 +258,9 @@ class BeaconManager(private val context: Context) {
      * Should be set to cover the worst-case gap between packets for the active
      * scan precision (scan + pause + buffer).
      */
-    fun setBeaconTimeout(timeoutMs: Long) {
+    fun setBeaconTimeout(timeoutMs: Long, staleMs: Long = STALE_THRESHOLD_MS) {
         beaconTimeoutMs = timeoutMs.coerceAtLeast(BEACON_TIMEOUT_FLOOR)
+        staleThresholdMs = staleMs.coerceAtLeast(5_000L)
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -770,7 +772,7 @@ class BeaconManager(private val context: Context) {
             for (id in detectedBeacons.keys.toList()) {
                 val b = detectedBeacons[id] ?: continue
                 val lastSeen = beaconLastSeen[id] ?: now
-                val staleNow = (now - lastSeen) > STALE_THRESHOLD_MS
+                val staleNow = (now - lastSeen) > staleThresholdMs
                 if (staleNow != b.isStale) {
                     detectedBeacons[id] = b.copy(isStale = staleNow)
                     changed = true
