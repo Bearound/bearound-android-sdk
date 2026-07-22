@@ -58,8 +58,15 @@ class BeaconManager(private val context: Context) {
          * at most once per window keeps the revive itself far below the quota (5/30 s).
          */
         private const val BATCH_LIVENESS_TIMEOUT_MS = 120_000L
-        /** Past this gap with no packet, the beacon is rendered as stale (faded) but kept. */
-        private const val STALE_THRESHOLD_MS = 5000L
+        /**
+         * Past this gap with no packet, the beacon is rendered as stale (faded) but kept.
+         * 10 s (was 5 s): with sparse receivers (weak-RX devices, background windows)
+         * packets legally arrive every 3-8 s, and a 5 s threshold made rows blink
+         * opaque↔faded constantly. At 10 s the fade only shows as a short "leaving"
+         * warning right before the 15 s eviction — a detected beacon holds SOLID on
+         * screen through normal delivery gaps, and every new packet resets the clock.
+         */
+        private const val STALE_THRESHOLD_MS = 10_000L
         /**
          * How long the BLE eye waits without ANY beacon detection before firing
          * [onRegionExit]. Decoupled from [beaconTimeout] (which controls per-beacon
