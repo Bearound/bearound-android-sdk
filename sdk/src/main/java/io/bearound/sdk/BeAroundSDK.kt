@@ -162,6 +162,17 @@ class BeAroundSDK private constructor() {
     val isScanning: Boolean
         get() = ::beaconManager.isInitialized && beaconManager.isScanning
 
+    /**
+     * True while the SDK considers the device inside a beacon zone — either the rising
+     * edge fired or a fresh persisted zone was restored across a reconfigure/restart.
+     * Hosts should read this to INITIALIZE their zone UI: the restore path deliberately
+     * does not re-fire [BeAroundSDKListener.onEnterBeaconRegion] (anti-phantom), so a UI
+     * that only listens to enter/exit events shows "outside" after a settings apply even
+     * though detection is active.
+     */
+    val isInBeaconRegion: Boolean
+        get() = ::beaconManager.isInitialized && beaconManager.isInBeaconRegion
+
     val currentSyncInterval: Long?
         get() = configuration?.syncInterval
 

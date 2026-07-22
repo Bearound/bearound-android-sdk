@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.2] - 2026-07-22
+
+### Changed
+
+- **MEDIUM/LOW precision: ONE continuous scan with a hardware-managed duty cycle.** MEDIUM → `SCAN_MODE_BALANCED` (controller listens ~1 s every ~5 s, ~20% duty); LOW → `SCAN_MODE_LOW_POWER` (~10%). Replaces the manual 10 s-scan/10 s-pause duty cycle, which consumed 3-4 of the 5 scan-starts/30 s the OS allows *by design* — any extra start (watchdog, batch revive, anti-downgrade refresh, fg/bg flip) tripped the quota and the OS silently starved every scanner for 30 s+ (field: Moto G35, "minutes without a beacon" with the duty visibly cycling and zero deliveries). One registration = zero start churn, and beacons no longer expire inside artificial pause windows.
+- **Adaptive foreground boost — best detection automatically, zero config.** In FOREGROUND every precision ranges at `LOW_LATENCY` (the user is looking at the screen; the display dwarfs the radio cost); in BACKGROUND each precision pays its own price (HIGH/MEDIUM → BALANCED, LOW → LOW_POWER). A fg/bg flip re-registers the ranging client with the new mode (budget-aware). This makes MEDIUM a safe plug-and-play default. Field-proof on the bench's weak-receiver device (Moto G35, Unisoc): MEDIUM went from ZERO deliveries to the beacon present in every sync window.
+- **Beacon eviction timeout now matches the continuous modes**: 15 s (HIGH/MEDIUM) / 25 s (LOW), floor 30 s → 10 s. A present beacon delivers every ~1-5 s, so ~3 missed windows evict — the host list stays honest without flickering.
+
+### Fixed
+
+- **Metadata scan self-heals `SCAN_FAILED_ALREADY_STARTED` (code 1).** Stack/SDK registration desync (failed stop, BT cycle) left the metadata scan a zombie until a full app restart. The stale registration is cleared and re-armed once; `ScanStartBudget` is the natural brake against a heal loop.
+
+### Added
+
+- **`BeAroundSDK.isInBeaconRegion`** — lets hosts render zone state correctly after a reconfigure/restart, where the zone is *restored* and `onEnterBeaconRegion` deliberately does not re-fire (anti-phantom).
+- Example: `BearoundScan` now runs on **API 23+** (bench floor: Galaxy S7 / Android 6) — `minSdk` 26 → 23, guarded `NotificationChannel`, pre-26 launcher icon fallback. Honest Bluetooth-off UI with a one-tap enable path; scan panel shows the real continuous listening mode; zone card initialized from `isInBeaconRegion`. The legacy `:app` module is deprecated (see `app/DEPRECATED.md`).
+- `CLAUDE.md` — agent build/bench playbook.
+
 ## [3.5.1] - 2026-07-22
 
 ### Fixed

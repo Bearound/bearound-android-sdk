@@ -1,5 +1,7 @@
 # 🐻 BeAround Android SDK
 
+> **Example apps:** o app de referência para integração é o **`:BearoundScan`** (roda em API 23+). O módulo `:app` é legado/deprecado — ver `app/DEPRECATED.md`.
+
 [![JitPack](https://jitpack.io/v/Bearound/bearound-android-sdk.svg)](https://jitpack.io/#Bearound/bearound-android-sdk)
 [![API](https://img.shields.io/badge/API-23%2B-brightgreen.svg?style=flat)](https://android-arsenal.com/api?level=23)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -133,14 +135,14 @@ allprojects {
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("com.github.Bearound:bearound-android-sdk:v3.5.1")
+    implementation("com.github.Bearound:bearound-android-sdk:v3.5.2")
 }
 ```
 
 ```gradle
 // build.gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:v3.5.1'
+    implementation 'com.github.Bearound:bearound-android-sdk:v3.5.2'
 }
 ```
 
