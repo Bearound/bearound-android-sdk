@@ -14,8 +14,10 @@ Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by
 | [**Bearound Telemetry SDK**](https://github.com/Bearound/bearound-telemetry-android-sdk) | Fleet health — beacon battery, temperature, movement, firmware | Nearby devices only |
 
 They are plug & play: one dependency line each, one `configure()` handoff between them,
-and they coexist without conflicts. The split is what keeps **fleet telemetry flowing even
-when the user denies location** (tracking pauses, telemetry continues) — see
+and they coexist without conflicts. Both keep working even when the user **denies
+location**: detection degrades to Bluetooth-only (reduced OEM coverage — see
+[Permission model](#permission-model-neverforlocation-and-location)) and fleet telemetry
+is unaffected, since it never needed location — see
 [Bearound Telemetry SDK (companion)](#bearound-telemetry-sdk-companion).
 
 > [!TIP]
