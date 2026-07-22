@@ -7,7 +7,11 @@ import java.util.ArrayDeque
  * Preventive guard for the OS BLE scan-start quota (5 starts per 30 s per app — exceeding it
  * leaves the scan client registered but permanently SILENT, with no error on most versions).
  *
- * The SDK's duty cycle alone runs at 4 starts/30 s in MEDIUM precision; its own side events
+ * Since 3.5.2 the manual duty cycle is gone (MEDIUM/LOW register ONE continuous scan with
+ * hardware-managed duty), so the budget's former biggest consumer no longer exists — the
+ * full window now belongs to the recovery paths (watchdog restarts, batch revive,
+ * anti-downgrade refresh, fg/bg mode flips). Historically the duty cycle alone ran at
+ * 4 starts/30 s and its side events
  * (watchdog restarts, batch revive, foreground↔background flips, region enter) consume the
  * remaining headroom and silently starve scanners in perfectly normal usage. Every internal
  * `startScan` call must pass through [tryAcquire]; callers that get `false` should SKIP this

@@ -27,10 +27,14 @@ import kotlin.math.pow
 class BeaconManager(private val context: Context) {
     companion object {
         private const val TAG = "BeAroundSDK-BeaconM"
-        // Grace period before a beacon is considered "gone". Long enough to
-        // absorb BLE radio dropouts while the device is stationary inside the
-        // zone — short values caused enter/exit flicker (5s → 30s).
-        private const val BEACON_TIMEOUT_DEFAULT = 30000L
+        // Default/floor for the beacon eviction timeout. Region enter/exit flicker is
+        // no longer a concern here — the zone falling edge has its own 5-min grace
+        // (ZONE_EXIT_GRACE_MS), so this only controls how fast the host LIST drops a
+        // vanished beacon. With the continuous scan modes (3.5.2) a present beacon
+        // delivers every ~1-5 s, so the SDK sets 15-25 s per precision; 10 s is the
+        // hard floor for callers of setBeaconTimeout.
+        private const val BEACON_TIMEOUT_DEFAULT = 15000L
+        private const val BEACON_TIMEOUT_FLOOR = 10000L
         private const val WATCHDOG_INTERVAL = 30000L
         private const val RANGING_REFRESH_INTERVAL = 120000L
         private const val MAX_RESTARTS_PER_MINUTE = 3
@@ -247,7 +251,7 @@ class BeaconManager(private val context: Context) {
      * scan precision (scan + pause + buffer).
      */
     fun setBeaconTimeout(timeoutMs: Long) {
-        beaconTimeoutMs = timeoutMs.coerceAtLeast(BEACON_TIMEOUT_DEFAULT)
+        beaconTimeoutMs = timeoutMs.coerceAtLeast(BEACON_TIMEOUT_FLOOR)
     }
 
     private val scanCallback = object : ScanCallback() {

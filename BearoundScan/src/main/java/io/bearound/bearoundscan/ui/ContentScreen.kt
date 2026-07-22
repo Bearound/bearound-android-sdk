@@ -379,10 +379,17 @@ fun ScanInfoCard(state: BeAroundScanState, viewModel: BeaconViewModel) {
                 value = state.scanPrecision.name
             )
             InfoRow(label = "Sync:", value = "${state.currentSyncInterval}s")
-            InfoRow(label = "Duração:", value = "${viewModel.scanDuration}s")
-            if (viewModel.pauseDuration > 0) {
-                InfoRow(label = "Pausa:", value = "${viewModel.pauseDuration}s")
-            }
+            // Continuous scan modes (SDK 3.5.2): no more manual scan/pause windows — the
+            // controller manages the duty in hardware. While this panel is visible the app
+            // is foregrounded, so listening is always at maximum here.
+            InfoRow(
+                label = "Escuta:",
+                value = when (state.scanPrecision) {
+                    ScanPrecision.HIGH -> "Contínua (máxima)"
+                    ScanPrecision.MEDIUM -> "Máxima em uso; ~20% em 2º plano"
+                    ScanPrecision.LOW -> "Máxima em uso; ~10% em 2º plano"
+                }
+            )
         }
     }
 }

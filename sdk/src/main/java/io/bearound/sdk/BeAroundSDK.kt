@@ -1000,8 +1000,16 @@ class BeAroundSDK private constructor() {
 
         stopSyncTimer()
 
-        // Adaptive beacon timeout: cover scan + pause + 5s buffer so beacons don't expire mid-duty-cycle
-        val beaconTimeout = config.precisionScanDuration + config.precisionPauseDuration + 5_000L
+        // Beacon eviction timeout for the CONTINUOUS scan modes (3.5.2): a present beacon
+        // delivers every ~1-2 s in foreground (LOW_LATENCY) and every ~5 s window in
+        // background (BALANCED/LOW_POWER), so 15 s ≈ 3+ missed windows before eviction —
+        // the list stays honest without flickering. LOW gets extra margin for its ~10%
+        // duty. (The old formula covered the manual scan+pause duty cycle, which no
+        // longer exists.)
+        val beaconTimeout = when (config.scanPrecision) {
+            ScanPrecision.HIGH, ScanPrecision.MEDIUM -> 15_000L
+            ScanPrecision.LOW -> 25_000L
+        }
         beaconManager.setBeaconTimeout(beaconTimeout)
         // Listener emissions of collectedBeacons expire on the same clock as the manager
         // (setBeaconTimeout clamps to its 30s floor — mirror that so the two lists agree).
