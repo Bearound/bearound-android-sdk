@@ -99,6 +99,19 @@ class BeAroundSDK private constructor() {
      */
     val businessToken: String?
         get() = configuration?.businessToken
+
+    /**
+     * Stable device id for this install — produced by this SDK (ANDROID_ID-based,
+     * frozen in secure storage). Hand it to the companion Bearound Telemetry SDK so
+     * both SDKs report as the SAME device:
+     *
+     * ```
+     * val bearound = BeAroundSDK.getInstance(this).configure(businessToken = TOKEN)
+     * telemetry.configure(businessToken = TOKEN, deviceId = bearound.deviceId)
+     * ```
+     */
+    val deviceId: String
+        get() = DeviceIdentifier.getDeviceId(context)
     private var sdkInfo: SDKInfo? = null
     private var userProperties: UserProperties? = null
 
