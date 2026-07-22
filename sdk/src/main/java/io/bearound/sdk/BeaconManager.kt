@@ -310,6 +310,7 @@ class BeaconManager(private val context: Context) {
     }
 
     fun setForegroundState(inForeground: Boolean) {
+        val changed = isInForeground != inForeground
         isInForeground = inForeground
 
         if (!inForeground && isScanning) {
@@ -317,6 +318,28 @@ class BeaconManager(private val context: Context) {
         } else if (inForeground) {
             stopRangingRefreshTimer()
         }
+
+        // The effective scan mode depends on the app state (foreground → LOW_LATENCY,
+        // background → precision mode), so a fg/bg flip must re-register the ranging
+        // client with the new mode. Budget-aware via restartRanging(): when there is no
+        // start headroom the current session is kept — never killed without a replacement.
+        if (changed && isScanning && isRanging) {
+            restartRangingForModeChange()
+        }
+    }
+
+    /** Stop+start the ranging client so the scan mode matches the current app state. */
+    @SuppressLint("MissingPermission")
+    private fun restartRangingForModeChange() {
+        if (!ScanStartBudget.tryAcquire("ranging-mode-flip")) return
+        try {
+            bluetoothLeScanner?.stopScan(scanCallback)
+        } catch (_: Exception) {
+            /* session already gone in the stack — the start below recreates it */
+        }
+        isRanging = false
+        startRanging()
+        Log.d(TAG, "Ranging re-registered for app-state change (foreground=$isInForeground)")
     }
 
     /**
@@ -461,11 +484,17 @@ class BeaconManager(private val context: Context) {
                 .build()
         )
 
-        // Precision override first (MEDIUM/LOW continuous hardware duty); HIGH falls back
-        // to the legacy rule: LOW_LATENCY in foreground, BALANCED in background.
-        val scanMode = rangingScanMode
-            ?: if (isInForeground) ScanSettings.SCAN_MODE_LOW_LATENCY
-               else ScanSettings.SCAN_MODE_BALANCED
+        // Adaptive: in FOREGROUND every precision gets LOW_LATENCY — the user is looking
+        // at the screen, detection must feel fluid, and the display dwarfs the radio cost.
+        // In BACKGROUND each precision pays its own price: HIGH/MEDIUM → BALANCED (~20%
+        // hardware duty), LOW → LOW_POWER (~10%) — see [rangingScanMode]. This is what
+        // makes MEDIUM a safe default: integrators get best-in-class foreground detection
+        // automatically and a battery-honest background without configuring anything.
+        val scanMode = if (isInForeground) {
+            ScanSettings.SCAN_MODE_LOW_LATENCY
+        } else {
+            rangingScanMode ?: ScanSettings.SCAN_MODE_BALANCED
+        }
 
         val settings = ScanSettings.Builder()
             .setScanMode(scanMode)
