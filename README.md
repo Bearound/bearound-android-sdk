@@ -170,26 +170,24 @@ also run **standalone** in apps that cannot ask for location (`neverForLocation`
 location permission): the manifest merge and its runtime detection sort the regime out
 automatically — no configuration needed.
 
-**Wiring both — credentials handoff.** `configure()` returns the instance (self), so the
-telemetry SDK can take its credentials straight from the tracking SDK instead of you
-re-entering them; plain fill-in also works, both paths are supported:
+**Wiring both — credentials handoff.** `configure()` returns the instance (self); hand it
+straight to the telemetry SDK, which extracts the business token **and the device id**
+from it — both SDKs then report as the **same device**. Plain fill-in also works:
 
 ```kotlin
 // tracking first — configure() returns self
-val bearound = BeAroundSDK.getInstance(this)
+val bearound = BeAroundSDK
+    .getInstance(this)
     .configure(businessToken = "your-business-token")
 
-// companion: telemetry takes the credentials from the tracking instance…
-bearound.businessToken?.let {
-    BearoundTelemetrySDK.getInstance(this).configure(businessToken = it)
-}
+// companion one-liner: credentials + deviceId handoff from the instance
+BearoundTelemetrySDK
+    .getInstance(this)
+    .configure(bearound)
 
 // …or fill it in normally (standalone style):
 BearoundTelemetrySDK.getInstance(this).configure(businessToken = "your-business-token")
 ```
-
-A typed `configure(bearoundSdk)` overload — passing the instance itself — ships in the
-telemetry SDK once this lands in a release (it reads the handoff from the instance).
 
 **Companion regime.** Both SDKs declare `BLUETOOTH_SCAN` **with** `neverForLocation`, so
 the manifest merge stays clean and the flag is preserved. The recommended runtime ask

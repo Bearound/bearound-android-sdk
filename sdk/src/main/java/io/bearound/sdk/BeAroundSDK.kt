@@ -90,11 +90,11 @@ class BeAroundSDK private constructor() {
     /**
      * Credentials handoff for the companion Bearound Telemetry SDK
      * (bearound-telemetry-android-sdk). Read-only; null until [configure] succeeds.
-     * Lets companion apps wire telemetry without re-entering credentials:
+     * Companion apps hand the whole instance over instead of re-entering credentials:
      *
      * ```
      * val bearound = BeAroundSDK.getInstance(this).configure(businessToken = TOKEN)
-     * bearound.businessToken?.let { telemetry.configure(businessToken = it) }
+     * BearoundTelemetrySDK.getInstance(this).configure(bearound)
      * ```
      */
     val businessToken: String?
@@ -102,13 +102,9 @@ class BeAroundSDK private constructor() {
 
     /**
      * Stable device id for this install — produced by this SDK (ANDROID_ID-based,
-     * frozen in secure storage). Hand it to the companion Bearound Telemetry SDK so
-     * both SDKs report as the SAME device:
-     *
-     * ```
-     * val bearound = BeAroundSDK.getInstance(this).configure(businessToken = TOKEN)
-     * telemetry.configure(businessToken = TOKEN, deviceId = bearound.deviceId)
-     * ```
+     * frozen in secure storage). The companion Bearound Telemetry SDK adopts it via
+     * the instance handoff (`telemetry.configure(bearound)`), so both SDKs report as
+     * the SAME device.
      */
     val deviceId: String
         get() = DeviceIdentifier.getDeviceId(context)
