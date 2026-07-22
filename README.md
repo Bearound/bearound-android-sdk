@@ -159,6 +159,22 @@ Open [`AI-AGENT-SETUP.md`](./AI-AGENT-SETUP.md) and click the **copy icon** on i
 
 Prefer to wire it by hand? Everything the prompt references is spelled out in the sections below.
 
+## Bearound Telemetry SDK (companion)
+
+Fleet-health telemetry (beacon battery, temperature, movement, firmware) is a **separate
+plug & play artifact**:
+[`bearound-telemetry-android-sdk`](https://github.com/Bearound/bearound-telemetry-android-sdk).
+Add it alongside this SDK and both run side by side — this SDK owns the person/tracking
+domain, the telemetry SDK owns the beacon-health domain, with independent pipelines. It can
+also run **standalone** in apps that cannot ask for location (`neverForLocation`, no
+location permission): the manifest merge and its runtime detection sort the regime out
+automatically — no configuration needed.
+
+> **Note (split proposal, this branch):** this branch removes `neverForLocation` from this
+> SDK's manifest, making it the honest **tracking** variant — scanning on Android 12+ then
+> requires fine location granted and Location on. The remaining README sections still
+> describe the pre-split hybrid model and will be updated in the split PR.
+
 ## Permissions
 
 **You don't need to declare any permission yourself.** The SDK ships them in its own

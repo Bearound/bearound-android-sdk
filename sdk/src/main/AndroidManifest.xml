@@ -5,27 +5,30 @@
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
 
-    <!-- Bluetooth scan permission for Android 12+ (API 31+), WITH neverForLocation.
-         The assertion is what makes Bluetooth-only detection possible: without it Android
-         12+ classifies the scan as location-deriving and silently withholds EVERY scan
-         result unless the app also holds ACCESS_FINE_LOCATION (verified on-device: an
-         unfiltered scan delivered 0 results while system scanners saw 200+/min).
-         Android's docs warn the assertion "can filter beacons out of the scan results";
-         validated NOT to affect the Bearound signatures (0xBEAD service data + iBeacon
-         frame) on One UI and HyperOS devices.
-         MERGE WARNING: if ANY manifest in the merge declares BLUETOOTH_SCAN without this
-         flag, the flag is dropped from the merged manifest and detection goes blind for
-         apps without location. -->
+    <!-- SDK SPLIT (this branch): BLUETOOTH_SCAN is now declared WITHOUT
+         neverForLocation. This SDK is the TRACKING variant — BLE scan results feed
+         proximity/venue inference, so the app truthfully declares that scanning may
+         derive location. Consequences, all intentional:
+           - the Play assertion matches what the product does (no more asserting
+             "never for location" while positioning from beacons);
+           - no OEM beacon denylist applies — the Bearound iBeacon frame is delivered
+             on every Android build, including stock AOSP/Pixel and Moto (whose
+             denylist drops iBeacon-bearing records for neverForLocation apps);
+           - HARD RUNTIME REQUIREMENT on 12+: BLUETOOTH_SCAN granted AND fine
+             location granted AND the system Location toggle on — otherwise Android
+             withholds every scan result (verified on-device).
+         Fleet-health telemetry WITHOUT location lives in the companion artifact
+         (bearound-telemetry-android-sdk), which declares the flag and adapts to this
+         SDK's presence via the manifest merge — see "Bearound Telemetry SDK
+         (companion)" in the README. -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
-        android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
 
-    <!-- Location — declared on ALL versions. On API ≤ 30 it is the legacy BLE-scan gate
-         (detection does not work without it there); on API 31+ detection works with
-         Bluetooth alone (neverForLocation above), and granting location is recommended
-         for maximum OEM coverage. Foreground only — ACCESS_BACKGROUND_LOCATION is
-         intentionally NOT declared, so hosts need a standard Play Data Safety "Location"
-         declaration but NOT the background-location video review. -->
+    <!-- Location — declared on ALL versions and REQUIRED for detection on 12+ in this
+         variant (see above). On API ≤ 30 it is also the legacy BLE-scan gate.
+         Foreground only — ACCESS_BACKGROUND_LOCATION is intentionally NOT declared,
+         so hosts need a standard Play Data Safety "Location" declaration but NOT the
+         background-location video review. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
