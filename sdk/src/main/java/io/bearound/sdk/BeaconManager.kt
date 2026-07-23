@@ -510,6 +510,10 @@ class BeaconManager(private val context: Context) {
         }
 
         val settings = ScanSettings.Builder()
+            // Aggressive controller matching: max sensitivity + every advertisement
+            // reported — conservative OEM hardware filters drop fewer frames this way.
+            .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+            .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
             .setScanMode(scanMode)
             .setReportDelay(0)
             .build()
@@ -625,6 +629,10 @@ class BeaconManager(private val context: Context) {
                 .setServiceData(IBeaconParser.BEAD_SERVICE_UUID, byteArrayOf(), byteArrayOf())
                 .build()
             val settings = ScanSettings.Builder()
+                // Aggressive controller matching: max sensitivity + every advertisement
+                // reported — conservative OEM hardware filters drop fewer frames this way.
+                .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+                .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
                 .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
                 .setReportDelay(SLOW_BEACON_BATCH_DELAY_MS)

@@ -130,6 +130,10 @@ class BackgroundScanManager(private val context: Context) {
             )
             
             val settings = ScanSettings.Builder()
+                // Aggressive controller matching: max sensitivity + every advertisement
+                // reported — conservative OEM hardware filters drop fewer frames this way.
+                .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+                .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
                 // Foreground service is active -> BALANCED (not LOW_POWER) for faster detection; Android throttles anyway without a FG service.
                 .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
                 .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)

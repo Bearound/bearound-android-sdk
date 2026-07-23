@@ -139,6 +139,10 @@ class BluetoothManager(private val context: Context) {
 
         try {
             val settings = ScanSettings.Builder()
+                // Aggressive controller matching: max sensitivity + every advertisement
+                // reported — conservative OEM hardware filters drop fewer frames this way.
+                .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+                .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
                 // Foreground service is active -> BALANCED (not LOW_POWER) for faster detection; Android throttles anyway without a FG service.
                 .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
                 .setReportDelay(0)
@@ -174,6 +178,10 @@ class BluetoothManager(private val context: Context) {
         }
         try {
             val settings = ScanSettings.Builder()
+                // Aggressive controller matching: max sensitivity + every advertisement
+                // reported — conservative OEM hardware filters drop fewer frames this way.
+                .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+                .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
                 .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
                 .setReportDelay(0)
                 .build()
@@ -227,6 +235,10 @@ class BluetoothManager(private val context: Context) {
         if (!ScanStartBudget.tryAcquire("metadata-resume")) return
         try {
             val settings = ScanSettings.Builder()
+                // Aggressive controller matching: max sensitivity + every advertisement
+                // reported — conservative OEM hardware filters drop fewer frames this way.
+                .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+                .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
                 // Foreground service is active -> BALANCED (not LOW_POWER) for faster detection; Android throttles anyway without a FG service.
                 .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
                 .setReportDelay(0)
