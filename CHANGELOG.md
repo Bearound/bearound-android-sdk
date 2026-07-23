@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-07-23
+
+### Added
+
+- **Telemetry companion handoff.** `configure()` now returns the SDK instance (self) and the
+  instance exposes read-only `businessToken` and `deviceId` (ANDROID_ID-based, frozen).
+  Hand it to the [Bearound Telemetry SDK](https://github.com/Bearound/bearound-telemetry-android-sdk)
+  — `telemetry.configure(bearound)` — and both SDKs report as the **same device** with one
+  line. Plain fill-in keeps working; the change is source-compatible.
+- **`sdk.type` payload discriminator** (`"tracking"`) — hardcoded and non-overridable
+  (unlike `technology`, which wrappers rebrand): the backend can tell which Bearound SDK
+  produced each event. Field-validated against the production ingest.
+- **`ManifestPermissionCheck`** runs at `configure()`: if a third-party library strips
+  `neverForLocation` from the merged manifest, the SDK logs a loud error with the
+  `tools:replace` fix and reports to error telemetry — instead of background detection
+  silently dying for users without location.
+- README and agent prompt now present the **two-SDK architecture** (tracking + fleet
+  telemetry) with the recommended dual install; `BearoundScan` demonstrates the
+  full-Bearound setup (both SDKs, instance handoff).
+
+### Changed
+
+- **R8: obfuscated internals repackaged** into `io.bearound.sdk.internal` — two minified
+  Bearound AARs in one app collided on root-package short names (`d.b`) at dex merge;
+  namespacing makes the artifacts coexist.
+
 ## [3.5.2] - 2026-07-22
 
 ### Changed
