@@ -19,6 +19,7 @@ import io.bearound.sdk.BeAroundSDK
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.ForegroundScanConfig
+import io.bearound.telemetry.BearoundTelemetrySDK
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.NotificationContent
 import io.bearound.sdk.models.ScanPrecision
@@ -94,6 +95,10 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     val state: StateFlow<BeAroundScanState> = _state.asStateFlow()
 
     private val sdk = BeAroundSDK.getInstance(application)
+
+    // Full Bearound: the telemetry companion runs alongside tracking — credentials and
+    // device id come from the tracking instance (one-liner handoff in configureSDK).
+    private val telemetry = BearoundTelemetrySDK.getInstance(application)
     private val notificationManager = BeaconNotificationManager(application)
     private val prefs: SharedPreferences = application.getSharedPreferences("bearoundscan_settings", Context.MODE_PRIVATE)
 
@@ -197,13 +202,17 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         precision: ScanPrecision,
         maxQueued: MaxQueuedPayloads
     ) {
-        sdk.configure(
+        // configure() returns self — hand the instance to the telemetry companion,
+        // which extracts the business token AND the device id from it, so both SDKs
+        // report as the same device.
+        val bearound = sdk.configure(
             // From local.properties / env var, falling back to the public test token
             // (see BearoundScan/build.gradle).
             businessToken = BuildConfig.BUSINESS_TOKEN,
             scanPrecision = precision,
             maxQueuedPayloads = maxQueued
         )
+        telemetry.configure(bearound)
     }
 
     fun startScanning() {
@@ -223,6 +232,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             )
         } else null
         sdk.startScanning(fgConfig)
+        telemetry.startScanning()
         scanStartTime = Date()
         wasInBeaconRegion = false
 
@@ -239,6 +249,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
 
     fun stopScanning() {
         sdk.stopScanning()
+        telemetry.stopScanning()
         scanStartTime = null
         wasInBeaconRegion = false
 
