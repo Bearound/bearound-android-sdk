@@ -76,7 +76,7 @@ dependencies {
     implementation project(":sdk")
 
     // Full Bearound: the telemetry companion runs alongside tracking in this sample
-    implementation("com.github.Bearound:bearound-telemetry-android-sdk:v0.1.2")
+    implementation("com.github.Bearound:bearound-telemetry-android-sdk:v0.2.0")
 
     // Core Android
     implementation("androidx.core:core-ktx:1.16.0")
