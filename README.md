@@ -165,7 +165,7 @@ for how they wire together with one line):
 ```gradle
 dependencies {
     implementation 'com.github.Bearound:bearound-android-sdk:v3.5.1'
-    implementation 'com.github.Bearound:bearound-telemetry-android-sdk:<version>'
+    implementation 'com.github.Bearound:bearound-telemetry-android-sdk:v0.1.2'
 }
 ```
 
