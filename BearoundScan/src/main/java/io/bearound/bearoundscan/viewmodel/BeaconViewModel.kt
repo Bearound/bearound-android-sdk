@@ -2,8 +2,12 @@ package io.bearound.bearoundscan.viewmodel
 
 import android.Manifest
 import android.app.Application
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.location.LocationManager
@@ -115,6 +119,24 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
 
     private val maxLogEntries = 50000
 
+    /**
+     * Live Bluetooth adapter state → keeps the permissions card AND the status line honest.
+     * Without this, the UI said "Scaneando..." with the radio off (bench bug, Redmi 9) and
+     * the "Desligado" row only refreshed on the next permission prompt.
+     */
+    private val bluetoothStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            checkBluetoothStatus()
+            val isOn = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1) == BluetoothAdapter.STATE_ON
+            if (_state.value.isScanning) {
+                _state.value = _state.value.copy(
+                    statusMessage = if (isOn) "Scaneando..." else "Bluetooth desligado"
+                )
+            }
+        }
+    }
+
     init {
         previousListener = sdk.listener
         sdk.listener = this
@@ -123,6 +145,11 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         updatePermissionStatus()
         checkBluetoothStatus()
         checkNotificationStatus()
+
+        getApplication<Application>().registerReceiver(
+            bluetoothStateReceiver,
+            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        )
 
         configureSDK(
             _state.value.scanPrecision,
@@ -139,6 +166,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
 
     override fun onCleared() {
         super.onCleared()
+        runCatching { getApplication<Application>().unregisterReceiver(bluetoothStateReceiver) }
         sdk.listener = previousListener
     }
 
@@ -236,9 +264,14 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         scanStartTime = Date()
         wasInBeaconRegion = false
 
+        // Honest status: with the radio off nothing is being scanned — say so instead of
+        // "Scaneando..." (the SDK stays armed and resumes by itself when Bluetooth returns).
+        val btOn = (getApplication<Application>().getSystemService(Context.BLUETOOTH_SERVICE)
+            as? BluetoothManager)?.adapter?.isEnabled == true
+
         _state.value = _state.value.copy(
             isScanning = true,
-            statusMessage = "Scaneando...",
+            statusMessage = if (btOn) "Scaneando..." else "Bluetooth desligado",
             lastScanTime = Date(),
             // Reset geofence counters for a fresh debug session
             geofenceEvents = emptyList(),
