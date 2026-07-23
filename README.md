@@ -8,6 +8,20 @@
 
 Kotlin SDK for Android — secure BLE beacon detection and indoor positioning by BeAround.
 
+**The Bearound platform ships as two SDKs**, and the recommended setup installs **both**:
+
+| SDK | Domain | Needs from the user |
+|---|---|---|
+| **Bearound SDK** (this repo) | Tracking — detection, proximity, indoor positioning | Location + Nearby devices |
+| [**Bearound Telemetry SDK**](https://github.com/Bearound/bearound-telemetry-android-sdk) | Fleet health — beacon battery, temperature, movement, firmware | Nearby devices only |
+
+They are plug & play: one dependency line each, one `configure()` handoff between them,
+and they coexist without conflicts. Both keep working even when the user **denies
+location**: detection degrades to Bluetooth-only (reduced OEM coverage — see
+[Permission model](#permission-model-neverforlocation-and-location)) and fleet telemetry
+is unaffected, since it never needed location — see
+[Bearound Telemetry SDK (companion)](#bearound-telemetry-sdk-companion).
+
 > [!TIP]
 > **⚡ Set it up with an AI agent.** Don't wire the Android background integration by hand — hand [one prompt](./AI-AGENT-SETUP.md) to your AI coding agent (Claude Code, Cursor, Copilot) and let it pilot the whole install, pausing only for the few human-only steps. → [Set up with an AI agent](#set-up-with-an-ai-agent)
 
@@ -146,6 +160,17 @@ dependencies {
 }
 ```
 
+**Recommended — full Bearound (tracking + fleet telemetry).** Install both SDKs; they are
+built to run side by side (see [the companion section](#bearound-telemetry-sdk-companion)
+for how they wire together with one line):
+
+```gradle
+dependencies {
+    implementation 'com.github.Bearound:bearound-android-sdk:v3.5.1'
+    implementation 'com.github.Bearound:bearound-telemetry-android-sdk:v0.1.2'
+}
+```
+
 ## Set up with an AI agent
 
 Instead of wiring the Android background setup by hand, hand it to an **AI coding agent** (Claude Code, Cursor, Copilot, …). This README is written to be **agent-readable** — the agent reads it and does the whole integration. There's one ready-made prompt to give it:
@@ -160,6 +185,51 @@ Open [`AI-AGENT-SETUP.md`](./AI-AGENT-SETUP.md) and click the **copy icon** on i
 - **On device:** grant the battery-optimization exemption and the OEM autostart / protected-apps permission on aggressive ROMs (Xiaomi/HyperOS, Huawei, Oppo, Vivo…) — see [Background reliability](#background-reliability).
 
 Prefer to wire it by hand? Everything the prompt references is spelled out in the sections below.
+
+## Bearound Telemetry SDK (companion)
+
+Fleet-health telemetry (beacon battery, temperature, movement, firmware) is a **separate
+plug & play artifact**:
+[`bearound-telemetry-android-sdk`](https://github.com/Bearound/bearound-telemetry-android-sdk).
+Add it alongside this SDK and both run side by side — this SDK owns the person/tracking
+domain, the telemetry SDK owns the beacon-health domain, with independent pipelines. It can
+also run **standalone** in apps that cannot ask for location (`neverForLocation`, no
+location permission): the manifest merge and its runtime detection sort the regime out
+automatically — no configuration needed.
+
+**Wiring both — credentials handoff.** `configure()` returns the instance (self); hand it
+straight to the telemetry SDK, which extracts the business token **and the device id**
+from it — both SDKs then report as the **same device**. Plain fill-in also works:
+
+```kotlin
+// tracking first — configure() returns self
+val bearound = BeAroundSDK
+    .getInstance(this)
+    .configure(businessToken = "your-business-token")
+
+// companion one-liner: credentials + deviceId handoff from the instance
+BearoundTelemetrySDK
+    .getInstance(this)
+    .configure(bearound)
+
+// …or fill it in normally (standalone style):
+BearoundTelemetrySDK.getInstance(this).configure(businessToken = "your-business-token")
+```
+
+**Companion regime.** Both SDKs declare `BLUETOOTH_SCAN` **with** `neverForLocation`, so
+the manifest merge stays clean and the flag is preserved. The recommended runtime ask
+stays this SDK's usual one — **location + Nearby devices**:
+
+- user grants both → tracking detects (and the companion reports fleet telemetry too);
+- user denies location → tracking stops, but **fleet telemetry keeps flowing** through
+  the companion (Bluetooth alone is enough for it on Android 12+);
+- Nearby devices denied → neither can scan (platform rule).
+
+The two SDKs are engineered to coexist without stepping on each other: independent
+broadcast actions, WorkManager unique names, SharedPreferences namespaces, notification
+channels/ids and offline batch directories. If a **third-party** library drops the flag
+from the merge, both SDKs detect it at runtime and report it (fix with `tools:replace` —
+see the [AI setup prompt](./AI-AGENT-SETUP.md), step 2).
 
 ## Permissions
 

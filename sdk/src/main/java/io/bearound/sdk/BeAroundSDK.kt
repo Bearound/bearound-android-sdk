@@ -87,6 +87,28 @@ class BeAroundSDK private constructor() {
 
     private lateinit var context: Context
     private var configuration: SDKConfiguration? = null
+
+    /**
+     * Credentials handoff for the companion Bearound Telemetry SDK
+     * (bearound-telemetry-android-sdk). Read-only; null until [configure] succeeds.
+     * Companion apps hand the whole instance over instead of re-entering credentials:
+     *
+     * ```
+     * val bearound = BeAroundSDK.getInstance(this).configure(businessToken = TOKEN)
+     * BearoundTelemetrySDK.getInstance(this).configure(bearound)
+     * ```
+     */
+    val businessToken: String?
+        get() = configuration?.businessToken
+
+    /**
+     * Stable device id for this install — produced by this SDK (ANDROID_ID-based,
+     * frozen in secure storage). The companion Bearound Telemetry SDK adopts it via
+     * the instance handoff (`telemetry.configure(bearound)`), so both SDKs report as
+     * the SAME device.
+     */
+    val deviceId: String
+        get() = DeviceIdentifier.getDeviceId(context)
     private var sdkInfo: SDKInfo? = null
     private var userProperties: UserProperties? = null
 
@@ -441,7 +463,7 @@ class BeAroundSDK private constructor() {
         scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
         maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
         technology: String = "android-native"
-    ) {
+    ): BeAroundSDK {
         // NEVER-CRASH-THE-HOST: an embedded SDK must not throw from a public entry
         // point — a host wired to an empty BuildConfig field would crash on startup.
         // Fail silently-but-visibly instead: log, report to telemetry, surface via
@@ -451,7 +473,7 @@ class BeAroundSDK private constructor() {
             val error = IllegalArgumentException("Business token cannot be empty")
             ErrorReporter.report(error, "configure")
             listener?.onError(error)
-            return
+            return this
         }
 
         val appId = context.packageName
@@ -488,6 +510,10 @@ class BeAroundSDK private constructor() {
             Log.w(TAG, "Error telemetry install failed: ${t.message}")
         }
 
+        // Guardrail: a third-party library can silently drop neverForLocation from the
+        // merged manifest — surface it (log + error telemetry) instead of silent decay.
+        io.bearound.sdk.utilities.ManifestPermissionCheck.verify(context)
+
         tryAutoCollectFcmToken(context)
 
         // First-access contract: the device must appear in the backend as soon as the SDK
@@ -502,6 +528,7 @@ class BeAroundSDK private constructor() {
         if (isScanning) {
             startSyncTimer()
         }
+        return this
     }
 
     /**
