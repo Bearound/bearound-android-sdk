@@ -1,6 +1,7 @@
 package io.bearound.sdk
 
 import android.Manifest
+import io.bearound.sdk.utilities.ScanResultFreshness
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager as AndroidBluetoothManager
@@ -239,6 +240,8 @@ class BluetoothManager(private val context: Context) {
     }
 
     private fun processScanResult(result: ScanResult) {
+        // Controller-fossil guard — see [ScanResultFreshness]. BeaconManager logs the drops.
+        if (ScanResultFreshness.isStale(result)) return
         val scanRecord = result.scanRecord ?: return
         val rssi = result.rssi
 

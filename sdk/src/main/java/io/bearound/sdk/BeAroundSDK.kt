@@ -968,7 +968,7 @@ class BeAroundSDK private constructor() {
         // only signal that fires the region-rising-edge while we are outside the region
         // (active ranging is gated by isInBeaconRegion, so it can't bootstrap itself).
         // Active ranging dedupes by identifier in processBeacon so re-processing is safe.
-        scanResults.forEach { result ->
+        io.bearound.sdk.utilities.ScanResultFreshness.filterControllerReplay(scanResults).forEach { result ->
             beaconManager.processExternalScanResult(result)
         }
 
@@ -1258,15 +1258,27 @@ class BeAroundSDK private constructor() {
                         dispatchToListener { it.onBeaconsUpdated(updatedBeacons) }
 
                         handler.postDelayed({
-                            beaconLock.withLock {
+                            val (removedAny, remaining) = beaconLock.withLock {
+                                var removed = false
                                 syncedIds.forEach { id ->
                                     val beacon = collectedBeacons[id]
                                     if (beacon?.alreadySynced == true) {
                                         collectedBeacons.remove(id)
+                                        removed = true
                                     }
                                 }
+                                Pair(removed, collectedForListenerLocked())
                             }
                             Log.d(TAG, "Removed synced beacons from cache after 30s")
+                            // The post-sync emit above can resurface a beacon the detection
+                            // map already evicted (listener TTL floor is 30 s vs 15 s
+                            // eviction). Without this refresh the host keeps that last
+                            // non-empty list forever — the "synced+stale zombie card"
+                            // (field: Redmi 9C). Emitting the now-filtered list (possibly
+                            // empty) lets the host finally drop it.
+                            if (removedAny) {
+                                dispatchToListener { it.onBeaconsUpdated(remaining) }
+                            }
                         }, 30_000L)
 
                         // Notify listener of success

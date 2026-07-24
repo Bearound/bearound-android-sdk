@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.1] - 2026-07-24
+
+### Fixed
+
+- **Ghost beacons from BLE controller "fossil replay"** (field: Redmi 9C / MediaTek Helio G35, Android 10 MIUI). Some controllers keep the last captured advertisement in the offloaded batch buffer and re-deliver it on every flush after the beacon stops transmitting — observed as 8 bit-identical copies every 2 s, indefinitely, keeping a switched-off beacon "detected" (fresh timestamp, frozen RSSI) and syncing to the backend every 60 s. New `ScanResultFreshness` guard on all three delivery paths (ranging, slow-beacon batch, background PendingIntent):
+  - drops any result whose `ScanResult.timestampNanos` (real capture time) is older than 10 s — legitimate delivery latency is milliseconds (ranging) to ~2 s (batch);
+  - strips batches containing 4+ bit-identical copies of the same record (address + RSSI + payload) — a 1 TX/s beacon yields at most 2-3 packets per 2 s flush, and real RSSI fluctuates. Also stops replayed copies from inflating RSSI statistics.
+- **"Zombie card" after sync**: the post-sync listener emission uses a 30 s TTL while beacon eviction runs at 15 s, so a sync landing 15-30 s after the last packet resurfaced an already-evicted beacon on the host list — and the 30 s synced-cache removal never re-emitted, freezing that list forever. The removal now re-emits the TTL-filtered list (possibly empty) so the host drops the card within 30 s of the sync.
+
 ## [3.6.0] - 2026-07-23
 
 ### Added
