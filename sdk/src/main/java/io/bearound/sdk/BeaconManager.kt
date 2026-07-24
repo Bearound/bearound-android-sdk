@@ -15,6 +15,7 @@ import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.RssiStats
 import io.bearound.sdk.utilities.IBeaconParser
 import io.bearound.sdk.utilities.RssiFilterRegistry
+import io.bearound.sdk.utilities.ScanResultFreshness
 import io.bearound.sdk.utilities.ScanStartBudget
 import java.util.Date
 import java.util.concurrent.locks.ReentrantLock
@@ -104,6 +105,9 @@ class BeaconManager(private val context: Context) {
      */
     @Volatile
     private var lastBatchDeliveryAt = 0L
+
+    /** Last time a stale-result drop was logged (30 s throttle — replays arrive every 2 s). */
+    private var lastStaleDropLogAt = 0L
     private var isInForeground = true
 
     /**
@@ -269,7 +273,7 @@ class BeaconManager(private val context: Context) {
         }
 
         override fun onBatchScanResults(results: List<ScanResult>) {
-            results.forEach { processScanResult(it) }
+            ScanResultFreshness.filterControllerReplay(results).forEach { processScanResult(it) }
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -310,7 +314,7 @@ class BeaconManager(private val context: Context) {
 
         override fun onBatchScanResults(results: List<ScanResult>) {
             lastBatchDeliveryAt = System.currentTimeMillis()
-            results.forEach { processScanResult(it, fromBatch = true) }
+            ScanResultFreshness.filterControllerReplay(results).forEach { processScanResult(it, fromBatch = true) }
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -650,6 +654,17 @@ class BeaconManager(private val context: Context) {
     }
 
     private fun processScanResult(result: ScanResult, fromBatch: Boolean = false) {
+        // Controller-fossil guard (field: MTK on Redmi 9C): the controller re-delivers the
+        // last buffered advertisement forever after the beacon goes silent. The delivery is
+        // new but the CAPTURE isn't — timestampNanos exposes the original capture time.
+        if (ScanResultFreshness.isStale(result)) {
+            val nowDrop = System.currentTimeMillis()
+            if (nowDrop - lastStaleDropLogAt > 30_000L) {
+                lastStaleDropLogAt = nowDrop
+                Log.d(TAG, "Dropped stale scan result (${ScanResultFreshness.ageMs(result)}ms old) — controller replay")
+            }
+            return
+        }
         val scanRecord = result.scanRecord ?: return
 
         // Prefer the 0xBEAD sensor payload; fall back to the iBeacon frame when the scan
@@ -880,9 +895,25 @@ class BeaconManager(private val context: Context) {
     }
 
     private fun startWatchdog() {
-        stopWatchdog()
-        watchdogRunnable = Runnable {
-            checkRangingHealth()
+        // Periodic, not one-shot. The old one-shot version was only re-armed by
+        // processBeacon — so the moment deliveries stopped (quota starvation, OEM
+        // permission gate, controller downgrade) the watchdog fired once and never
+        // again: the recovery mechanism died WITH the scan it was guarding (field:
+        // Redmi 9C stuck on "scan off" inside the zone until app restart). Self-
+        // rescheduling keeps the health check alive as long as isScanning; repeated
+        // ticks are cheap and restartRanging() has its own rate limit + start budget.
+        if (watchdogRunnable != null) return
+        watchdogRunnable = object : Runnable {
+            override fun run() {
+                if (!isScanning) {
+                    stopWatchdog()
+                    return
+                }
+                checkRangingHealth()
+                if (watchdogRunnable != null) {
+                    handler.postDelayed(this, WATCHDOG_INTERVAL)
+                }
+            }
         }
         handler.postDelayed(watchdogRunnable!!, WATCHDOG_INTERVAL)
     }
