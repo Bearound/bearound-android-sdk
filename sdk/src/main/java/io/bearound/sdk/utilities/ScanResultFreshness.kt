@@ -27,8 +27,15 @@ import android.os.SystemClock
  */
 internal object ScanResultFreshness {
 
-    /** Max age for a delivered result to still count as "just received". */
-    private const val MAX_AGE_MS = 10_000L
+    /**
+     * Max age for a delivered result to still count as "just received". 30 s, not lower:
+     * the Redmi 9C field logs showed the FIRST delivery of a genuine capture arriving
+     * 12 s after the radio captured it (MIUI pipeline latency), so a tight threshold
+     * would drop the only delivery slow stacks manage to make. Fossil replays age past
+     * 30 s within seconds of the beacon going silent, and [filterControllerReplay]
+     * catches replay batches regardless of age.
+     */
+    private const val MAX_AGE_MS = 30_000L
 
     /** Identical copies of one record in a single batch at/over this count = replay. */
     private const val REPLAY_MIN_COPIES = 4

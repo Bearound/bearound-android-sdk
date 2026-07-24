@@ -895,9 +895,25 @@ class BeaconManager(private val context: Context) {
     }
 
     private fun startWatchdog() {
-        stopWatchdog()
-        watchdogRunnable = Runnable {
-            checkRangingHealth()
+        // Periodic, not one-shot. The old one-shot version was only re-armed by
+        // processBeacon — so the moment deliveries stopped (quota starvation, OEM
+        // permission gate, controller downgrade) the watchdog fired once and never
+        // again: the recovery mechanism died WITH the scan it was guarding (field:
+        // Redmi 9C stuck on "scan off" inside the zone until app restart). Self-
+        // rescheduling keeps the health check alive as long as isScanning; repeated
+        // ticks are cheap and restartRanging() has its own rate limit + start budget.
+        if (watchdogRunnable != null) return
+        watchdogRunnable = object : Runnable {
+            override fun run() {
+                if (!isScanning) {
+                    stopWatchdog()
+                    return
+                }
+                checkRangingHealth()
+                if (watchdogRunnable != null) {
+                    handler.postDelayed(this, WATCHDOG_INTERVAL)
+                }
+            }
         }
         handler.postDelayed(watchdogRunnable!!, WATCHDOG_INTERVAL)
     }
