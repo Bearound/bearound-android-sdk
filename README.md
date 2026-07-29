@@ -524,6 +524,32 @@ foreground service.** Consequences on the Play Console:
   android:required="false" />` — it does **not** restrict your app's Play Store availability.
   If your app genuinely requires BLE, override it to `required="true"` in your own manifest.
 
+### Detection log (persisted, with app state)
+
+Logcat cannot answer "did the SDK see anything while the app was closed?" — nobody
+is attached at that moment. The SDK keeps a **persisted** diagnostic log for that,
+tagging every event with the process state at write time:
+
+```kotlin
+val json = sdk.getDetectionLogJson()  // JSON array, newest first, max 500 entries
+sdk.clearDetectionLog()
+```
+
+```json
+{ "id": "…", "timestamp": 1753812345678, "state": "terminated", "type": "Scan", "detail": "0.205 rssi=-61" }
+```
+
+`state` is `foreground`, `background`, `backgroundLocked` or **`terminated`** — the
+last one meaning the process is alive but the UI never became active, i.e. the
+system started the app (broadcast-delivered scan result, boot, watchdog) with the
+app closed. Because it is written to disk, those entries are still there when the
+user finally opens the app.
+
+The entry `type`/`detail` strings are identical to the iOS SDK (`Scan`,
+`Background`, `Região`, `Sync OK`, `Sync falhou`), so one host UI renders both
+platforms with no platform branch. Full contract, implementation notes and field
+validation: [docs/DETECTION-LOG.md](docs/DETECTION-LOG.md).
+
 ### Background reliability
 
 Keeping the process eligible to wake under Doze and aggressive OEM battery managers is the

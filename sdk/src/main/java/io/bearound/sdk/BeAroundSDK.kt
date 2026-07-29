@@ -34,6 +34,8 @@ import io.bearound.sdk.telemetry.ErrorReporter
 import io.bearound.sdk.utilities.BackgroundReliabilityHelper
 import io.bearound.sdk.utilities.OemPowerProfile
 import io.bearound.sdk.utilities.DeviceIdentifier
+import io.bearound.sdk.utilities.AppStateMonitor
+import io.bearound.sdk.utilities.DetectionLogStore
 import io.bearound.sdk.utilities.DeviceInfoCollector
 import io.bearound.sdk.utilities.DiagnosticsStore
 import io.bearound.sdk.utilities.OfflineBatchStorage
@@ -57,6 +59,9 @@ import kotlin.math.pow
 class BeAroundSDK private constructor() {
     companion object {
         private const val TAG = "BeAroundSDK"
+
+        /** Scan-log throttle window — same 10 s the iOS SDK uses. */
+        private const val SCAN_LOG_THROTTLE_MS = 10_000L
 
         /**
          * Anti-downgrade scan refresh (Fix B, 2026-07). OEMs on Android 13+ silently
@@ -168,6 +173,10 @@ class BeAroundSDK private constructor() {
         }
     }
 
+    /** Scan-log throttle state — mirrors iOS `lastScanLogSignature`/`lastScanLogAt`. */
+    private var lastScanLogSignature: String? = null
+    private var lastScanLogAt: Long = 0L
+
     private var syncRunnable: Runnable? = null
     private var scanRefreshRunnable: Runnable? = null
 
@@ -247,6 +256,11 @@ class BeAroundSDK private constructor() {
         
         SecureStorage.initialize(context)
         
+        // Process-state classification for the persisted detection log — must be
+        // installed before anything can record, so events from a system-started
+        // process are tagged `terminated` instead of `background`.
+        AppStateMonitor.install(context)
+
         deviceInfoCollector = DeviceInfoCollector(context, isColdStart)
         beaconManager = BeaconManager(context)
         bluetoothManager = BluetoothManager(context)
@@ -293,8 +307,28 @@ class BeAroundSDK private constructor() {
             // Notify listener of beacon update (with sync state preserved)
             dispatchToListener { it.onBeaconsUpdated(beaconsForListener) }
 
+            // Ranged-scan log (diagnostic, persisted): one entry per composition
+            // change or every 10 s — same contract and format as iOS, so the same
+            // host UI reads both platforms identically.
+            if (enrichedBeacons.isNotEmpty()) {
+                val signature = enrichedBeacons.joinToString(", ") {
+                    "${it.major}.${it.minor} rssi=${it.rssi}"
+                }
+                val now = System.currentTimeMillis()
+                if (signature != lastScanLogSignature || now - lastScanLogAt > SCAN_LOG_THROTTLE_MS) {
+                    lastScanLogSignature = signature
+                    lastScanLogAt = now
+                    DetectionLogStore.append(context, type = "Scan", detail = signature)
+                }
+            }
+
             // Notify if beacons detected in background
             if (isInBackground && enrichedBeacons.isNotEmpty()) {
+                DetectionLogStore.append(
+                    context,
+                    type = "Background",
+                    detail = "${enrichedBeacons.size} beacon(s) detectado(s)"
+                )
                 dispatchToListener { it.onBeaconDetectedInBackground(enrichedBeacons.size) }
 
                 // Update foreground notification with contextual content.
@@ -324,10 +358,12 @@ class BeAroundSDK private constructor() {
 
         // v2.5 — region transitions: gate active BLE scan
         beaconManager.onRegionEnter = {
+            DetectionLogStore.append(context, type = "Região", detail = "Entrou na zona do beacon")
             dispatchToListener { it.onEnterBeaconRegion() }
         }
 
         beaconManager.onRegionExit = {
+            DetectionLogStore.append(context, type = "Região", detail = "Saiu da zona do beacon")
             dispatchToListener { it.onExitBeaconRegion() }
         }
 
@@ -1284,6 +1320,11 @@ class BeAroundSDK private constructor() {
                         // Notify listener of success
                         PushTokenStore.markSent(userDevice.pushToken)
                         DiagnosticsStore.recordSync(success = true, beaconCount = beaconsToSend.size)
+                        DetectionLogStore.append(
+                            context,
+                            type = "Sync OK",
+                            detail = "${beaconsToSend.size} beacon(s) enviados ao ingester"
+                        )
                         dispatchToListener { it.onSyncCompleted(beaconsToSend.size, success = true, error = null) }
                     },
                     onFailure = { error ->
@@ -1291,6 +1332,11 @@ class BeAroundSDK private constructor() {
                         handleSyncFailure(beaconsToSend, error, isRetry = false)
 
                         DiagnosticsStore.recordSync(success = false, beaconCount = beaconsToSend.size)
+                        DetectionLogStore.append(
+                            context,
+                            type = "Sync falhou",
+                            detail = "${beaconsToSend.size} beacon(s) · ${error.message ?: "erro desconhecido"}"
+                        )
 
                         // Notify listener of failure
                         dispatchToListener {
@@ -1353,6 +1399,11 @@ class BeAroundSDK private constructor() {
 
                 DiagnosticsStore.recordSync(success = false, beaconCount = beaconsInChunk.size)
                 DiagnosticsStore.recordError("Retry chunk failed: ${error.message}")
+                DetectionLogStore.append(
+                    context,
+                    type = "Sync falhou",
+                    detail = "${beaconsInChunk.size} beacon(s) · ${error.message ?: "erro desconhecido"}"
+                )
 
                 dispatchToListener {
                     it.onSyncCompleted(
@@ -1378,6 +1429,11 @@ class BeAroundSDK private constructor() {
 
             PushTokenStore.markSent(userDevice.pushToken)
             DiagnosticsStore.recordSync(success = true, beaconCount = beaconsInChunk.size)
+            DetectionLogStore.append(
+                context,
+                type = "Sync OK",
+                detail = "${beaconsInChunk.size} beacon(s) enviados ao ingester"
+            )
             dispatchToListener { it.onSyncCompleted(beaconsInChunk.size, success = true, error = null) }
         }
 
@@ -1460,6 +1516,21 @@ class BeAroundSDK private constructor() {
      * [DiagnosticsStore] (recent scan/sync outcomes and errors). Safe to call at any
      * time; values are best-effort and reflect what the SDK has observed so far.
      */
+    /**
+     * Persisted detection log as a JSON array string (newest first), each entry
+     * `{id, timestamp, state, type, detail}` where `state` is one of
+     * `foreground` / `background` / `backgroundLocked` / `terminated`.
+     *
+     * It survives process death, so it is the way to answer "did the SDK detect
+     * anything while the app was closed?" — those entries carry `terminated`.
+     *
+     * Same contract as the iOS SDK's `getDetectionLogJson()`.
+     */
+    fun getDetectionLogJson(): String = DetectionLogStore.readJson(context)
+
+    /** Clears the persisted detection log. Mirrors iOS `clearDetectionLog()`. */
+    fun clearDetectionLog() = DetectionLogStore.clear(context)
+
     fun diagnostics(): BeAroundDiagnostics {
         val hasBtScan = ::beaconManager.isInitialized && beaconManager.hasBluetoothScanPermission()
         return BeAroundDiagnostics(

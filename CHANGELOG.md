@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Persisted detection log with app-state tagging** — `getDetectionLogJson()` / `clearDetectionLog()`, mirroring the iOS SDK 1:1 (same `type`/`detail` strings, same 500-entry cap, same JSON shape). Entries carry the process state at write time: `foreground`, `background`, `backgroundLocked` or `terminated`, the last one meaning the system started the process with the app closed (broadcast-delivered scan, boot, watchdog). Backed by SharedPreferences, so those entries survive process death and are still there when the user opens the app; `terminated` writes are flushed synchronously because the system may kill the process right after the wake-up callback. This closes a parity gap the iOS source already documented as existing ("Mirrors the Android `DetectionLogStore`") and unblocks host UIs — the Flutter plugin previously answered `getPersistedLog()` with a hardcoded `[]` on Android. See [docs/DETECTION-LOG.md](docs/DETECTION-LOG.md).
+
 ## [3.6.1] - 2026-07-24
 
 ### Fixed
