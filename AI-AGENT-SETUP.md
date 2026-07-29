@@ -15,7 +15,7 @@ below refine it).
 1. Install: add the JitPack repository — `maven("https://jitpack.io")` under
    `dependencyResolutionManagement` in settings.gradle(.kts) (or `allprojects` in a
    legacy root build.gradle) — then add
-   `implementation("com.github.Bearound:bearound-android-sdk:v3.6.0")` to the app
+   `implementation("com.github.Bearound:bearound-android-sdk:v3.7.0")` to the app
    module's build.gradle(.kts) and sync Gradle. If the app module's compileSdk is
    below 35 or the project AGP is below 8.6.0, RAISE them (compileSdk 35+, AGP 8.6.0+)
    BEFORE syncing — androidx.core 1.16.0 is pulled transitively and requires it, so
