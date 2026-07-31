@@ -5,6 +5,16 @@ All notable changes to the BeAround Android SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.3] - 2026-07-31
+
+### Fixed
+
+- **Background detections now deliver in seconds, not minutes** (device-matrix top-5 #1: LAP said 3-8s but ingest only saw the events 3-5+ minutes later — or when the app was opened). Four root causes addressed together:
+  - The periodic sync timer runs on `Handler.postDelayed` (uptime clock), which freezes in Doze — and the broadcast path refused to flush while that frozen timer existed. Every background detection now triggers an immediate flush (10s debounce), timer or not.
+  - Nothing held the process while the POST was in flight: `BluetoothScanReceiver` now holds its broadcast window via `goAsync()` until the flush settles (8s cap), and the new `ImmediateSyncWorker` — expedited on Android 12+, network-constrained — re-runs the flush inside a system-granted execution window if the fast path dies (no-op when already delivered; in Doze it runs when the network window opens).
+  - `BeaconSyncWorker` now awaits the upload (`performBackgroundSyncAwait`) instead of releasing the WorkManager window mid-POST, and retries on failure.
+  - A process revived by the watchdog/boot receiver never had its sync timer armed — `armSyncTimerOnly()` arms just the timer on the revive path (no extra scan-start, which would burn the OS scan-start quota).
+
 ## [3.6.2] - 2026-07-29
 
 ### Added
