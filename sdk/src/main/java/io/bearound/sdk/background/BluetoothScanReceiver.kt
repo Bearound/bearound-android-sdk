@@ -22,6 +22,9 @@ class BluetoothScanReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "BeAroundSDK-BTReceiver"
         const val ACTION_BLUETOOTH_SCAN = "io.bearound.sdk.ACTION_BLUETOOTH_SCAN"
+
+        /** Safety cap for goAsync — broadcast execution budget is ~10s. */
+        private const val FINISH_TIMEOUT_MS = 8_000L
     }
 
     @SuppressLint("MissingPermission")
@@ -55,7 +58,25 @@ class BluetoothScanReceiver : BroadcastReceiver() {
             }
 
             if (!scanResults.isNullOrEmpty()) {
-                sdk.processBroadcastResults(scanResults)
+                // goAsync(): keep the broadcast's process-priority window open until
+                // the immediate flush settles, instead of returning with the POST
+                // still in flight (the process became freezable the moment onReceive
+                // returned — top-5 fix #1). Guarded by a hard timeout well under the
+                // ~10s broadcast budget; double-finish is a crash, hence the flag.
+                val pending = goAsync()
+                val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+                fun finishOnce() {
+                    if (finished.compareAndSet(false, true)) {
+                        try {
+                            pending.finish()
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+                android.os.Handler(android.os.Looper.getMainLooper())
+                    .postDelayed({ finishOnce() }, FINISH_TIMEOUT_MS)
+
+                sdk.processBroadcastResults(scanResults) { finishOnce() }
             }
 
         } catch (e: Exception) {
