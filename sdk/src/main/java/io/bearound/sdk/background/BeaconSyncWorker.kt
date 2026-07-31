@@ -46,18 +46,24 @@ class BeaconSyncWorker(
             
             // Check if there are pending beacons or failed batches
             val hasPendingData = sdk.hasPendingBeacons()
-            
+
             if (hasPendingData) {
                 Log.d(TAG, "Syncing pending beacons...")
-                sdk.performBackgroundSync()
-                Log.d(TAG, "Background sync completed")
+                // AWAIT the upload: returning before it finishes released the
+                // WorkManager window (and its wakelock) with the POST in flight.
+                val ok = sdk.performBackgroundSyncAwait()
+                Log.d(TAG, "Background sync completed (success=$ok)")
+                if (!ok) {
+                    BackgroundScheduler.getInstance(applicationContext).scheduleWatchdogAlarm()
+                    return@withContext if (runAttemptCount < 3) Result.retry() else Result.failure()
+                }
             } else {
                 Log.d(TAG, "No pending beacons to sync")
             }
-            
+
             // Reschedule watchdog alarm
             BackgroundScheduler.getInstance(applicationContext).scheduleWatchdogAlarm()
-            
+
             Result.success()
             
         } catch (e: Exception) {

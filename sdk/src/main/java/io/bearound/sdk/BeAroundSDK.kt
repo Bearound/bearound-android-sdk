@@ -18,6 +18,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import io.bearound.sdk.background.BackgroundScanManager
 import io.bearound.sdk.background.BackgroundScheduler
 import io.bearound.sdk.background.BeaconScanService
+import io.bearound.sdk.background.ImmediateSyncWorker
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.interfaces.BluetoothManagerListener
 import io.bearound.sdk.models.Beacon
@@ -62,6 +63,12 @@ class BeAroundSDK private constructor() {
 
         /** Scan-log throttle window — same 10 s the iOS SDK uses. */
         private const val SCAN_LOG_THROTTLE_MS = 10_000L
+
+        /**
+         * Minimum gap between broadcast-triggered background flushes. Beacons
+         * advertise at ~1 Hz; without this, every delivery would fire a POST.
+         */
+        private const val IMMEDIATE_FLUSH_MIN_GAP_MS = 10_000L
 
         /**
          * Anti-downgrade scan refresh (Fix B, 2026-07). OEMs on Android 13+ silently
@@ -184,6 +191,10 @@ class BeAroundSDK private constructor() {
     private lateinit var offlineBatchStorage: OfflineBatchStorage
     private var consecutiveFailures = 0
     private var lastFailureTime: Long? = null
+
+    // Immediate background flush debounce — elapsedRealtime (counts during Doze,
+    // unlike the uptime clock backing Handler.postDelayed).
+    @Volatile private var lastImmediateFlushAt = 0L
 
     private var isInBackground = false
     private val isColdStart = true
@@ -987,11 +998,15 @@ class BeAroundSDK private constructor() {
         syncBeacons()
     }
 
-    internal fun processBroadcastResults(scanResults: List<ScanResult>) {
+    internal fun processBroadcastResults(
+        scanResults: List<ScanResult>,
+        onFlushSettled: (() -> Unit)? = null
+    ) {
         if (!isConfigured) {
             attemptConfigRestore()
             if (!isConfigured) {
                 Log.e(TAG, "Cannot process broadcast - SDK not configured")
+                onFlushSettled?.invoke()
                 return
             }
         }
@@ -1009,13 +1024,32 @@ class BeAroundSDK private constructor() {
         }
 
         val beaconsAfterBroadcast = beaconLock.withLock { collectedBeacons.size }
-        val timerIsActive = (syncRunnable != null)
 
-        // Only force-sync from broadcast when in background (foreground has its own sync timer).
-        if (!isAppInForeground && !timerIsActive && beaconsAfterBroadcast > 0) {
-            Log.d(TAG, "Broadcast detected beacons in background - syncing immediately")
-            syncBeacons(forceBackground = true)
+        // Immediate background flush. The periodic sync timer runs on the uptime
+        // clock (Handler.postDelayed), which freezes in Doze — a background
+        // detection waiting for it ships minutes late, or only when the app opens.
+        // So every background detection flushes NOW (debounced), regardless of the
+        // timer. The debounce keeps a 1 Hz beacon from turning into 1 Hz POSTs.
+        if (!isAppInForeground && beaconsAfterBroadcast > 0) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - lastImmediateFlushAt >= IMMEDIATE_FLUSH_MIN_GAP_MS) {
+                lastImmediateFlushAt = now
+                Log.d(TAG, "Broadcast detected beacons in background - flushing immediately")
+                // Fast path: sync while the broadcast window (goAsync) holds the
+                // process. Safety net: an expedited Worker with its own execution
+                // window + network constraint re-runs the flush if this one dies.
+                ImmediateSyncWorker.enqueue(context)
+                scope.launch {
+                    try {
+                        syncBeaconsAwait(forceBackground = true)
+                    } finally {
+                        onFlushSettled?.invoke()
+                    }
+                }
+                return
+            }
         }
+        onFlushSettled?.invoke()
     }
     
     private fun isAppInForeground(): Boolean {
@@ -1169,6 +1203,24 @@ class BeAroundSDK private constructor() {
         }
     }
 
+    /**
+     * Arms ONLY the periodic sync runnable, without touching the scan sessions —
+     * for the revive path, where ranging is already (re)started separately and an
+     * extra scan-start would eat the OS scan-start quota.
+     */
+    private fun armSyncTimerOnly() {
+        val config = configuration ?: return
+        if (syncRunnable != null) return
+        syncRunnable = object : Runnable {
+            override fun run() {
+                syncBeacons()
+                handler.postDelayed(this, config.syncInterval)
+            }
+        }
+        handler.postDelayed(syncRunnable!!, config.syncInterval)
+        Log.d(TAG, "Sync timer armed (revive path, every ${config.syncInterval / 1000}s)")
+    }
+
     private fun stopSyncTimer() {
         syncRunnable?.let { handler.removeCallbacks(it) }
         syncRunnable = null
@@ -1206,8 +1258,17 @@ class BeAroundSDK private constructor() {
     }
 
     private fun syncBeacons(forceBackground: Boolean = false) {
-        scope.launch {
-            if (isSyncing) return@launch
+        scope.launch { syncBeaconsAwait(forceBackground) }
+    }
+
+    /**
+     * Awaitable sync — the callers that own a guaranteed execution window
+     * (goAsync broadcast, WorkManager workers) MUST await the upload instead of
+     * fire-and-forget, otherwise the system reclaims the window with the POST
+     * still in flight. Returns false only on a failed upload (so workers can retry).
+     */
+    internal suspend fun syncBeaconsAwait(forceBackground: Boolean = false): Boolean {
+            if (isSyncing) return true
 
             // Register retry piggyback: if the first register failed (e.g. the app launched
             // offline), nothing else would retry it while the process lives — the TTL gate
@@ -1216,10 +1277,10 @@ class BeAroundSDK private constructor() {
 
             val client = apiClient
             val info = sdkInfo
-            
+
             if (client == null || info == null) {
                 Log.w(TAG, "Cannot sync - SDK not configured")
-                return@launch
+                return true
             }
 
             val shouldRetryFailed = shouldRetryFailedBatches()
@@ -1228,8 +1289,7 @@ class BeAroundSDK private constructor() {
             if (shouldRetryFailed) {
                 val allBatches = offlineBatchStorage.loadAllBatches()
                 if (allBatches.isNotEmpty()) {
-                    syncRetryBatchesInChunks(allBatches, client, info, forceBackground)
-                    return@launch
+                    return syncRetryBatchesInChunks(allBatches, client, info, forceBackground)
                 }
             }
 
@@ -1238,7 +1298,7 @@ class BeAroundSDK private constructor() {
                 collectedBeacons.values.filter { !it.alreadySynced }
             }
 
-            if (rawBeaconsToSend.isEmpty()) return@launch
+            if (rawBeaconsToSend.isEmpty()) return true
 
             // Snapshot + reset per-beacon RSSI accumulators so the payload carries the
             // FULL window stats and the next window starts fresh.
@@ -1267,11 +1327,15 @@ class BeAroundSDK private constructor() {
                 appInForeground = !isAppInBackground
             )
 
+            // sendBeacons is suspend and invokes the callback before returning,
+            // so syncOk is settled by the time we return it.
+            var syncOk = false
             client.sendBeacons(beaconsToSend, info, userDevice, userProperties) { result ->
                 isSyncing = false
 
                 result.fold(
                     onSuccess = {
+                        syncOk = true
                         consecutiveFailures = 0
                         lastFailureTime = null
 
@@ -1349,19 +1413,20 @@ class BeAroundSDK private constructor() {
                     }
                 )
             }
-        }
+            return syncOk
     }
 
     /**
      * Sends all retry batches in chunks of 5, sequentially.
      * Stops on the first chunk failure; successfully sent batches are removed from storage.
+     * Returns false when a chunk failed (callers with an execution window can retry).
      */
     private suspend fun syncRetryBatchesInChunks(
         allBatches: List<List<Beacon>>,
         client: APIClient,
         info: SDKInfo,
         forceBackground: Boolean
-    ) {
+    ): Boolean {
         isSyncing = true
 
         val locationPermission = getLocationPermissionStatus()
@@ -1415,7 +1480,7 @@ class BeAroundSDK private constructor() {
                 }
 
                 isSyncing = false
-                return
+                return false
             }
 
             // Chunk succeeded — remove these batches from storage (oldest first)
@@ -1439,6 +1504,7 @@ class BeAroundSDK private constructor() {
 
         isSyncing = false
         Log.d(TAG, "All retry chunks completed — storage now has ${offlineBatchStorage.getBatchCount()} batch(es)")
+        return true
     }
 
     private fun handleSyncFailure(beacons: List<Beacon>, error: Throwable, isRetry: Boolean) {
@@ -1563,6 +1629,17 @@ class BeAroundSDK private constructor() {
         Log.d(TAG, "performBackgroundSync called")
         syncBeacons(forceBackground = true)
     }
+
+    /**
+     * Awaitable background sync — Workers MUST use this one and await it, so the
+     * WorkManager window (and its wakelock) covers the whole upload. The legacy
+     * fire-and-forget above returned before the POST even started, letting the
+     * system freeze the process with the request in flight.
+     */
+    internal suspend fun performBackgroundSyncAwait(): Boolean {
+        Log.d(TAG, "performBackgroundSync (await) called")
+        return syncBeaconsAwait(forceBackground = true)
+    }
     
     /**
      * Check if scanning was previously enabled (before app kill/reboot)
@@ -1612,6 +1689,13 @@ class BeAroundSDK private constructor() {
         // a process revived by the watchdog/boot receiver ran unprotected until the
         // host happened to call startScanning() again.
         startScanRefreshTimer()
+
+        // A revived process never had its sync timer armed (only startScanning()
+        // arms it) — without this, it depends entirely on the 15-min fallbacks.
+        // NOT startSyncTimer(): that one also (re)starts ranging, and an extra
+        // scan-start here would burn the OS scan-start quota (see
+        // startContinuousLowDuty). Arm just the timer.
+        armSyncTimerOnly()
 
         // Restore foreground service if it was enabled
         val fgConfig = foregroundScanConfig
