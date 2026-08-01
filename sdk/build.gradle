@@ -122,6 +122,7 @@ dependencies {
     // Context for EncryptedSharedPreferences via SecureStorage).
     testImplementation 'org.robolectric:robolectric:4.13'
     testImplementation 'androidx.test:core:1.6.1'
+    testImplementation 'androidx.work:work-testing:2.10.1'
 
     // Removed AltBeacon - using native Android Bluetooth LE APIs
     // api 'org.altbeacon:android-beacon-library:2.21.1'

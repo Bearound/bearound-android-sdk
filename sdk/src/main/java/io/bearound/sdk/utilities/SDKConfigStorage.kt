@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.MaxQueuedPayloads
+import io.bearound.sdk.models.PeriodicReconciliationDefaults
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.ScanPrecision
 
@@ -30,6 +31,10 @@ object SDKConfigStorage {
     private const val KEY_FG_SCAN_ICON = "fg_scan_icon"
     private const val KEY_FG_SCAN_CHANNEL_ID = "fg_scan_channel_id"
     private const val KEY_FG_SCAN_CHANNEL_NAME = "fg_scan_channel_name"
+    // Periodic reconciliation keys
+    private const val KEY_PERIODIC_ENABLED = "periodic_reconciliation_enabled"
+    private const val KEY_PERIODIC_INTERVAL = "periodic_reconciliation_interval_ms"
+    private const val KEY_PERIODIC_SCAN_DURATION = "periodic_scan_duration_ms"
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -41,6 +46,9 @@ object SDKConfigStorage {
             putString(KEY_SCAN_PRECISION, config.scanPrecision.name)
             putInt(KEY_MAX_QUEUED_PAYLOADS, config.maxQueuedPayloads.value)
             putString(KEY_TECHNOLOGY, config.technology)
+            putBoolean(KEY_PERIODIC_ENABLED, config.periodicReconciliationEnabled)
+            putLong(KEY_PERIODIC_INTERVAL, config.periodicReconciliationIntervalMillis)
+            putLong(KEY_PERIODIC_SCAN_DURATION, config.periodicScanDurationMillis)
             putBoolean(KEY_IS_CONFIGURED, true)
             // Remove legacy keys if they exist
             remove(KEY_FOREGROUND_INTERVAL)
@@ -80,12 +88,26 @@ object SDKConfigStorage {
         // Default to "android-native" for configs persisted before 3.3.0
         val technology = prefs.getString(KEY_TECHNOLOGY, null) ?: "android-native"
 
+        // Configs persisted before the periodic-reconciliation fields existed restore
+        // the SDK defaults (feature ON, 20 min, 12s window). Values are re-sanitized on
+        // load so a corrupted/edited prefs file can't smuggle an out-of-range value in.
+        val periodicEnabled = prefs.getBoolean(KEY_PERIODIC_ENABLED, true)
+        val periodicInterval = PeriodicReconciliationDefaults.sanitizedInterval(
+            prefs.getLong(KEY_PERIODIC_INTERVAL, PeriodicReconciliationDefaults.DEFAULT_INTERVAL_MILLIS)
+        )
+        val periodicScanDuration = PeriodicReconciliationDefaults.sanitizedScanDuration(
+            prefs.getLong(KEY_PERIODIC_SCAN_DURATION, PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS)
+        )
+
         return SDKConfiguration(
             businessToken = businessToken,
             appId = appId,
             scanPrecision = scanPrecision,
             maxQueuedPayloads = maxQueuedPayloads,
-            technology = technology
+            technology = technology,
+            periodicReconciliationEnabled = periodicEnabled,
+            periodicReconciliationIntervalMillis = periodicInterval,
+            periodicScanDurationMillis = periodicScanDuration
         )
     }
 

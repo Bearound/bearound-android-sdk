@@ -7,11 +7,12 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
-import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import io.bearound.sdk.models.PeriodicReconciliationDefaults
+import io.bearound.sdk.models.SDKConfiguration
+import io.bearound.sdk.utilities.SDKConfigStorage
 import java.util.concurrent.TimeUnit
 
 /**
@@ -28,8 +29,7 @@ class BackgroundScheduler private constructor(private val context: Context) {
     companion object {
         private const val TAG = "BeAroundSDK-Scheduler"
         
-        // WorkManager
-        private const val WORK_INTERVAL_MINUTES = 15L
+        // WorkManager — interval now comes from the persisted SDKConfiguration
         private const val WORK_FLEX_MINUTES = 5L
         
         // AlarmManager
@@ -79,39 +79,63 @@ class BackgroundScheduler private constructor(private val context: Context) {
     // =========================================================================
     
     /**
-     * Schedule periodic sync using WorkManager
-     * Runs every 15 minutes (minimum interval allowed)
-     * System will optimize timing based on battery and network conditions
+     * Schedules the periodic reconciliation as UNIQUE periodic work using the
+     * configured interval (default 20 min; floor = WorkManager's 15-min minimum).
+     *
+     * `ExistingPeriodicWorkPolicy.UPDATE` swaps the spec in place: repeated calls
+     * never accumulate requests, an unchanged interval is effectively a no-op, and a
+     * running worker is never interrupted. The system decides actual timing — this
+     * is best effort by design (Doze, battery optimizations, OEM policies).
+     *
+     * NO network constraint on purpose: the worker must be able to run its collection
+     * window and PERSIST results offline; the sync step inside it degrades gracefully
+     * without connectivity (data stays in the outbox for the next attempt).
      */
     fun schedulePeriodicSync() {
-        Log.d(TAG, "Scheduling periodic sync with WorkManager")
-        
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-        
+        val config = SDKConfigStorage.loadConfiguration(context)
+        if (config != null && !config.periodicReconciliationEnabled) {
+            Log.i(TAG, "periodic_work_cancelled reason=FEATURE_DISABLED")
+            workManager.cancelUniqueWork(BeaconSyncWorker.WORK_NAME)
+            return
+        }
+
+        val intervalMillis = config?.periodicReconciliationIntervalMillis
+            ?: PeriodicReconciliationDefaults.DEFAULT_INTERVAL_MILLIS
+
         val syncRequest = PeriodicWorkRequestBuilder<BeaconSyncWorker>(
-            WORK_INTERVAL_MINUTES, TimeUnit.MINUTES,
+            intervalMillis, TimeUnit.MILLISECONDS,
             WORK_FLEX_MINUTES, TimeUnit.MINUTES
         )
-            .setConstraints(constraints)
             .addTag("bearound_sync")
             .build()
-        
+
         workManager.enqueueUniquePeriodicWork(
             BeaconSyncWorker.WORK_NAME,
             ExistingPeriodicWorkPolicy.UPDATE,
             syncRequest
         )
-        
-        Log.d(TAG, "WorkManager periodic sync scheduled")
+
+        Log.i(TAG, "periodic_work_scheduled intervalMs=$intervalMillis (earliest bound only — execution at Android's discretion)")
     }
-    
+
+    /**
+     * Applies a (re)configuration to the periodic reconciliation: enabled → schedule
+     * or update the unique work with the configured interval; disabled → cancel the
+     * pending periodic work. Never touches a worker that is already executing.
+     */
+    fun refreshPeriodicReconciliation(config: SDKConfiguration) {
+        if (config.periodicReconciliationEnabled) {
+            schedulePeriodicSync()
+        } else {
+            cancelPeriodicSync()
+        }
+    }
+
     /**
      * Cancel periodic sync
      */
     fun cancelPeriodicSync() {
-        Log.d(TAG, "Cancelling WorkManager periodic sync")
+        Log.i(TAG, "periodic_work_cancelled reason=REQUESTED")
         workManager.cancelUniqueWork(BeaconSyncWorker.WORK_NAME)
     }
     

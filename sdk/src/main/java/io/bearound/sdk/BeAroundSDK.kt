@@ -26,6 +26,7 @@ import io.bearound.sdk.models.BeAroundDiagnostics
 import io.bearound.sdk.models.BeaconMetadata
 import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.MaxQueuedPayloads
+import io.bearound.sdk.models.PeriodicReconciliationDefaults
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.ScanPrecision
@@ -532,11 +533,25 @@ class BeAroundSDK private constructor() {
     }
 
     /** Configures and activates the SDK. Auto-collects the FCM token if Firebase is present (see [tryAutoCollectFcmToken]). */
+    /**
+     * @param periodicReconciliationEnabled enables the periodic background reconciliation
+     *   (WorkManager layer). Best effort — Android may defer the worker (Doze, battery
+     *   optimizations, OEM policies). Default: true.
+     * @param periodicReconciliationIntervalMillis MINIMUM interval requested between
+     *   eligible executions — a floor, never a guaranteed cadence. Accepted range
+     *   **15 min (WorkManager's hard minimum) … 24 h**; out-of-range values are clamped
+     *   with an ERROR-level log; non-positive values fall back to the 20-min default.
+     * @param periodicScanDurationMillis ceiling of the collection window inside the
+     *   worker, clamped to **3–30 s**. The worker never registers scanners of its own.
+     */
     fun configure(
         businessToken: String,
         scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
         maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
-        technology: String = "android-native"
+        technology: String = "android-native",
+        periodicReconciliationEnabled: Boolean = true,
+        periodicReconciliationIntervalMillis: Long = PeriodicReconciliationDefaults.DEFAULT_INTERVAL_MILLIS,
+        periodicScanDurationMillis: Long = PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS
     ): BeAroundSDK {
         // NEVER-CRASH-THE-HOST: an embedded SDK must not throw from a public entry
         // point — a host wired to an empty BuildConfig field would crash on startup.
@@ -557,7 +572,12 @@ class BeAroundSDK private constructor() {
             appId = appId,
             scanPrecision = scanPrecision,
             maxQueuedPayloads = maxQueuedPayloads,
-            technology = technology
+            technology = technology,
+            periodicReconciliationEnabled = periodicReconciliationEnabled,
+            periodicReconciliationIntervalMillis =
+                PeriodicReconciliationDefaults.sanitizedInterval(periodicReconciliationIntervalMillis),
+            periodicScanDurationMillis =
+                PeriodicReconciliationDefaults.sanitizedScanDuration(periodicScanDurationMillis)
         )
 
         configuration = config
@@ -580,6 +600,12 @@ class BeAroundSDK private constructor() {
         offlineBatchStorage.currentTenantId = tenantFingerprint(businessToken)
 
         SDKConfigStorage.saveConfiguration(context, config)
+
+        // Periodic reconciliation: apply the new settings to the unique periodic work.
+        // ExistingPeriodicWorkPolicy.UPDATE swaps the spec in place (same interval =
+        // no-op churn; new interval = updated schedule) and never interrupts a worker
+        // that is already running. Disabling cancels the pending periodic work.
+        backgroundScheduler.refreshPeriodicReconciliation(config)
 
         // Error telemetry — isolated reporter ("try/catch around the library"). Own
         // try/catch: a telemetry failure must never break configure().
