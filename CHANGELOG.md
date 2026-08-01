@@ -5,6 +5,61 @@ All notable changes to the BeAround Android SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.0] - 2026-08-01
+
+### Added
+- **Configurable periodic reconciliation (WorkManager)**: new `configure()`
+  parameters `periodicReconciliationEnabled` (default true),
+  `periodicReconciliationIntervalMillis` (default 20 min; accepted range 15 min —
+  WorkManager's hard minimum — to 24 h) and `periodicScanDurationMillis` (default
+  12s, clamped 3–30s). Out-of-range values are clamped with an ERROR-level log —
+  never silently (WorkManager raises sub-15-min intervals silently on its own; the
+  SDK warns where the platform stays quiet), never a crash. Best effort by design:
+  the interval is only a floor; Android decides when the worker runs.
+- Worker decision policy: honors the host's intent (after `stopScanning()` it only
+  drains pending data), skips the collection window in Battery Saver and
+  serious/critical thermal state, self-heals a dead PendingIntent registration
+  (budget-guarded), and waits passively for the continuous scanners — it never
+  registers scanners, PendingIntents, or foreground services of its own. The
+  network constraint was removed so the worker can collect and persist offline.
+
+### Fixed
+- **Region exit could never fire**: the falling edge was edge-triggered on the
+  exact tick the detected map drained; if the 5-min grace hadn't elapsed on that
+  tick, the exit was never evaluated again — the SDK stayed "inside" forever with
+  the metadata scan running. Exit evaluation is now level-triggered on the
+  cleanup-immune last-advert timeline. Field-validated on device (exit fires at
+  300s of radio silence).
+- Region enter/exit now starts/stops regular ranging (the documented wiring was
+  missing — detection inside a region ran on batch/PendingIntent alone).
+- Scan-start quota discipline: every stop+start path reserves the replacement's
+  token BEFORE killing the current session (one token per restart, and a healthy
+  scan is never dropped when the budget is empty).
+- PendingIntent registration state tells the truth: the intent is only published
+  after the stack accepts the scan, so a denied quota no longer leaves a lying
+  `isRegistered` with a dead 35s retry; `EXTRA_ERROR_CODE` failures are handled
+  (scan-too-frequently freezes the budget); a stale-restore now transitions to
+  outside instead of staying "inside but passive"; `lastBeaconSeenAt` persists
+  with a 60s throttle during long stays.
+- Bluetooth off→on fully recovers the metadata scan (the local flag no longer
+  survives as a zombie; `onScanFailed` drops it for every failure code).
+- Reliable delivery: single-flight sync (concurrent triggers await the real
+  result), persist-before-send with exact-id removal, atomic batch writes with
+  corrupted-file quarantine, per-tenant batch isolation, poison-batch quarantine
+  (permanent HTTP rejections no longer block the queue), watchdog delegates to
+  the expedited worker and stops rescheduling after `stopScanning()`, crash
+  telemetry persists an envelope delivered on next launch, lifecycle observer
+  registers on the main thread, `coldStart` is true only for the process's first
+  payload, and the foreground service reloads its persisted notification config
+  on a START_STICKY revive.
+
+### Removed (breaking)
+- Dead public APIs with no internal behavior (verified unused by the Flutter and
+  React Native wrappers): `startQuickScan`/`stopQuickScan`,
+  `pauseScanning`/`resumeScanning`, `pauseRanging`, `onBackgroundRangingComplete`,
+  `emptyBeaconCount`, the `precision*` duty-cycle properties,
+  `currentScanDuration`/`currentPauseDuration`, `isPeriodicScanningEnabled`.
+
 ## [3.6.3] - 2026-07-31
 
 ### Fixed
