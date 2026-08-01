@@ -60,6 +60,15 @@
 
     <!-- Notifications permission (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Google Advertising ID (AAID). Normal permission, granted at install with no user
+         prompt — but REQUIRED from targetSdk 33+: without it the platform hands back a
+         zeroed id even when the user allows ad personalisation.
+         The user's own choice still wins: opting out in system settings zeroes the id and
+         the SDK reports none. Declaring this obliges the host to tick "Device or other IDs"
+         in the Play Data Safety form; a host that must NOT collect it (apps for children)
+         can strip it with tools:node="remove" and the SDK degrades to reporting no id. -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" />
     
     <!-- Boot completed permission for restart scanning after reboot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />

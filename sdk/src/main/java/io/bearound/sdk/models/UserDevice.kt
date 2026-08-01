@@ -56,6 +56,17 @@ data class UserDevice(
      * Last known fix, as context for [wifis] and for the beacons in the same payload.
      * Null when unavailable; the SDK never requests an active fix.
      */
-    val location: DeviceLocation? = null
+    val location: DeviceLocation? = null,
+    /**
+     * Google Advertising ID (AAID) — resettable, user-controlled identifier for advertising.
+     * Null when the user opted out, when Play Services is absent, or before the first
+     * async fetch lands.
+     */
+    val advertisingId: String? = null,
+    /**
+     * True when the user asked apps not to track them. Reported alongside [advertisingId]
+     * so an opt-out is distinguishable from Play Services simply being unavailable.
+     */
+    val limitAdTracking: Boolean? = null
 )
 
