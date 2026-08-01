@@ -26,7 +26,8 @@ below refine it).
 2. Permissions: the SDK's manifest merge already injects every permission it needs
    (BLUETOOTH_SCAN with neverForLocation, ACCESS_FINE_LOCATION + ACCESS_COARSE_LOCATION,
    FOREGROUND_SERVICE, FOREGROUND_SERVICE_CONNECTED_DEVICE, POST_NOTIFICATIONS, INTERNET,
-   RECEIVE_BOOT_COMPLETED, com.google.android.gms.permission.AD_ID). Do NOT re-declare
+   RECEIVE_BOOT_COMPLETED, ACCESS_WIFI_STATE, NEARBY_WIFI_DEVICES,
+   com.google.android.gms.permission.AD_ID). Do NOT re-declare
    them, and do NOT add or request ACCESS_BACKGROUND_LOCATION — background detection on Android 12+ runs on
    BLUETOOTH_SCAN, and requesting it drags the app into Google Play's background-location
    review for zero benefit.
@@ -61,7 +62,9 @@ below refine it).
    `configure(businessToken = <ASK ME FOR IT>)`, then request the runtime permissions
    with an ActivityResultContracts.RequestMultiplePermissions launcher — BLUETOOTH_SCAN
    on Android 12+ (S+), ACCESS_FINE_LOCATION + ACCESS_COARSE_LOCATION on all versions,
-   POST_NOTIFICATIONS on Android 13+ — and call `startScanning()` once the scan gate is
+   POST_NOTIFICATIONS and NEARBY_WIFI_DEVICES on Android 13+ (NEARBY_WIFI_DEVICES rides
+   in the same "Nearby devices" dialog as BLUETOOTH_SCAN, so it costs no extra prompt and
+   it is what unlocks the Wi-Fi observations on 13+) — and call `startScanning()` once the scan gate is
    granted (BLUETOOTH_SCAN on 12+, ACCESS_FINE_LOCATION on <= 11). If the scan
    permission is denied, show a rationale and re-request — do not silently skip
    startScanning(). Implement onBeaconsUpdated, onError, and onSyncCompleted on the

@@ -280,14 +280,39 @@ on iOS.
 Each payload also carries the device's **last known** location as context — the SDK never
 requests an active fix, so there is no extra GPS wake-up and no battery cost.
 
-**It is entirely opt-in, and the SDK never prompts.** Collection happens only if your app
-already holds the permissions:
+#### Turning it on
 
-| Your app grants | What the SDK reports |
+**The SDK never prompts** — it only reads what your app already has. What you report depends
+on which permissions the user granted:
+
+| Your app holds | What the SDK reports |
 |---|---|
 | Nothing | No `wifis[]` at all — payload identical to before |
-| `ACCESS_WIFI_STATE` only | The connected access point |
+| `ACCESS_WIFI_STATE` (automatic, no prompt) | The connected access point |
 | Location **or** `NEARBY_WIFI_DEVICES` (13+) | The connected access point **and** its neighbours |
+
+If you followed the [Quick Start](#quick-start), **you are already at the last row on Android
+≤ 12** — it requests location, which is what unlocks the neighbours there. To cover Android
+13+ as well, add one line to the same request:
+
+```kotlin
+if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    add(Manifest.permission.NEARBY_WIFI_DEVICES)
+}
+```
+
+`NEARBY_WIFI_DEVICES` lives in the same **"Nearby devices"** permission group as
+`BLUETOOTH_SCAN`, so requesting both together shows the user a single dialog — the setup
+that maximises the data costs no extra prompt.
+
+Two things worth knowing before you ship it:
+
+- **Nothing degrades if you skip it.** Detection, background behaviour and every other field
+  are unaffected; you simply report fewer access points.
+- **Google Play Data Safety:** the Quick Start already declares **Location**, and Wi-Fi
+  observations do not add a new data type to that form — the access point identity travels
+  hashed. If you enable the transitional `ssid` fields, network names do leave the device,
+  which is worth reflecting in your own privacy policy.
 
 Two privacy behaviours are built in: networks whose name ends in `_nomap` (the opt-out
 convention honoured by Google and Mozilla) are dropped on the device, and placeholder
@@ -424,6 +449,10 @@ class MainActivity : ComponentActivity(), BeAroundSDKListener {
                 // Android 13+: without this the (optional) foreground-service
                 // notification is silently invisible.
                 add(Manifest.permission.POST_NOTIFICATIONS)
+                // Android 13+: unlocks the neighbouring access points for Wi-Fi
+                // observations. Same "Nearby devices" dialog as BLUETOOTH_SCAN, so
+                // asking for it adds no extra prompt for the user.
+                add(Manifest.permission.NEARBY_WIFI_DEVICES)
             }
         }
         permissionLauncher.launch(permissions.toTypedArray())
