@@ -25,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
 import java.net.HttpURLConnection
@@ -176,6 +177,11 @@ object ErrorReporter {
                     }
                 }
             }
+
+            // Prepare the crash-envelope dir OUTSIDE the crash path, then ship anything
+            // a previous run's crash left behind.
+            File(context.applicationContext.filesDir, CRASH_ENVELOPE_DIR).mkdirs()
+            drainPendingCrashEnvelopes(context.applicationContext, businessToken)
         } catch (t: Throwable) {
             safeLog { Log.w(TAG, "Error telemetry install failed: ${t.message}") }
         }
@@ -229,12 +235,80 @@ object ErrorReporter {
     ) : Thread.UncaughtExceptionHandler {
         override fun uncaughtException(thread: Thread, throwable: Throwable) {
             try {
-                // report() applies the origin filter itself (single choke point).
-                report(throwable, "uncaught-handler")
+                // The old path called report(), which launched the delivery on a
+                // coroutine scope — the process dies in the chained handler below long
+                // before that coroutine runs, so crash reports were silently lost.
+                // Persist a ready-to-send envelope to disk instead (one atomic file
+                // write, ~ms) and deliver it on the NEXT launch (see install()).
+                persistCrashEnvelope(throwable)
             } catch (_: Throwable) {
                 // Never let telemetry interfere with the host's crash handling.
             } finally {
                 previous?.uncaughtException(thread, throwable)
+            }
+        }
+    }
+
+    /** Directory for crash envelopes; created in install() so the crash path only writes. */
+    private const val CRASH_ENVELOPE_DIR = "bearound_crash_envelopes"
+    private const val MAX_PENDING_CRASH_ENVELOPES = 5
+
+    /**
+     * Builds the full payload (synchronous + cheap on Android: Build.*, JSONObject,
+     * permission snapshots — no network, no locks) and writes it atomically. Origin
+     * filter still applies — host crashes are never captured.
+     */
+    private fun persistCrashEnvelope(throwable: Throwable) {
+        if (!enabled) return
+        val ctx = appContext ?: return
+        if (!isFromSdk(throwable)) return
+
+        val stack = stackTraceOf(throwable)
+        val body = buildPayload(throwable, "uncaught-handler", stack, ctx).toString()
+
+        val dir = File(ctx.filesDir, CRASH_ENVELOPE_DIR)
+        if (!dir.isDirectory) return // install() didn't prepare it — skip, never mkdir here
+
+        val name = "crash-${System.currentTimeMillis()}.json"
+        val tmp = File(dir, "$name.tmp")
+        tmp.writeText(body)
+        if (!tmp.renameTo(File(dir, name))) tmp.delete()
+    }
+
+    /**
+     * Delivers envelopes a previous run's crash handler left behind, then removes them.
+     * Any transport-level failure keeps the file for the next launch; a served response
+     * (any status) counts as delivered — telemetry is fire-and-forget.
+     */
+    private fun drainPendingCrashEnvelopes(ctx: Context, token: String) {
+        scope.launch {
+            try {
+                val dir = File(ctx.filesDir, CRASH_ENVELOPE_DIR)
+                if (!dir.isDirectory) return@launch
+                val envelopes = dir.listFiles()
+                    ?.filter { it.name.startsWith("crash-") && it.name.endsWith(".json") }
+                    ?.sortedBy { it.name }
+                    ?: return@launch
+
+                // Cap: newest N survive, surplus is dropped outright.
+                envelopes.dropLast(MAX_PENDING_CRASH_ENVELOPES).forEach { it.delete() }
+
+                for (file in envelopes.takeLast(MAX_PENDING_CRASH_ENVELOPES)) {
+                    val body = try {
+                        file.readText()
+                    } catch (_: Throwable) {
+                        file.delete(); continue
+                    }
+                    val delivered = try {
+                        transport(body, token)
+                        true
+                    } catch (_: Throwable) {
+                        false
+                    }
+                    if (delivered) file.delete()
+                }
+            } catch (t: Throwable) {
+                safeLog { Log.w(TAG, "Crash envelope drain failed: ${t.message}") }
             }
         }
     }

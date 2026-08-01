@@ -35,6 +35,13 @@ class BluetoothManager(private val context: Context) {
     private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothLeScanner: BluetoothLeScanner? = null
     private var isScanning = false
+
+    /** Host intent: true between startScanning() and stopScanning(), regardless of whether
+     *  the scan is actually registered right now. Gate for every deferred self-heal restart. */
+    private var desiredScanning = false
+
+    /** The one cancellable self-heal restart in flight (see [healZombieScanRegistration]). */
+    private var pendingRestart: Runnable? = null
     
     private val lastSeenBeacons = mutableMapOf<String, Long>()
 
@@ -93,7 +100,16 @@ class BluetoothManager(private val context: Context) {
             /* stale registration — nothing to stop */
         }
         isScanning = false
-        handler.postDelayed({ startScanning() }, 500L)
+        // Cancellable + intent-guarded restart: stopScanning() during the 500ms window
+        // removes the callback AND flips desiredScanning, so a heal scheduled before an
+        // explicit stop can never resurrect the scan after it.
+        pendingRestart?.let { handler.removeCallbacks(it) }
+        val restart = Runnable {
+            pendingRestart = null
+            if (desiredScanning) startScanning()
+        }
+        pendingRestart = restart
+        handler.postDelayed(restart, 500L)
     }
 
     /**
@@ -120,6 +136,10 @@ class BluetoothManager(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun startScanning() {
+        // Intent flag: survives transient start failures (BT off, missing permission,
+        // quota) so self-heal paths know the host still WANTS the scan; cleared only by
+        // an explicit stopScanning().
+        desiredScanning = true
         if (!isPoweredOn) {
             Log.w(TAG, "Cannot start scanning - Bluetooth not powered on")
             listener?.onBluetoothStateChanged(false)
@@ -188,54 +208,24 @@ class BluetoothManager(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun stopScanning() {
+        // Always clear the intent + any pending self-heal restart, even when isScanning
+        // is already false — a heal Runnable may be in flight for a scan that failed.
+        desiredScanning = false
+        pendingRestart?.let { handler.removeCallbacks(it) }
+        pendingRestart = null
+
         if (!isScanning) return
 
         try {
             bluetoothLeScanner?.stopScan(scanCallback)
-            isScanning = false
-            lastSeenBeacons.clear()
             Log.d(TAG, "Stopped BLE scanning")
-            
         } catch (e: Exception) {
             Log.e(TAG, "Failed to stop BLE scanning: ${e.message}")
-        }
-    }
-
-    /**
-     * Pause BLE scanning without changing isScanning lifecycle.
-     * Used for duty cycle pause periods.
-     */
-    @SuppressLint("MissingPermission")
-    fun pauseScanning() {
-        if (!isScanning) return
-        try {
-            bluetoothLeScanner?.stopScan(scanCallback)
-            Log.d(TAG, "Paused BLE scanning for duty cycle")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to pause BLE scanning: ${e.message}")
-        }
-    }
-
-    /**
-     * Resume BLE scanning without changing isScanning lifecycle.
-     * Used for duty cycle scan periods.
-     */
-    @SuppressLint("MissingPermission")
-    fun resumeScanning() {
-        if (!isScanning) return
-        if (!checkPermissions()) return
-        // Skipping one duty-cycle tick is recoverable; starving the client is not.
-        if (!ScanStartBudget.tryAcquire("metadata-resume")) return
-        try {
-            val settings = ScanSettings.Builder()
-                // Foreground service is active -> BALANCED (not LOW_POWER) for faster detection; Android throttles anyway without a FG service.
-                .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
-                .setReportDelay(0)
-                .build()
-            bluetoothLeScanner?.startScan(metadataScanFilters(), settings, scanCallback)
-            Log.d(TAG, "Resumed BLE scanning for duty cycle")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to resume BLE scanning: ${e.message}")
+        } finally {
+            // The local flag must drop even when stopScan throws (e.g. SecurityException
+            // after a permission revoke) — a lying isScanning=true blocked every restart.
+            isScanning = false
+            lastSeenBeacons.clear()
         }
     }
 
@@ -251,7 +241,14 @@ class BluetoothManager(private val context: Context) {
         val serviceData = IBeaconParser.parseServiceData(scanRecord, rssi) ?: return
         if (!shouldProcessBeacon(serviceData.major, serviceData.minor)) return
 
-        val isConnectable = scanRecord.advertiseFlags and 0x02 != 0
+        // ScanResult.isConnectable() (API 26+) reports the actual PDU type; the old
+        // `advertiseFlags and 0x02` read the "LE General Discoverable" flag, which is
+        // discoverability — not whether the device accepts connections.
+        val isConnectable = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            result.isConnectable
+        } else {
+            scanRecord.advertiseFlags and 0x02 != 0
+        }
 
         listener?.onBeaconDiscovered(
             uuid = IBeaconParser.BEAROUND_UUID,

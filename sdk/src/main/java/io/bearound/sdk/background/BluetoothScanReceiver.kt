@@ -47,6 +47,26 @@ class BluetoothScanReceiver : BroadcastReceiver() {
                 }
             }
 
+            // The PendingIntent pipeline reports failures through EXTRA_ERROR_CODE (e.g.
+            // the stack tore the registration down, or scan-start throttling kicked in).
+            // Ignoring it kept the "background scan registered" state alive on a client
+            // the OS had already rejected — the out-of-region detector was silently dead.
+            val errorCode = intent.getIntExtra(BluetoothLeScanner.EXTRA_ERROR_CODE, 0)
+            if (errorCode != 0) {
+                Log.w(TAG, "PendingIntent scan delivered error code $errorCode")
+                if (errorCode == 6 /* SCAN_FAILED_SCANNING_TOO_FREQUENTLY, API 30+ */) {
+                    // Freeze the budget and let the 15-min watchdog re-register once the
+                    // recovery window passes — an immediate re-start would be one more
+                    // start against the very quota that just tripped.
+                    io.bearound.sdk.utilities.ScanStartBudget.freeze()
+                } else {
+                    // Other failures (registration dropped, internal error): one
+                    // budget-guarded re-registration now.
+                    sdk.refreshBackgroundScanRegistration()
+                }
+                return
+            }
+
             val scanResults = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 intent.getParcelableArrayListExtra(
                     BluetoothLeScanner.EXTRA_LIST_SCAN_RESULT,
@@ -86,7 +106,6 @@ class BluetoothScanReceiver : BroadcastReceiver() {
     }
 
     private fun hasRequiredPermissions(context: Context): Boolean {
-        // Two "eyes": Location and Bluetooth. Accept results if AT LEAST ONE is granted.
         val hasLocation =
             ContextCompat.checkSelfPermission(
                 context,
@@ -97,16 +116,22 @@ class BluetoothScanReceiver : BroadcastReceiver() {
                 Manifest.permission.ACCESS_COARSE_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
 
-        val hasBluetoothScan = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ContextCompat.checkSelfPermission(
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Android 12+: Bluetooth-only detection via BLUETOOTH_SCAN + neverForLocation
+            // (see the library manifest). Location additionally satisfies OEMs that still
+            // gate on it — either eye is enough.
+            val hasBluetoothScan = ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.BLUETOOTH_SCAN
             ) == PackageManager.PERMISSION_GRANTED
+            hasLocation || hasBluetoothScan
         } else {
-            // Pre-Android-12: BLUETOOTH/BLUETOOTH_ADMIN are install-time normal permissions.
-            true
+            // Pre-Android-12: BLE scan results are location-gated by the platform — the
+            // legacy BLUETOOTH/BLUETOOTH_ADMIN install-time permissions do NOT unlock
+            // them. The old `hasLocation || true` accepted work here that could never
+            // produce results, keeping "background scan registered" state alive on a
+            // pipeline the OS had silently zeroed.
+            hasLocation
         }
-
-        return hasLocation || hasBluetoothScan
     }
 }

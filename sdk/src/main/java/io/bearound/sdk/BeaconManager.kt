@@ -141,7 +141,6 @@ class BeaconManager(private val context: Context) {
     var onBeaconsUpdated: ((List<Beacon>) -> Unit)? = null
     var onError: ((Exception) -> Unit)? = null
     var onScanningStateChanged: ((Boolean) -> Unit)? = null
-    var onBackgroundRangingComplete: (() -> Unit)? = null
 
     // v2.5 — Region transition + active-scan gating callbacks
     /** Fired when the first beacon is detected (rising edge: empty → ≥1). */
@@ -178,7 +177,6 @@ class BeaconManager(private val context: Context) {
     private var staleThresholdMs: Long = STALE_THRESHOLD_MS
     
     private var lastBeaconUpdate: Long? = null
-    private var emptyBeaconCount = 0
     private var rangingRestartCount = 0
     private var lastRangingRestartTime: Long? = null
 
@@ -348,6 +346,8 @@ class BeaconManager(private val context: Context) {
     /** Stop+start the ranging client so the scan mode matches the current app state. */
     @SuppressLint("MissingPermission")
     private fun restartRangingForModeChange() {
+        // Reserve the replacement's quota BEFORE killing the current session; the token
+        // acquired here is the one startRanging() spends (budgetAlreadyAcquired).
         if (!ScanStartBudget.tryAcquire("ranging-mode-flip")) return
         try {
             bluetoothLeScanner?.stopScan(scanCallback)
@@ -355,7 +355,7 @@ class BeaconManager(private val context: Context) {
             /* session already gone in the stack — the start below recreates it */
         }
         isRanging = false
-        startRanging()
+        startRanging(budgetAlreadyAcquired = true)
         Log.d(TAG, "Ranging re-registered for app-state change (foreground=$isInForeground)")
     }
 
@@ -471,13 +471,19 @@ class BeaconManager(private val context: Context) {
         lastBeaconSeenAt = null
 
         isInBeaconRegion = false
-        emptyBeaconCount = 0
         isScanning = false
         onScanningStateChanged?.invoke(false)
     }
 
+    /**
+     * @param budgetAlreadyAcquired true when the caller already holds a [ScanStartBudget]
+     *   token for this start (restart paths reserve BEFORE stopping the current session —
+     *   never kill a working scan without the replacement's quota in hand). Prevents the
+     *   double-spend where a restart consumed one token for the flip and this method
+     *   consumed a second one for the actual start.
+     */
     @SuppressLint("MissingPermission")
-    fun startRanging() {
+    fun startRanging(budgetAlreadyAcquired: Boolean = false) {
         if (!isScanning) return
         if (isRanging) return
         // Doctrine: active ranging only runs inside a beacon region. Outside, only
@@ -520,7 +526,7 @@ class BeaconManager(private val context: Context) {
 
         // Preventive quota guard: skipping one duty-cycle tick is recoverable (the next
         // tick retries in seconds); exceeding the OS quota silently starves the client.
-        if (!ScanStartBudget.tryAcquire("ranging")) return
+        if (!budgetAlreadyAcquired && !ScanStartBudget.tryAcquire("ranging")) return
 
         try {
             bluetoothLeScanner?.startScan(filters, settings, scanCallback)
@@ -551,19 +557,8 @@ class BeaconManager(private val context: Context) {
     }
 
     /**
-     * Pause ranging without changing isScanning lifecycle.
-     * Used for duty cycle pause periods.
-     */
-    @SuppressLint("MissingPermission")
-    fun pauseRanging() {
-        if (!isScanning || !isRanging) return
-        Log.d(TAG, "pauseRanging() - pausing for duty cycle")
-        stopRanging()
-    }
-
-    /**
      * Resume ranging without changing isScanning lifecycle.
-     * Used for duty cycle scan periods.
+     * Used on the region rising edge (onActiveScanShouldStart) and recovery paths.
      */
     fun resumeRanging() {
         if (!isScanning || isRanging) return
@@ -600,11 +595,11 @@ class BeaconManager(private val context: Context) {
      * payload, so [processScanResult]/[IBeaconParser.parseServiceData] handle it unchanged.
      */
     @SuppressLint("MissingPermission")
-    private fun startSlowBeaconBatchScan() {
+    private fun startSlowBeaconBatchScan(budgetAlreadyAcquired: Boolean = false) {
         if (isBatchScanning) return
         val scanner = bluetoothLeScanner ?: return
         // Preventive quota guard — the liveness check in checkRangingHealth retries later.
-        if (!ScanStartBudget.tryAcquire("batch")) return
+        if (!budgetAlreadyAcquired && !ScanStartBudget.tryAcquire("batch")) return
         try {
             // Field observability: offloaded batching is the premise of this scan — log where
             // the device only emulates it in software, so "batch didn't help" is diagnosable.
@@ -739,7 +734,6 @@ class BeaconManager(private val context: Context) {
     private fun processBeacon(beacon: Beacon) {
         val now = System.currentTimeMillis()
         lastBeaconUpdate = now
-        emptyBeaconCount = 0
 
         // Rising-edge detection: were we OUT of region before this beacon arrived?
         val wasOutOfRegion = !isInBeaconRegion
@@ -799,8 +793,7 @@ class BeaconManager(private val context: Context) {
     /** Removes timed-out beacons from the detected map. Returns true when any was removed. */
     private fun cleanupExpiredBeacons(): Boolean {
         var removedAny = false
-        val (hadBeaconsBefore, hasBeaconsAfter) = beaconLock.withLock {
-            val before = detectedBeacons.isNotEmpty()
+        val hasBeaconsAfter = beaconLock.withLock {
             val now = System.currentTimeMillis()
             val expiredKeys = beaconLastSeen.filter { (_, lastSeen) ->
                 now - lastSeen > beaconTimeout
@@ -814,16 +807,19 @@ class BeaconManager(private val context: Context) {
                 rssiAccumulators.remove(key)
             }
             removedAny = expiredKeys.isNotEmpty()
-            Pair(before, detectedBeacons.isNotEmpty())
+            detectedBeacons.isNotEmpty()
         }
 
-        // Falling-edge detection: only fire region exit after the cleanup-immune grace
-        // (ZONE_EXIT_GRACE_MS = 5 min) has elapsed since the LAST advert. Previously this
-        // fired as soon as the per-beacon `beaconTimeout` (5-65s) drained the dict —
-        // producing phantom EXIT→ENTER cycles when OS-level background scan throttling
-        // silenced delivery briefly. Now the dict can empty without triggering exit;
-        // exit fires only when no advert has arrived for ZONE_EXIT_GRACE_MS.
-        if (hadBeaconsBefore && !hasBeaconsAfter && isInBeaconRegion) {
+        // Falling-edge detection, LEVEL-triggered: exit fires whenever the map is empty,
+        // we still believe we're in-region, and no advert has arrived for
+        // ZONE_EXIT_GRACE_MS (cleanup-immune timeline — the per-beacon `beaconTimeout`
+        // of 5-65s drains the dict long before the 5-min grace elapses, and that's fine).
+        // The previous edge-triggered form (`hadBeaconsBefore && !hasBeaconsAfter`) only
+        // evaluated on the exact tick the map drained; when the grace hadn't elapsed YET
+        // on that tick, every later tick saw hadBeaconsBefore=false and the exit never
+        // fired again — isInBeaconRegion stuck true forever, metadata scan never stopped,
+        // host never got onExitBeaconRegion.
+        if (!hasBeaconsAfter && isInBeaconRegion) {
             val last = lastBeaconSeenAt
             val graceElapsed = last == null || (System.currentTimeMillis() - last) > ZONE_EXIT_GRACE_MS
             if (graceElapsed) {
@@ -836,7 +832,7 @@ class BeaconManager(private val context: Context) {
                 stopRegionCleanupTimer()
             } else {
                 val sinceLast = if (last != null) (System.currentTimeMillis() - last) / 1000 else -1
-                Log.d(TAG, "Detected map drained but zone-exit grace not yet elapsed (${sinceLast}s since last ad, grace=${ZONE_EXIT_GRACE_MS / 1000}s) — staying in region")
+                Log.d(TAG, "Detected map empty but zone-exit grace not yet elapsed (${sinceLast}s since last ad, grace=${ZONE_EXIT_GRACE_MS / 1000}s) — staying in region")
             }
         }
         return removedAny
@@ -941,13 +937,14 @@ class BeaconManager(private val context: Context) {
 
     /**
      * Re-registra o batch scan (anti-downgrade) — par do BluetoothManager.restartScanning().
-     * Se o ScanStartBudget negar o re-start, isBatchScanning fica false e o próprio
-     * watchdog ([checkRangingHealth]) re-arma no próximo ciclo — sem estado perdido.
+     * Reserva a quota do substituto ANTES de derrubar a sessão atual; sem folga no
+     * [ScanStartBudget] a sessão vigente é mantida e o watchdog re-tenta no próximo ciclo.
      */
     fun refreshBatchScan() {
         if (!isScanning || !isBatchScanning) return
+        if (!ScanStartBudget.tryAcquire("batch-refresh")) return
         stopSlowBeaconBatchScan()
-        startSlowBeaconBatchScan()
+        startSlowBeaconBatchScan(budgetAlreadyAcquired = true)
     }
 
     private fun checkRangingHealth() {
@@ -960,9 +957,13 @@ class BeaconManager(private val context: Context) {
         if (!isBatchScanning) {
             startSlowBeaconBatchScan()
         } else if (System.currentTimeMillis() - lastBatchDeliveryAt > BATCH_LIVENESS_TIMEOUT_MS) {
-            Log.w(TAG, "Batch scan silent for ${BATCH_LIVENESS_TIMEOUT_MS / 1000}s — reviving")
-            stopSlowBeaconBatchScan()
-            startSlowBeaconBatchScan()
+            // Same reserve-before-kill rule as refreshBatchScan(): a silent client is
+            // still registered — only replace it when the replacement's quota is in hand.
+            if (ScanStartBudget.tryAcquire("batch-revive")) {
+                Log.w(TAG, "Batch scan silent for ${BATCH_LIVENESS_TIMEOUT_MS / 1000}s — reviving")
+                stopSlowBeaconBatchScan()
+                startSlowBeaconBatchScan(budgetAlreadyAcquired = true)
+            }
         }
 
         if (!isInBeaconRegion) return
@@ -1006,6 +1007,11 @@ class BeaconManager(private val context: Context) {
         rangingRestartCount++
         lastRangingRestartTime = now
 
+        // Reserve the replacement's quota BEFORE stopping. If there's no headroom, keep
+        // the current session (even a possibly-dead one — without quota we couldn't
+        // recreate it anyway) and let the next watchdog tick retry with fresh budget.
+        if (!ScanStartBudget.tryAcquire("ranging-restart")) return
+
         if (isRanging) {
             bluetoothLeScanner?.stopScan(scanCallback)
         }
@@ -1013,7 +1019,7 @@ class BeaconManager(private val context: Context) {
         val backoffDelay = minOf(500L * rangingRestartCount, 5000L)
 
         handler.postDelayed({
-            startRanging()
+            startRanging(budgetAlreadyAcquired = true)
         }, backoffDelay)
     }
 

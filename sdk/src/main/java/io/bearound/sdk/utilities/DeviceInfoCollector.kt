@@ -25,9 +25,17 @@ import java.util.TimeZone
  * Collects comprehensive device information for API requests
  */
 class DeviceInfoCollector(
-    private val context: Context,
-    private val isColdStart: Boolean = true
+    private val context: Context
 ) {
+    companion object {
+        /**
+         * True only for the FIRST payload each process builds. The old constructor flag
+         * was hardcoded `true` for the singleton's whole life, so every sync reported
+         * coldStart=true and the field carried no signal.
+         */
+        private val firstPayloadOfProcess = java.util.concurrent.atomic.AtomicBoolean(true)
+    }
+
     private val appStartTime = System.currentTimeMillis()
 
     fun collectDeviceInfo(
@@ -56,7 +64,7 @@ class DeviceInfoCollector(
             screenHeight = getScreenHeight(),
             appInForeground = appInForeground,
             appUptimeMs = System.currentTimeMillis() - appStartTime,
-            coldStart = isColdStart,
+            coldStart = firstPayloadOfProcess.getAndSet(false),
             lowPowerMode = isLowPowerMode(),
             locationAccuracy = getLocationAccuracy(locationPermission),
             wifiSSID = getWifiSSID(),
