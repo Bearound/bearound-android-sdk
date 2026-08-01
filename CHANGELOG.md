@@ -5,6 +5,14 @@ All notable changes to the BeAround Android SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.1] - 2026-08-01
+
+### Fixed
+- Re-release of 3.7.0: the JitPack artifact for tag v3.7.0 was built from a stale
+  cached tag state (a pre-hardening bump branch had briefly carried the same tag)
+  and did not contain the 3.7.0 code. No source changes — v3.7.1 is the guaranteed
+  clean build of the 3.7.0 content below.
+
 ## [3.7.0] - 2026-08-01
 
 ### Added
