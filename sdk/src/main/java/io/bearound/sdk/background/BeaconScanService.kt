@@ -90,21 +90,73 @@ class BeaconScanService : Service() {
 
         fun updateNotification(context: Context, title: String, text: String) {
             if (!isRunning) return
-            val intent = Intent(context, BeaconScanService::class.java).apply {
-                putExtra(EXTRA_TITLE, title)
-                putExtra(EXTRA_TEXT, text)
-                putExtra(EXTRA_UPDATE_ONLY, true)
-            }
+            // The service is ALREADY foreground — a notification refresh only needs
+            // NotificationManager.notify. The old path re-delivered an intent through
+            // startForegroundService, a heavier mechanism subject to FGS-start policy.
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
-                    context.startService(intent)
-                }
+                val cfg = io.bearound.sdk.utilities.SDKConfigStorage.loadForegroundScanConfig(context)
+                val notification = buildNotification(
+                    context,
+                    title.ifEmpty { resolveAppName(context) },
+                    text,
+                    cfg?.notificationIcon,
+                    cfg?.notificationChannelId,
+                    cfg?.notificationChannelName ?: "Region monitoring service"
+                )
+                context.getSystemService(NotificationManager::class.java)
+                    .notify(NOTIFICATION_ID, notification)
             } catch (e: Exception) {
-                // Mesma proteção do start(): não crashar se o SO recusar (re)iniciar o FGS
-                // de background (ForegroundServiceStartNotAllowed / SecurityException).
                 Log.w(TAG, "Could not update foreground service notification — skipping", e)
+            }
+        }
+
+        private fun resolveAppName(context: Context): String {
+            return try {
+                context.applicationInfo.loadLabel(context.packageManager).toString()
+            } catch (_: Exception) {
+                "Bearound"
+            }
+        }
+
+        private fun buildNotification(
+            context: Context,
+            title: String,
+            text: String,
+            icon: Int?,
+            channelId: String?,
+            channelName: String
+        ): Notification {
+            val resolvedChannelId = channelId ?: DEFAULT_CHANNEL_ID
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    resolvedChannelId,
+                    channelName,
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    setShowBadge(false)
+                }
+                val nm = context.getSystemService(NotificationManager::class.java)
+                nm.createNotificationChannel(channel)
+            }
+
+            val resolvedIcon = icon ?: android.R.drawable.stat_sys_data_bluetooth
+
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(context, resolvedChannelId)
+                    .setContentTitle(title)
+                    .setContentText(text)
+                    .setSmallIcon(resolvedIcon)
+                    .setOngoing(true)
+                    .build()
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(context)
+                    .setContentTitle(title)
+                    .setContentText(text)
+                    .setSmallIcon(resolvedIcon)
+                    .setOngoing(true)
+                    .build()
             }
         }
 
@@ -113,12 +165,7 @@ class BeaconScanService : Service() {
         private const val EXTRA_ICON = "icon"
         private const val EXTRA_CHANNEL_ID = "channel_id"
         private const val EXTRA_CHANNEL_NAME = "channel_name"
-        private const val EXTRA_UPDATE_ONLY = "update_only"
     }
-
-    private var currentIcon: Int? = null
-    private var currentChannelId: String? = null
-    private var currentChannelName: String = "Region monitoring service"
 
     override fun onCreate() {
         super.onCreate()
@@ -127,28 +174,32 @@ class BeaconScanService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val rawTitle = intent?.getStringExtra(EXTRA_TITLE) ?: ""
-        val title = rawTitle.ifEmpty { resolveAppName() }
-        val text = intent?.getStringExtra(EXTRA_TEXT) ?: "Scanning for nearby content"
-        val isUpdateOnly = intent?.getBooleanExtra(EXTRA_UPDATE_ONLY, false) ?: false
-
-        if (isUpdateOnly) {
-            val nm = getSystemService(NotificationManager::class.java)
-            val notification = buildNotification(title, text, currentIcon, currentChannelId, currentChannelName)
-            nm.notify(NOTIFICATION_ID, notification)
-            Log.d(TAG, "Notification updated: $title — $text")
-            return START_STICKY
+        // START_STICKY revive: the system recreates the service with intent == null,
+        // which used to drop the host's custom title/icon/channel (in-memory only) and
+        // fall back to defaults. Reload the persisted ForegroundScanConfig instead.
+        val persistedConfig = if (intent == null) {
+            io.bearound.sdk.utilities.SDKConfigStorage.loadForegroundScanConfig(this)
+        } else {
+            null
         }
 
-        val icon = intent?.getIntExtra(EXTRA_ICON, 0)?.takeIf { it != 0 }
+        val rawTitle = intent?.getStringExtra(EXTRA_TITLE)
+            ?: persistedConfig?.notificationTitle
+            ?: ""
+        val title = rawTitle.ifEmpty { resolveAppName(this) }
+        val text = intent?.getStringExtra(EXTRA_TEXT)
+            ?: persistedConfig?.notificationText
+            ?: "Scanning for nearby content"
+
+        val icon = (intent?.getIntExtra(EXTRA_ICON, 0)?.takeIf { it != 0 })
+            ?: persistedConfig?.notificationIcon
         val channelId = intent?.getStringExtra(EXTRA_CHANNEL_ID)
-        val channelName = intent?.getStringExtra(EXTRA_CHANNEL_NAME) ?: "Region monitoring service"
+            ?: persistedConfig?.notificationChannelId
+        val channelName = intent?.getStringExtra(EXTRA_CHANNEL_NAME)
+            ?: persistedConfig?.notificationChannelName
+            ?: "Region monitoring service"
 
-        currentIcon = icon
-        currentChannelId = channelId
-        currentChannelName = channelName
-
-        val notification = buildNotification(title, text, icon, channelId, channelName)
+        val notification = buildNotification(this, title, text, icon, channelId, channelName)
 
         // Defesa em profundidade: mesmo que o serviço tenha sido iniciado antes da
         // permissão ser revogada (ex.: retry do watchdog/boot), promover a foreground
@@ -183,52 +234,4 @@ class BeaconScanService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun resolveAppName(): String {
-        return try {
-            applicationInfo.loadLabel(packageManager).toString()
-        } catch (_: Exception) {
-            "Bearound"
-        }
-    }
-
-    private fun buildNotification(
-        title: String,
-        text: String,
-        icon: Int?,
-        channelId: String?,
-        channelName: String
-    ): Notification {
-        val resolvedChannelId = channelId ?: DEFAULT_CHANNEL_ID
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                resolvedChannelId,
-                channelName,
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                setShowBadge(false)
-            }
-            val nm = getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(channel)
-        }
-
-        val resolvedIcon = icon ?: android.R.drawable.stat_sys_data_bluetooth
-
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, resolvedChannelId)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setSmallIcon(resolvedIcon)
-                .setOngoing(true)
-                .build()
-        } else {
-            @Suppress("DEPRECATION")
-            Notification.Builder(this)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setSmallIcon(resolvedIcon)
-                .setOngoing(true)
-                .build()
-        }
-    }
 }

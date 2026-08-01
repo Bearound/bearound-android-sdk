@@ -26,11 +26,13 @@ import io.bearound.sdk.models.BeAroundDiagnostics
 import io.bearound.sdk.models.BeaconMetadata
 import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.MaxQueuedPayloads
+import io.bearound.sdk.models.PeriodicReconciliationDefaults
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.ScanPrecision
 import io.bearound.sdk.models.UserProperties
 import io.bearound.sdk.network.APIClient
+import io.bearound.sdk.network.HttpException
 import io.bearound.sdk.telemetry.ErrorReporter
 import io.bearound.sdk.utilities.BackgroundReliabilityHelper
 import io.bearound.sdk.utilities.OemPowerProfile
@@ -45,9 +47,13 @@ import io.bearound.sdk.utilities.RegisterStore
 import io.bearound.sdk.utilities.SDKConfigStorage
 import io.bearound.sdk.utilities.SecureStorage
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock as withMutex
 import java.util.UUID
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -63,6 +69,14 @@ class BeAroundSDK private constructor() {
 
         /** Scan-log throttle window — same 10 s the iOS SDK uses. */
         private const val SCAN_LOG_THROTTLE_MS = 10_000L
+
+        /**
+         * Statuses where an identical retry fails identically: the payload/credential is
+         * the problem, not the transport. 413 lands here too — if a SINGLE batch still
+         * exceeds the limit it is malformed, not splittable. Everything else (408, 429,
+         * 5xx, transport errors) is treated as transient and retried whole.
+         */
+        private val PERMANENT_HTTP_CODES = setOf(400, 401, 403, 404, 413, 422)
 
         /**
          * Minimum gap between broadcast-triggered background flushes. Beacons
@@ -187,7 +201,16 @@ class BeAroundSDK private constructor() {
     private var syncRunnable: Runnable? = null
     private var scanRefreshRunnable: Runnable? = null
 
-    private var isSyncing = false
+    /**
+     * Single-flight sync. Every trigger (timer, workers, FCM, watchdog, broadcast flush,
+     * manual stop) funnels through [syncBeaconsAwait]; concurrent callers JOIN the
+     * in-flight operation and await its REAL result. Replaces the old `isSyncing`
+     * Boolean, which had a check-then-set window two callers could both pass, and
+     * reported a fake `true` to any caller that arrived mid-sync.
+     */
+    private val syncMutex = Mutex()
+    private var activeSync: Deferred<Boolean>? = null
+
     private lateinit var offlineBatchStorage: OfflineBatchStorage
     private var consecutiveFailures = 0
     private var lastFailureTime: Long? = null
@@ -197,7 +220,6 @@ class BeAroundSDK private constructor() {
     @Volatile private var lastImmediateFlushAt = 0L
 
     private var isInBackground = false
-    private val isColdStart = true
     private var foregroundScanConfig: ForegroundScanConfig? = null
     private val registerInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -218,17 +240,8 @@ class BeAroundSDK private constructor() {
     val currentSyncInterval: Long?
         get() = configuration?.syncInterval
 
-    val currentScanDuration: Long?
-        get() = configuration?.precisionScanDuration
-
     val currentScanPrecision: ScanPrecision?
         get() = configuration?.scanPrecision
-
-    val currentPauseDuration: Long?
-        get() = configuration?.precisionPauseDuration
-
-    val isPeriodicScanningEnabled: Boolean
-        get() = configuration?.scanPrecision != ScanPrecision.HIGH
 
     val isConfigured: Boolean
         get() = configuration != null && apiClient != null
@@ -251,6 +264,8 @@ class BeAroundSDK private constructor() {
 
             // Update offline batch storage max count
             offlineBatchStorage.maxBatchCount = savedConfig.maxQueuedPayloads.value
+            // Same tenant gate as configure() — restored sessions read only their own queue.
+            offlineBatchStorage.currentTenantId = tenantFingerprint(savedConfig.businessToken)
 
             SDKConfigStorage.loadInternalId(context)?.let { savedId ->
                 if (userProperties?.internalId == null) {
@@ -272,7 +287,7 @@ class BeAroundSDK private constructor() {
         // process are tagged `terminated` instead of `background`.
         AppStateMonitor.install(context)
 
-        deviceInfoCollector = DeviceInfoCollector(context, isColdStart)
+        deviceInfoCollector = DeviceInfoCollector(context)
         beaconManager = BeaconManager(context)
         bluetoothManager = BluetoothManager(context)
         backgroundScanManager = BackgroundScanManager(context)
@@ -363,10 +378,6 @@ class BeAroundSDK private constructor() {
             dispatchToListener { it.onScanningStateChanged(isScanning) }
         }
 
-        beaconManager.onBackgroundRangingComplete = {
-            syncBeacons()
-        }
-
         // v2.5 — region transitions: gate active BLE scan
         beaconManager.onRegionEnter = {
             DetectionLogStore.append(context, type = "Região", detail = "Entrou na zona do beacon")
@@ -379,14 +390,20 @@ class BeAroundSDK private constructor() {
         }
 
         beaconManager.onActiveScanShouldStart = {
-            Log.d(TAG, "Active scan START — region entered, starting BLE central scan + duty cycle")
+            Log.d(TAG, "Active scan START — region entered, starting ranging + BLE central scan")
+            // Regular ranging ON: startRanging() early-returns while out of region, so the
+            // rising edge is the only place the first in-region ranging session can start —
+            // without this call the region ran on batch/PendingIntent alone (the doctrine
+            // comment in BeaconManager.startRanging promised this hookup all along).
+            beaconManager.resumeRanging()
             // Bluetooth metadata scan ON only while inside a region.
             bluetoothManager.startScanning()
             dispatchToListener { it.onActiveScanStateChanged(true) }
         }
 
         beaconManager.onActiveScanShouldStop = {
-            Log.d(TAG, "Active scan STOP — region exited, stopping BLE central scan")
+            Log.d(TAG, "Active scan STOP — region exited, stopping ranging + BLE central scan")
+            beaconManager.stopRanging()
             bluetoothManager.stopScanning()
             dispatchToListener { it.onActiveScanStateChanged(false) }
         }
@@ -446,15 +463,26 @@ class BeAroundSDK private constructor() {
     }
 
     private fun setupLifecycleObserver() {
-        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onStart(owner: LifecycleOwner) {
-                onAppForegrounded()
-            }
+        // Lifecycle.addObserver is a main-thread API. The singleton's FIRST getInstance()
+        // can come from a WorkManager thread (cold start via FCM/worker) — registering
+        // from there throws IllegalStateException. Post when off-main; the observer only
+        // feeds isInBackground, so the sub-frame registration delay is harmless.
+        val register = Runnable {
+            ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+                override fun onStart(owner: LifecycleOwner) {
+                    onAppForegrounded()
+                }
 
-            override fun onStop(owner: LifecycleOwner) {
-                onAppBackgrounded()
-            }
-        })
+                override fun onStop(owner: LifecycleOwner) {
+                    onAppBackgrounded()
+                }
+            })
+        }
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            register.run()
+        } else {
+            handler.post(register)
+        }
     }
 
     private fun onAppForegrounded() {
@@ -505,11 +533,25 @@ class BeAroundSDK private constructor() {
     }
 
     /** Configures and activates the SDK. Auto-collects the FCM token if Firebase is present (see [tryAutoCollectFcmToken]). */
+    /**
+     * @param periodicReconciliationEnabled enables the periodic background reconciliation
+     *   (WorkManager layer). Best effort — Android may defer the worker (Doze, battery
+     *   optimizations, OEM policies). Default: true.
+     * @param periodicReconciliationIntervalMillis MINIMUM interval requested between
+     *   eligible executions — a floor, never a guaranteed cadence. Accepted range
+     *   **15 min (WorkManager's hard minimum) … 24 h**; out-of-range values are clamped
+     *   with an ERROR-level log; non-positive values fall back to the 20-min default.
+     * @param periodicScanDurationMillis ceiling of the collection window inside the
+     *   worker, clamped to **3–30 s**. The worker never registers scanners of its own.
+     */
     fun configure(
         businessToken: String,
         scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
         maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
-        technology: String = "android-native"
+        technology: String = "android-native",
+        periodicReconciliationEnabled: Boolean = true,
+        periodicReconciliationIntervalMillis: Long = PeriodicReconciliationDefaults.DEFAULT_INTERVAL_MILLIS,
+        periodicScanDurationMillis: Long = PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS
     ): BeAroundSDK {
         // NEVER-CRASH-THE-HOST: an embedded SDK must not throw from a public entry
         // point — a host wired to an empty BuildConfig field would crash on startup.
@@ -530,7 +572,12 @@ class BeAroundSDK private constructor() {
             appId = appId,
             scanPrecision = scanPrecision,
             maxQueuedPayloads = maxQueuedPayloads,
-            technology = technology
+            technology = technology,
+            periodicReconciliationEnabled = periodicReconciliationEnabled,
+            periodicReconciliationIntervalMillis =
+                PeriodicReconciliationDefaults.sanitizedInterval(periodicReconciliationIntervalMillis),
+            periodicScanDurationMillis =
+                PeriodicReconciliationDefaults.sanitizedScanDuration(periodicScanDurationMillis)
         )
 
         configuration = config
@@ -547,7 +594,18 @@ class BeAroundSDK private constructor() {
         // Update offline batch storage max count
         offlineBatchStorage.maxBatchCount = config.maxQueuedPayloads.value
 
+        // Tenant isolation: pending batches are read back only under the token they were
+        // collected for — a configure() with a DIFFERENT client's token must never drain
+        // the previous client's queue through the new credential.
+        offlineBatchStorage.currentTenantId = tenantFingerprint(businessToken)
+
         SDKConfigStorage.saveConfiguration(context, config)
+
+        // Periodic reconciliation: apply the new settings to the unique periodic work.
+        // ExistingPeriodicWorkPolicy.UPDATE swaps the spec in place (same interval =
+        // no-op churn; new interval = updated schedule) and never interrupts a worker
+        // that is already running. Disabling cancels the pending periodic work.
+        backgroundScheduler.refreshPeriodicReconciliation(config)
 
         // Error telemetry — isolated reporter ("try/catch around the library"). Own
         // try/catch: a telemetry failure must never break configure().
@@ -587,12 +645,22 @@ class BeAroundSDK private constructor() {
         override fun onReceive(ctx: Context?, intent: android.content.Intent?) {
             if (intent?.action != android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED) return
             val state = intent.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, -1)
-            if (state == android.bluetooth.BluetoothAdapter.STATE_ON &&
-                ::beaconManager.isInitialized && wasScanningEnabled()
-            ) {
-                Log.i(TAG, "Bluetooth back ON — re-arming scan clients")
-                beaconManager.onBluetoothRestored()
-                backgroundScanManager.refreshBackgroundScanning()
+            if (!::beaconManager.isInitialized) return
+            when (state) {
+                android.bluetooth.BluetoothAdapter.STATE_OFF -> {
+                    // Drop the metadata scan's local flag now — the stack already
+                    // dropped the client. Without this, STATE_ON's re-arm hit the
+                    // "Already scanning" early-return and the scan stayed a zombie.
+                    bluetoothManager.onBluetoothPoweredOff()
+                }
+                android.bluetooth.BluetoothAdapter.STATE_ON -> {
+                    if (wasScanningEnabled()) {
+                        Log.i(TAG, "Bluetooth back ON — re-arming scan clients")
+                        beaconManager.onBluetoothRestored()
+                        bluetoothManager.onBluetoothRestored()
+                        backgroundScanManager.refreshBackgroundScanning()
+                    }
+                }
             }
         }
     }
@@ -966,38 +1034,6 @@ class BeAroundSDK private constructor() {
         syncBeacons()
     }
 
-    internal fun startQuickScan() {
-        if (!isConfigured) {
-            val savedConfig = SDKConfigStorage.loadConfiguration(context)
-            if (savedConfig != null) {
-                configuration = savedConfig
-                apiClient = APIClient(savedConfig)
-                
-                val buildNumber = try {
-                    context.packageManager.getPackageInfo(context.packageName, 0).versionCode
-                } catch (e: Exception) {
-                    1
-                }
-                sdkInfo = SDKInfo(appId = savedConfig.appId, build = buildNumber, technology = savedConfig.technology)
-            } else {
-                Log.w(TAG, "Cannot start quick scan - SDK not configured")
-                return
-            }
-        }
-        
-        beaconManager.startScanning()
-        beaconManager.startRanging()
-        
-        // Always attempt Bluetooth scanning
-        bluetoothManager.startScanning()
-    }
-
-    internal fun stopQuickScan() {
-        beaconManager.stopScanning()
-        bluetoothManager.stopScanning()
-        syncBeacons()
-    }
-
     internal fun processBroadcastResults(
         scanResults: List<ScanResult>,
         onFlushSettled: (() -> Unit)? = null
@@ -1268,8 +1304,15 @@ class BeAroundSDK private constructor() {
      * still in flight. Returns false only on a failed upload (so workers can retry).
      */
     internal suspend fun syncBeaconsAwait(forceBackground: Boolean = false): Boolean {
-            if (isSyncing) return true
+        val operation = syncMutex.withMutex {
+            activeSync?.takeIf { it.isActive }
+                ?: scope.async { performSyncOnce(forceBackground) }.also { activeSync = it }
+        }
+        return operation.await()
+    }
 
+    /** The actual sync body — reached only via the single-flight gate above. */
+    private suspend fun performSyncOnce(forceBackground: Boolean): Boolean {
             // Register retry piggyback: if the first register failed (e.g. the app launched
             // offline), nothing else would retry it while the process lives — the TTL gate
             // makes this a no-op once registered.
@@ -1287,9 +1330,9 @@ class BeAroundSDK private constructor() {
 
             // Check if we should retry failed batches
             if (shouldRetryFailed) {
-                val allBatches = offlineBatchStorage.loadAllBatches()
-                if (allBatches.isNotEmpty()) {
-                    return syncRetryBatchesInChunks(allBatches, client, info, forceBackground)
+                val allRecords = offlineBatchStorage.loadAllRecords()
+                if (allRecords.isNotEmpty()) {
+                    return syncRetryBatchesInChunks(allRecords, client, info, forceBackground)
                 }
             }
 
@@ -1311,7 +1354,17 @@ class BeAroundSDK private constructor() {
             // Record the scan result (beacons collected from scanning this window).
             DiagnosticsStore.recordScan(beaconsToSend.size)
 
-            isSyncing = true
+            // Persist-BEFORE-send: a durable copy exists before the POST leaves, so a
+            // process death mid-request can no longer lose the batch (the old flow only
+            // saved AFTER a failure callback — death between send and callback = data
+            // gone). On success the exact id is removed; on failure the batch is already
+            // on disk for the retry drain. A lost 2xx response re-sends the batch — the
+            // known at-least-once trade-off until the backend dedupe lands.
+            val persistedBatchId = offlineBatchStorage.saveBatchReturningId(beaconsToSend)
+            if (persistedBatchId == null) {
+                Log.e(TAG, "Persist-before-send failed — batch has no durable copy (upload proceeds)")
+                DiagnosticsStore.recordError("persist-before-send: saveBatch returned null")
+            }
 
             // Notify listener that sync is starting
             dispatchToListener { it.onSyncStarted(beaconsToSend.size) }
@@ -1331,13 +1384,15 @@ class BeAroundSDK private constructor() {
             // so syncOk is settled by the time we return it.
             var syncOk = false
             client.sendBeacons(beaconsToSend, info, userDevice, userProperties) { result ->
-                isSyncing = false
-
                 result.fold(
                     onSuccess = {
                         syncOk = true
                         consecutiveFailures = 0
                         lastFailureTime = null
+
+                        // Delivered — drop the durable copy so the retry drain never
+                        // re-sends this exact batch.
+                        persistedBatchId?.let { offlineBatchStorage.removeBatch(it) }
 
                         // Mark synced beacons and schedule removal after 30s
                         val syncedIds = beaconsToSend.map { it.identifier }
@@ -1393,7 +1448,9 @@ class BeAroundSDK private constructor() {
                     },
                     onFailure = { error ->
                         Log.e(TAG, "Sync failed: ${error.message}")
-                        handleSyncFailure(beaconsToSend, error, isRetry = false)
+                        // alreadyPersisted: persist-before-send wrote the durable copy up
+                        // front — only fall back to saving here when THAT write failed.
+                        handleSyncFailure(beaconsToSend, error, alreadyPersisted = persistedBatchId != null)
 
                         DiagnosticsStore.recordSync(success = false, beaconCount = beaconsToSend.size)
                         DetectionLogStore.append(
@@ -1422,13 +1479,11 @@ class BeAroundSDK private constructor() {
      * Returns false when a chunk failed (callers with an execution window can retry).
      */
     private suspend fun syncRetryBatchesInChunks(
-        allBatches: List<List<Beacon>>,
+        allRecords: List<OfflineBatchStorage.StoredBatchRecord>,
         client: APIClient,
         info: SDKInfo,
         forceBackground: Boolean
     ): Boolean {
-        isSyncing = true
-
         val locationPermission = getLocationPermissionStatus()
         val bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off"
         val isAppInBackground = if (forceBackground) true else isInBackground
@@ -1439,11 +1494,11 @@ class BeAroundSDK private constructor() {
             appInForeground = !isAppInBackground
         )
 
-        val chunks = allBatches.chunked(5)
-        Log.d(TAG, "Retrying ${allBatches.size} batches in ${chunks.size} chunk(s) of up to 5")
+        val chunks = allRecords.chunked(5)
+        Log.d(TAG, "Retrying ${allRecords.size} batches in ${chunks.size} chunk(s) of up to 5")
 
         for ((chunkIndex, chunk) in chunks.withIndex()) {
-            val beaconsInChunk = chunk.flatten()
+            val beaconsInChunk = chunk.flatMap { it.beacons }
             if (beaconsInChunk.isEmpty()) continue
 
             Log.d(TAG, "Sending retry chunk ${chunkIndex + 1}/${chunks.size} — ${beaconsInChunk.size} beacons from ${chunk.size} batch(es)")
@@ -1457,40 +1512,93 @@ class BeAroundSDK private constructor() {
 
             if (chunkResult?.isFailure == true) {
                 val error = chunkResult!!.exceptionOrNull()!!
-                Log.e(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} failed: ${error.message}")
+                val status = (error as? HttpException)?.statusCode
+                val isPermanent = status != null && status in PERMANENT_HTTP_CODES
 
-                consecutiveFailures++
-                lastFailureTime = System.currentTimeMillis()
+                if (!isPermanent) {
+                    // Transient (network, timeout, 408/429/5xx): stop and let the caller's
+                    // backoff retry the WHOLE queue later — nothing is lost.
+                    Log.e(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} failed: ${error.message}")
 
-                DiagnosticsStore.recordSync(success = false, beaconCount = beaconsInChunk.size)
-                DiagnosticsStore.recordError("Retry chunk failed: ${error.message}")
-                DetectionLogStore.append(
-                    context,
-                    type = "Sync falhou",
-                    detail = "${beaconsInChunk.size} beacon(s) · ${error.message ?: "erro desconhecido"}"
-                )
+                    consecutiveFailures++
+                    lastFailureTime = System.currentTimeMillis()
 
-                dispatchToListener {
-                    it.onSyncCompleted(
-                        beaconsInChunk.size,
-                        success = false,
-                        error = error as? Exception ?: Exception(error.message)
+                    DiagnosticsStore.recordSync(success = false, beaconCount = beaconsInChunk.size)
+                    DiagnosticsStore.recordError("Retry chunk failed: ${error.message}")
+                    DetectionLogStore.append(
+                        context,
+                        type = "Sync falhou",
+                        detail = "${beaconsInChunk.size} beacon(s) · ${error.message ?: "erro desconhecido"}"
                     )
-                    it.onError(error as? Exception ?: Exception(error.message))
+
+                    dispatchToListener {
+                        it.onSyncCompleted(
+                            beaconsInChunk.size,
+                            success = false,
+                            error = error as? Exception ?: Exception(error.message)
+                        )
+                        it.onError(error as? Exception ?: Exception(error.message))
+                    }
+
+                    return false
                 }
 
-                isSyncing = false
-                return false
+                // Permanent rejection (400/401/403/404/413/422): the backend is healthy but
+                // SOME batch in this chunk is poison — an identical retry fails identically,
+                // and stopping here let one bad batch block the whole queue for 7 days
+                // (head-of-line blocking; field case: the 3.4.5 422-rejected payloads).
+                // Bisect: send each batch alone, quarantine the rejected one(s), keep going.
+                // NOT counted as consecutiveFailures — the API is reachable.
+                Log.w(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} rejected permanently (HTTP $status) — bisecting ${chunk.size} batch(es)")
+                var delivered = 0
+                for (record in chunk) {
+                    var singleResult: Result<Unit>? = null
+                    client.sendBeacons(record.beacons, info, userDevice, userProperties) { r ->
+                        singleResult = r
+                    }
+                    val singleStatus = (singleResult?.exceptionOrNull() as? HttpException)?.statusCode
+                    when {
+                        singleResult?.isSuccess == true -> {
+                            offlineBatchStorage.removeBatch(record.id)
+                            delivered += record.beacons.size
+                        }
+                        singleStatus != null && singleStatus in PERMANENT_HTTP_CODES -> {
+                            DiagnosticsStore.recordError("Batch quarantined (HTTP $singleStatus): ${record.id}")
+                            DetectionLogStore.append(
+                                context,
+                                type = "Sync falhou",
+                                detail = "batch rejeitado pelo backend (HTTP $singleStatus) — quarentenado"
+                            )
+                            offlineBatchStorage.quarantineBatch(record.id)
+                        }
+                        else -> {
+                            // Network blinked mid-bisect: stop; everything left stays queued.
+                            return false
+                        }
+                    }
+                }
+                if (delivered > 0) {
+                    PushTokenStore.markSent(userDevice.pushToken)
+                    DiagnosticsStore.recordSync(success = true, beaconCount = delivered)
+                    DetectionLogStore.append(
+                        context,
+                        type = "Sync OK",
+                        detail = "$delivered beacon(s) enviados ao ingester (após bisect)"
+                    )
+                    dispatchToListener { it.onSyncCompleted(delivered, success = true, error = null) }
+                }
+                continue
             }
 
-            // Chunk succeeded — remove these batches from storage (oldest first)
+            // Chunk succeeded — remove EXACTLY the batches this chunk carried, by id.
+            // The old positional removal (`repeat(chunk.size) { removeOldestBatch() }`)
+            // deleted whatever happened to be oldest at removal time — a save/expiry
+            // between load and remove could delete an UNSENT batch instead.
             consecutiveFailures = 0
             lastFailureTime = null
-            repeat(chunk.size) {
-                offlineBatchStorage.removeOldestBatch()
-            }
+            val removed = offlineBatchStorage.removeBatches(chunk.map { it.id })
 
-            Log.d(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} succeeded — removed ${chunk.size} batch(es)")
+            Log.d(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} succeeded — removed $removed batch(es)")
 
             PushTokenStore.markSent(userDevice.pushToken)
             DiagnosticsStore.recordSync(success = true, beaconCount = beaconsInChunk.size)
@@ -1502,19 +1610,26 @@ class BeAroundSDK private constructor() {
             dispatchToListener { it.onSyncCompleted(beaconsInChunk.size, success = true, error = null) }
         }
 
-        isSyncing = false
         Log.d(TAG, "All retry chunks completed — storage now has ${offlineBatchStorage.getBatchCount()} batch(es)")
         return true
     }
 
-    private fun handleSyncFailure(beacons: List<Beacon>, error: Throwable, isRetry: Boolean) {
+    /** SHA-256 of the business token, truncated — batch files record it, never the raw token. */
+    private fun tenantFingerprint(businessToken: String): String =
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest(businessToken.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+            .take(16)
+
+    private fun handleSyncFailure(beacons: List<Beacon>, error: Throwable, alreadyPersisted: Boolean) {
         consecutiveFailures++
         lastFailureTime = System.currentTimeMillis()
 
         DiagnosticsStore.recordError("Sync failed: ${error.message}")
 
-        // Save to persistent storage (only if not already a retry)
-        if (!isRetry) {
+        // Persist-before-send already wrote the durable copy for the regular path; this
+        // save is only the fallback for the rare case that write itself failed.
+        if (!alreadyPersisted) {
             val saved = offlineBatchStorage.saveBatch(beacons)
             if (saved) {
                 Log.d(TAG, "Saved failed batch to persistent storage (total: ${offlineBatchStorage.getBatchCount()})")
@@ -1556,7 +1671,9 @@ class BeAroundSDK private constructor() {
      * Used by WorkManager to decide if sync is needed
      */
     internal fun hasPendingBeacons(): Boolean {
-        val hasCollected = beaconLock.withLock { collectedBeacons.isNotEmpty() }
+        // Only UNSYNCED beacons count — a map full of alreadySynced entries awaiting
+        // their 30s display-cleanup used to keep scheduling sync workers for nothing.
+        val hasCollected = beaconLock.withLock { collectedBeacons.values.any { !it.alreadySynced } }
         val hasStored = offlineBatchStorage.getBatchCount() > 0
         return hasCollected || hasStored
     }
@@ -1573,7 +1690,7 @@ class BeAroundSDK private constructor() {
      * Useful for debugging and retry queue visualization
      */
     val pendingBatches: List<List<Beacon>>
-        get() = offlineBatchStorage.loadAllBatches()
+        get() = offlineBatchStorage.loadAllRecords().map { it.beacons }
 
     /**
      * Returns a point-in-time snapshot of SDK state for diagnostics/support.

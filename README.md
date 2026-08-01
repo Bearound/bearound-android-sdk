@@ -659,6 +659,54 @@ val batches: List<List<Beacon>> = sdk.pendingBatches
 Beacon metadata (battery, temperature, firmware, movements) arrives in the same `0xBEAD`
 service-data payload and is exposed via `Beacon.metadata`. No configuration needed.
 
+### Periodic reconciliation (WorkManager)
+
+A best-effort safety net: a unique `PeriodicWorkRequest` that periodically self-heals the
+background scan registration, waits a short collection window for the continuous scanners
+to deliver, and drains pending data through the existing sync pipeline. The
+**PendingIntent scan remains the primary detection mechanism** — this layer only
+complements it.
+
+```kotlin
+sdk.configure(
+    businessToken = "your-business-token",
+    periodicReconciliationEnabled = true,                     // default: true
+    periodicReconciliationIntervalMillis = 30L * 60L * 1000L, // default: 20 min
+    periodicScanDurationMillis = 12_000L                      // default: 12 s
+)
+```
+
+To disable the layer (the pending periodic work is cancelled):
+
+```kotlin
+sdk.configure(
+    businessToken = "your-business-token",
+    periodicReconciliationEnabled = false
+)
+```
+
+**What the interval means — read carefully.** The value is only the *minimum* interval
+between eligible executions. Android alone decides the actual timing: Doze, battery
+optimizations, WorkManager flex windows and OEM policies can all delay the worker —
+sometimes by a lot. Force-stop suspends it entirely until the app is launched again.
+Never read it as "runs every N minutes".
+
+**Guard rails.** Accepted interval range is **15 minutes (WorkManager's hard minimum for
+periodic work) to 24 hours**; the scan window accepts **3–30 seconds**. Out-of-range
+values are clamped with an ERROR-level logcat warning (never silently, never a crash —
+note that WorkManager itself silently raises sub-15-min intervals, so the SDK warns
+where the platform would stay quiet). Non-positive values fall back to the defaults.
+
+**What one execution does.** Honoring the host's intent and the device state: after
+`stopScanning()` it only drains pending data (never touches scan state); in Battery
+Saver or serious/critical thermal state it skips the collection window; otherwise it
+re-registers a dead PendingIntent client if needed (one budget-guarded start), waits up
+to the configured window for the continuous scanners to deliver (data already present
+short-circuits immediately), and syncs through the normal single-flight pipeline. The
+worker never registers scanners, PendingIntents, or foreground services of its own, and
+runs without any network constraint — offline it persists and completes, leaving
+delivery to the retry pipeline.
+
 ## API Reference
 
 ### BeAroundSDK
@@ -675,7 +723,10 @@ sdk.configure(
     businessToken: String,
     scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
     maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
-    technology: String = "android-native" // payload tag; wrappers override it
+    technology: String = "android-native", // payload tag; wrappers override it
+    periodicReconciliationEnabled: Boolean = true,
+    periodicReconciliationIntervalMillis: Long = 20 * 60 * 1000L, // 15 min–24 h
+    periodicScanDurationMillis: Long = 12_000L                    // 3–30 s
 )
 
 // Scanning

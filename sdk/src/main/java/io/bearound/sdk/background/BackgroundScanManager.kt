@@ -26,10 +26,21 @@ class BackgroundScanManager(private val context: Context) {
         private const val TAG = "BeAroundSDK-BgScan"
     }
     
+    /**
+     * Set ONLY after the stack ACCEPTED the registration (startScan returned 0).
+     * The old flow assigned it before the budget check and before startScan — a denied
+     * quota then left the field non-null, [isRegistered] lied `true`, and the 35s retry
+     * (gated on `pendingIntent == null`) never re-registered anything: the only
+     * out-of-region detector stayed dead until the 15-min watchdog.
+     */
     private var pendingIntent: PendingIntent? = null
+
+    /** Host intent: true between enable and disable, regardless of registration success. */
+    private var desiredEnabled = false
+
     private var bluetoothLeScanner: BluetoothLeScanner? = null
     private val retryHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private var retryScheduled = false
+    private var pendingRetry: Runnable? = null
 
     /** True while the low-power PendingIntent background scan is registered. For diagnostics. */
     val isRegistered: Boolean
@@ -41,6 +52,7 @@ class BackgroundScanManager(private val context: Context) {
      */
     @SuppressLint("MissingPermission")
     fun enableBackgroundScanning() {
+        desiredEnabled = true
         // On Android 12+ the PendingIntent scan requires BLUETOOTH_SCAN. Without it the OS
         // throws SecurityException (caught, but it floods the log on every retry). This path
         // is reached ungated via restartScanningFromBackground, so check here too — skip
@@ -59,10 +71,14 @@ class BackgroundScanManager(private val context: Context) {
     }
 
     /**
-     * Disable background scanning
+     * Disable background scanning. Also drops the intent flag and cancels any delayed
+     * retry, so a registration deferred before the disable can't fire after it.
      */
     @SuppressLint("MissingPermission")
     fun disableBackgroundScanning() {
+        desiredEnabled = false
+        pendingRetry?.let { retryHandler.removeCallbacks(it) }
+        pendingRetry = null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             disableBluetoothScanBroadcast()
         }
@@ -95,13 +111,15 @@ class BackgroundScanManager(private val context: Context) {
                 PendingIntent.FLAG_UPDATE_CURRENT
             }
 
-            pendingIntent = PendingIntent.getBroadcast(
+            // Created locally; published to the field ONLY after the stack accepts the
+            // scan — see [pendingIntent] for why premature assignment broke the retry.
+            val candidate = PendingIntent.getBroadcast(
                 context,
                 0,
                 intent,
                 flags
             )
-            
+
             val filters = listOf(
                 ScanFilter.Builder()
                     .setManufacturerData(
@@ -140,29 +158,32 @@ class BackgroundScanManager(private val context: Context) {
             if (!ScanStartBudget.tryAcquire("pending-intent")) {
                 // The PendingIntent scan is the ONLY out-of-region detector — waiting for the
                 // 15-min watchdog after a startup-burst deferral is too long. Retry shortly,
-                // once the 30 s budget window has rolled over.
+                // once the 30 s budget window has rolled over. The field stays null, so the
+                // retry's `pendingIntent == null` gate actually fires (the old flow had
+                // already assigned it, turning every deferral into a permanent no-op).
+                candidate.cancel()
                 scheduleRetry()
                 return
             }
 
-            pendingIntent?.let { pi ->
-                // For PendingIntent scans the SCAN_FAILED_* code comes in the RETURN VALUE —
-                // there is no callback. Ignoring it makes a failed registration (e.g. over
-                // the scan-start quota during a fg↔bg flip) permanently invisible.
-                val result = bluetoothLeScanner?.startScan(filters, settings, pi) ?: -1
-                if (result != 0) {
-                    Log.w(TAG, "PendingIntent scan registration FAILED (code $result) — retrying shortly")
-                    if (result == 6 /* SCAN_FAILED_SCANNING_TOO_FREQUENTLY */) ScanStartBudget.freeze()
-                    pi.cancel()
-                    pendingIntent = null
-                    scheduleRetry()
-                    return
-                }
+            // For PendingIntent scans the SCAN_FAILED_* code comes in the RETURN VALUE —
+            // there is no callback. Ignoring it makes a failed registration (e.g. over
+            // the scan-start quota during a fg↔bg flip) permanently invisible.
+            val result = bluetoothLeScanner?.startScan(filters, settings, candidate) ?: -1
+            if (result != 0) {
+                Log.w(TAG, "PendingIntent scan registration FAILED (code $result) — retrying shortly")
+                if (result == 6 /* SCAN_FAILED_SCANNING_TOO_FREQUENTLY */) ScanStartBudget.freeze()
+                candidate.cancel()
+                scheduleRetry()
+                return
             }
 
+            pendingIntent = candidate
             Log.d(TAG, "Bluetooth Scan Broadcast registered")
 
         } catch (e: Exception) {
+            // No lying state on an exception mid-setup: the stack did NOT accept a scan.
+            pendingIntent = null
             Log.e(TAG, "Failed to setup background scanning: ${e.message}")
             io.bearound.sdk.telemetry.ErrorReporter.report(e, "BackgroundScanManager.enableBluetoothScanBroadcast")
         }
@@ -170,15 +191,16 @@ class BackgroundScanManager(private val context: Context) {
 
     /** Single-flight delayed retry for a budget-deferred (or quota-failed) registration. */
     private fun scheduleRetry(delayMs: Long = 35_000L) {
-        if (retryScheduled) return
-        retryScheduled = true
-        retryHandler.postDelayed({
-            retryScheduled = false
-            if (pendingIntent == null) {
+        if (pendingRetry != null) return
+        val retry = Runnable {
+            pendingRetry = null
+            if (desiredEnabled && pendingIntent == null) {
                 Log.d(TAG, "Retrying deferred PendingIntent scan registration")
                 enableBackgroundScanning()
             }
-        }, delayMs)
+        }
+        pendingRetry = retry
+        retryHandler.postDelayed(retry, delayMs)
     }
 
     /**

@@ -468,11 +468,6 @@ fun ScanInfoCard(state: BeAroundScanState, viewModel: BeaconViewModel) {
                 valueColor = MaterialTheme.colorScheme.primary
             )
             InfoRow(label = "Intervalo de sync:", value = "${state.currentSyncInterval}s")
-            InfoRow(label = "Duração do scan:", value = "${viewModel.scanDuration}s")
-
-            if (viewModel.pauseDuration > 0) {
-                InfoRow(label = "Tempo de pausa:", value = "${viewModel.pauseDuration}s")
-            }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 

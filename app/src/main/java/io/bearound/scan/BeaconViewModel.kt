@@ -193,12 +193,6 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         _state.value = _state.value.copy(beacons = sorted)
     }
 
-    val scanDuration: Int
-        get() = (sdk.currentScanDuration ?: 0L).toInt() / 1000
-
-    val pauseDuration: Int
-        get() = (sdk.currentPauseDuration ?: 0L).toInt() / 1000
-
     val scanMode: String
         get() = when (sdk.currentScanPrecision) {
             ScanPrecision.HIGH -> "Contínuo (HIGH)"

@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import io.bearound.sdk.BeAroundSDK
+import io.bearound.sdk.background.ImmediateSyncWorker
 
 /**
  * AlarmManager BroadcastReceiver that acts as a watchdog
@@ -69,14 +70,22 @@ class ScanWatchdogReceiver : BroadcastReceiver() {
                 sdk.refreshBackgroundScanRegistration()
             }
 
-            // Sync any pending beacons
+            // Sync any pending beacons. The receiver has no execution window of its own
+            // (the process is freezable the moment onReceive returns, and the old direct
+            // performBackgroundSync() was fire-and-forget into that void) — hand the
+            // upload to the expedited worker, which owns a WorkManager window + wakelock.
             if (sdk.hasPendingBeacons()) {
-                Log.d(TAG, "Watchdog: Syncing pending beacons")
-                sdk.performBackgroundSync()
+                Log.d(TAG, "Watchdog: pending beacons — enqueuing ImmediateSyncWorker")
+                ImmediateSyncWorker.enqueue(context.applicationContext)
             }
-            
-            // Reschedule next watchdog alarm
-            BackgroundScheduler.getInstance(context.applicationContext).scheduleWatchdogAlarm()
+
+            // Reschedule ONLY while scanning is still wanted: after stopScanning() the
+            // old unconditional reschedule kept the alarm waking the process forever.
+            if (shouldBeScanning) {
+                BackgroundScheduler.getInstance(context.applicationContext).scheduleWatchdogAlarm()
+            } else {
+                Log.d(TAG, "Watchdog: scanning disabled — not rescheduling")
+            }
             
         } catch (e: Exception) {
             Log.e(TAG, "Watchdog error: ${e.message}")

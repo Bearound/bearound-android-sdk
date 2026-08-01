@@ -43,7 +43,21 @@ class OfflineBatchStorage(private val context: Context) {
     private data class StoredBatch(
         @SerializedName("id") val id: String,
         @SerializedName("timestamp") val timestamp: Long,
+        // Fingerprint of the business token the batch was collected under. Batches from
+        // a DIFFERENT tenant are never sent with the current credential (multi-tenant
+        // isolation); null = written before this field existed → treated as current.
+        @SerializedName("tenantId") val tenantId: String? = null,
         @SerializedName("beacons") val beacons: List<StoredBeacon>
+    )
+
+    /**
+     * Public read model: the batch id travels with the beacons so callers remove EXACTLY
+     * the batches a successful upload represents — never "the N oldest at removal time",
+     * which drifts when saves/cleanup run between load and remove.
+     */
+    data class StoredBatchRecord(
+        val id: String,
+        val beacons: List<Beacon>
     )
     
     private data class StoredBeacon(
@@ -177,9 +191,17 @@ class OfflineBatchStorage(private val context: Context) {
         .create()
     
     private val lock = ReentrantLock()
-    
+
     /** Maximum number of batches to store (default from MaxQueuedPayloads.medium) */
     var maxBatchCount: Int = MaxQueuedPayloads.MEDIUM.value
+
+    /**
+     * Fingerprint of the currently-configured business token (set by configure()).
+     * Reads only return batches written under this tenant (or legacy batches with no
+     * tenant recorded); foreign-tenant batches stay on disk until the 7-day expiry so
+     * data collected for client A is never delivered with client B's credential.
+     */
+    var currentTenantId: String? = null
     
     /** Storage directory */
     private val storageDirectory: File by lazy {
@@ -220,142 +242,149 @@ class OfflineBatchStorage(private val context: Context) {
     }
     
     /**
-     * Saves a batch of beacons to persistent storage
-     * @param beacons Array of beacons to store
+     * Saves a batch of beacons to persistent storage.
      * @return true if saved successfully
      */
-    fun saveBatch(beacons: List<Beacon>): Boolean {
+    fun saveBatch(beacons: List<Beacon>): Boolean = saveBatchReturningId(beacons) != null
+
+    /**
+     * Saves a batch and returns its id (persist-before-send: the caller uploads the
+     * payload AND, on success, removes exactly this id). Null when the write failed.
+     */
+    fun saveBatchReturningId(beacons: List<Beacon>): String? {
         if (beacons.isEmpty()) {
             Log.w(TAG, "Cannot save empty batch")
-            return false
+            return null
         }
-        
+
         return lock.withLock {
             try {
                 val batchId = UUID.randomUUID().toString()
                 val timestamp = System.currentTimeMillis()
-                
+
                 val storedBeacons = beacons.map { StoredBeacon.fromBeacon(it) }
                 val batch = StoredBatch(
                     id = batchId,
                     timestamp = timestamp,
+                    tenantId = currentTenantId,
                     beacons = storedBeacons
                 )
-                
+
                 // Filename format: timestamp_uuid.json for sorting
                 val filename = "${timestamp}_${batchId}.json"
-                val file = File(storageDirectory, filename)
-                
                 val json = gson.toJson(batch)
-                file.writeText(json)
-                
+
+                // Atomic write: tmp + fsync + rename (same directory = same filesystem).
+                // A process death mid-write leaves a .tmp the readers never pick up,
+                // instead of a half-written .json that would be silently dropped as
+                // corrupted on the next read.
+                val tempFile = File(storageDirectory, "$filename.tmp")
+                val finalFile = File(storageDirectory, filename)
+                tempFile.outputStream().use { output ->
+                    output.write(json.toByteArray(Charsets.UTF_8))
+                    output.flush()
+                    output.fd.sync()
+                }
+                if (!tempFile.renameTo(finalFile)) {
+                    tempFile.delete()
+                    Log.e(TAG, "Failed to rename temp batch file $filename")
+                    return@withLock null
+                }
+
                 Log.d(TAG, "Saved batch with ${beacons.size} beacons to $filename")
-                
+
                 // Enforce max batch count (remove oldest if exceeded)
                 enforceMaxBatchCount()
-                
-                true
+
+                batchId
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to save batch: ${e.message}", e)
-                false
-            }
-        }
-    }
-    
-    /**
-     * Loads the oldest batch from storage (FIFO)
-     * @return List of beacons or null if no batches available
-     */
-    fun loadOldestBatch(): List<Beacon>? {
-        return lock.withLock {
-            try {
-                val files = storageDirectory.listFiles()
-                    ?.filter { it.extension == "json" }
-                    ?.sortedBy { it.name }
-                
-                val oldestFile = files?.firstOrNull() ?: return@withLock null
-                
-                val json = oldestFile.readText()
-                val batch = gson.fromJson(json, StoredBatch::class.java)
-                
-                val beacons = batch.beacons.map { it.toBeacon() }
-                Log.d(TAG, "Loaded oldest batch with ${beacons.size} beacons from ${oldestFile.name}")
-                
-                beacons
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to load oldest batch: ${e.message}", e)
-                // Try to remove corrupted file
-                try {
-                    val files = storageDirectory.listFiles()
-                        ?.filter { it.extension == "json" }
-                        ?.sortedBy { it.name }
-                    files?.firstOrNull()?.delete()
-                } catch (cleanupError: Exception) {
-                    Log.e(TAG, "Failed to cleanup corrupted batch: ${cleanupError.message}")
-                }
                 null
             }
         }
     }
-    
+
     /**
-     * Removes the oldest batch from storage (call after successful sync)
-     * @return true if removed successfully
+     * Loads up to [count] oldest batches (FIFO) for the CURRENT tenant, with their ids.
+     * Corrupted files are quarantined (renamed to .corrupt — kept for diagnosis, swept
+     * by the 7-day expiry) instead of silently deleted.
      */
-    fun removeOldestBatch(): Boolean {
-        return lock.withLock {
-            try {
-                val files = storageDirectory.listFiles()
-                    ?.filter { it.extension == "json" }
-                    ?.sortedBy { it.name }
-                
-                val oldestFile = files?.firstOrNull() ?: return@withLock false
-                
-                val deleted = oldestFile.delete()
-                if (deleted) {
-                    Log.d(TAG, "Removed batch file: ${oldestFile.name}")
-                }
-                deleted
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to remove oldest batch: ${e.message}", e)
-                false
-            }
-        }
-    }
-    
-    /**
-     * Loads all batches from storage (for migration or debugging)
-     * @return List of beacon lists, ordered oldest first
-     */
-    fun loadAllBatches(): List<List<Beacon>> {
+    fun loadOldestRecords(count: Int = Int.MAX_VALUE): List<StoredBatchRecord> {
         return lock.withLock {
             try {
                 val files = storageDirectory.listFiles()
                     ?.filter { it.extension == "json" }
                     ?.sortedBy { it.name }
                     ?: return@withLock emptyList()
-                
-                val allBatches = mutableListOf<List<Beacon>>()
-                
+
+                val records = mutableListOf<StoredBatchRecord>()
                 for (file in files) {
+                    if (records.size >= count) break
                     try {
-                        val json = file.readText()
-                        val batch = gson.fromJson(json, StoredBatch::class.java)
-                        val beacons = batch.beacons.map { it.toBeacon() }
-                        allBatches.add(beacons)
+                        val batch = gson.fromJson(file.readText(), StoredBatch::class.java)
+                        // Tenant isolation: skip batches written under a different token.
+                        // (null tenant = legacy file → treated as current.)
+                        if (batch.tenantId != null && currentTenantId != null &&
+                            batch.tenantId != currentTenantId
+                        ) {
+                            continue
+                        }
+                        records.add(
+                            StoredBatchRecord(
+                                id = batch.id,
+                                beacons = batch.beacons.map { it.toBeacon() }
+                            )
+                        )
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to load batch ${file.name}: ${e.message}")
-                        // Remove corrupted file
-                        file.delete()
+                        Log.e(TAG, "Corrupted batch ${file.name} — quarantining: ${e.message}")
+                        file.renameTo(File(storageDirectory, "${file.nameWithoutExtension}.corrupt"))
                     }
                 }
-                
-                Log.d(TAG, "Loaded ${allBatches.size} batches from storage")
-                allBatches
+                records
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to load all batches: ${e.message}", e)
+                Log.e(TAG, "Failed to load batch records: ${e.message}", e)
                 emptyList()
             }
+        }
+    }
+
+    /** All pending batches for the current tenant, oldest first. */
+    fun loadAllRecords(): List<StoredBatchRecord> = loadOldestRecords()
+
+    /** Removes the batch with exactly this id. */
+    fun removeBatch(id: String): Boolean = lock.withLock {
+        try {
+            val file = storageDirectory.listFiles()
+                ?.firstOrNull { it.extension == "json" && it.nameWithoutExtension.endsWith(id) }
+                ?: return@withLock false
+            val deleted = file.delete()
+            if (deleted) Log.d(TAG, "Removed batch file: ${file.name}")
+            deleted
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to remove batch $id: ${e.message}", e)
+            false
+        }
+    }
+
+    /** Removes exactly these batch ids; returns how many were deleted. */
+    fun removeBatches(ids: List<String>): Int = ids.count { removeBatch(it) }
+
+    /**
+     * Takes a backend-REJECTED batch out of the send queue (renamed to .rejected — kept
+     * for diagnosis, swept by the 7-day expiry). Without this, one poison batch at the
+     * head of the FIFO blocked every batch behind it until expiry.
+     */
+    fun quarantineBatch(id: String): Boolean = lock.withLock {
+        try {
+            val file = storageDirectory.listFiles()
+                ?.firstOrNull { it.extension == "json" && it.nameWithoutExtension.endsWith(id) }
+                ?: return@withLock false
+            val moved = file.renameTo(File(storageDirectory, "${file.nameWithoutExtension}.rejected"))
+            if (moved) Log.w(TAG, "Quarantined rejected batch: ${file.name}")
+            moved
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to quarantine batch $id: ${e.message}", e)
+            false
         }
     }
     
@@ -390,8 +419,14 @@ class OfflineBatchStorage(private val context: Context) {
     
     private fun cleanupExpiredBatches() {
         try {
+            // .json = pending; .corrupt = unreadable; .rejected = backend-refused;
+            // .tmp = interrupted atomic write. All carry the timestamp in the filename
+            // and all expire on the same 7-day clock.
             val files = storageDirectory.listFiles()
-                ?.filter { it.extension == "json" }
+                ?.filter {
+                    it.extension == "json" || it.extension == "corrupt" ||
+                        it.extension == "rejected" || it.extension == "tmp"
+                }
                 ?: return
             
             val now = System.currentTimeMillis()
