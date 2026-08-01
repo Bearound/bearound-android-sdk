@@ -245,6 +245,55 @@ see the [AI setup prompt](./AI-AGENT-SETUP.md), step 2).
 | `POST_NOTIFICATIONS` | Foreground-service notification on Android 13+ |
 | `RECEIVE_BOOT_COMPLETED` | Re-arm scanning after reboot |
 | `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE` | Optional foreground service (see [Google Play review](#google-play-review--what-the-manifest-merge-means-for-your-app)) |
+| `ACCESS_WIFI_STATE` | Read the connected access point and the system's cached scan results (install-time, no prompt) |
+| `NEARBY_WIFI_DEVICES` | Alternative to location for reading neighbouring access points on Android 13+ — see [Wi-Fi observations](#wi-fi-observations) |
+
+`CHANGE_WIFI_STATE` is **not** declared: the SDK reads the system's cached scan results and
+never triggers a scan of its own.
+
+### Wi-Fi observations
+
+Alongside each beacon sighting the SDK reports the **access points visible at that moment**.
+The purpose is positioning coverage: an access point seen repeatedly next to a known beacon
+gets a position of its own, and from then on it can place a device even where no beacon
+reaches.
+
+The identity that matters is `apId` — a one-way SHA-256 hash of the access point's hardware
+address, canonicalised so that the same router produces the same identifier on Android and
+on iOS.
+
+| Field | Meaning |
+|---|---|
+| `apId` | Hashed access point identity (16 hex chars) |
+| `rssi` | Signal strength in dBm |
+| `connected` | Whether this is the access point the device is joined to |
+| `frequencyMhz` | Channel frequency |
+| `timestamp` | When the access point was seen (not when the payload was sent) |
+| `ssid` | Network name — **temporary**, see below |
+
+> **`ssid` and `network.wifiSSID` are transitional.** They ride along so the collection can
+> be validated against real networks while the access-point map is being built. Nothing
+> downstream consumes them — `apId` is the identity. They are marked for removal in the
+> source, so dropping them later is a single grep.
+
+Each payload also carries the device's **last known** location as context — the SDK never
+requests an active fix, so there is no extra GPS wake-up and no battery cost.
+
+**It is entirely opt-in, and the SDK never prompts.** Collection happens only if your app
+already holds the permissions:
+
+| Your app grants | What the SDK reports |
+|---|---|
+| Nothing | No `wifis[]` at all — payload identical to before |
+| `ACCESS_WIFI_STATE` only | The connected access point |
+| Location **or** `NEARBY_WIFI_DEVICES` (13+) | The connected access point **and** its neighbours |
+
+Two privacy behaviours are built in: networks whose name ends in `_nomap` (the opt-out
+convention honoured by Google and Mozilla) are dropped on the device, and placeholder
+addresses that Android returns when a permission is missing are discarded rather than hashed.
+
+> **Migration note:** `network.apId` joins `network.wifiSSID` and is the field consumers
+> should read — a stable identity that survives the SSID being dropped later.
 
 ### Permission model: `neverForLocation` and location
 

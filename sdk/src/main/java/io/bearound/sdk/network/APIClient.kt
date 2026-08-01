@@ -232,6 +232,40 @@ class APIClient(private val configuration: SDKConfiguration) {
         // Device info
         payload.put("device", buildDevicePayload(userDevice))
 
+        // Wi-Fi observations and location ride at the TOP of the envelope, beside
+        // `beacons`, because they describe the sighting — not the device. Both are
+        // omitted entirely when unavailable, so a host without the permissions sends
+        // exactly the payload it sends today.
+        if (userDevice.wifis.isNotEmpty()) {
+            val wifisArray = JSONArray()
+            userDevice.wifis.forEach { wifi ->
+                wifisArray.put(JSONObject().apply {
+                    put("apId", wifi.apId)
+                    put("connected", wifi.connected)
+                    put("timestamp", wifi.timestamp)
+                    wifi.rssi?.let { put("rssi", it) }
+                    wifi.frequencyMhz?.let { put("frequencyMhz", it) }
+                    // Temporary, for validating the collection — see WifiObservation.ssid.
+                    wifi.ssid?.let { put("ssid", it) }
+                })
+            }
+            payload.put("wifis", wifisArray)
+        }
+
+        userDevice.location?.let { location ->
+            payload.put("location", JSONObject().apply {
+                put("latitude", location.latitude)
+                put("longitude", location.longitude)
+                // Timestamp OF THE FIX, not of the payload — a fix can be minutes old
+                // and the backend has to be able to tell.
+                put("timestamp", location.timestamp)
+                put("source", location.source)
+                location.accuracy?.let { put("accuracy", it) }
+                location.altitude?.let { put("altitude", it) }
+                location.isMocked?.let { put("isMocked", it) }
+            })
+        }
+
         // User properties (if any)
         if (userProperties?.hasProperties == true) {
             val userPropsObj = JSONObject(userProperties.toDictionary())
@@ -273,10 +307,11 @@ class APIClient(private val configuration: SDKConfiguration) {
         }
         payload.put("battery", battery)
 
-        // Network
         val network = JSONObject().apply {
             put("type", device.networkType)
             device.cellularGeneration?.let { put("cellularGeneration", it) }
+            device.apId?.let { put("apId", it) }
+            // Temporary, for validating the collection — see WifiObservation.ssid.
             device.wifiSSID?.let { put("wifiSSID", it) }
         }
         payload.put("network", network)

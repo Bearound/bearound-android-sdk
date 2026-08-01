@@ -34,9 +34,29 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- Wi-Fi state (normal permission, granted at install, no user prompt) — required by
-         WifiManager for the wifiSSID telemetry field; without it the SSID is always null
-         in host apps that only integrate the SDK. -->
+         WifiManager to read the connected access point and the system's cached scan
+         results. Without it the SDK reports no Wi-Fi observations at all. -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <!-- Nearby Wi-Fi devices (Android 13+). Reading the neighbouring access points needs
+         ACCESS_FINE_LOCATION on every version OR this permission on API 33+; either one
+         is enough, and the SDK checks both at runtime. Declared WITHOUT neverForLocation
+         on purpose: the observations exist precisely to be associated with a position,
+         so asserting otherwise would be false.
+         NOT a hard requirement — a host that never grants it simply sends no `wifis[]`,
+         and every other SDK feature behaves exactly as before. The SDK never prompts. -->
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        tools:targetApi="tiramisu" />
+
+    <!-- NO CHANGE_WIFI_STATE: the SDK reads the system's cached scan results and never
+         calls startScan(). Android throttles scans to 4 per 2 minutes anyway, and every
+         other app on the phone already refreshes that cache — requesting our own would
+         cost battery and buy nothing. -->
+
+    <!-- Wi-Fi hardware, required="false" for the same reason as Bluetooth below: this
+         manifest merges into the host's, and a required feature would hide client apps
+         from Play Store devices that lack it. -->
+    <uses-feature android:name="android.hardware.wifi" android:required="false" />
 
     <!-- Notifications permission (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
