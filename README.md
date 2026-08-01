@@ -258,9 +258,9 @@ The purpose is positioning coverage: an access point seen repeatedly next to a k
 gets a position of its own, and from then on it can place a device even where no beacon
 reaches.
 
-**Nothing here identifies a network.** The SDK never sends the network name (SSID). What
-travels is `apId` — a one-way SHA-256 hash of the access point's hardware address,
-canonicalised so that the same router produces the same identifier on Android and on iOS.
+The identity that matters is `apId` — a one-way SHA-256 hash of the access point's hardware
+address, canonicalised so that the same router produces the same identifier on Android and
+on iOS.
 
 | Field | Meaning |
 |---|---|
@@ -269,6 +269,12 @@ canonicalised so that the same router produces the same identifier on Android an
 | `connected` | Whether this is the access point the device is joined to |
 | `frequencyMhz` | Channel frequency |
 | `timestamp` | When the access point was seen (not when the payload was sent) |
+| `ssid` | Network name — **temporary**, see below |
+
+> **`ssid` and `network.wifiSSID` are transitional.** They ride along so the collection can
+> be validated against real networks while the access-point map is being built. Nothing
+> downstream consumes them — `apId` is the identity. They are marked for removal in the
+> source, so dropping them later is a single grep.
 
 Each payload also carries the device's **last known** location as context — the SDK never
 requests an active fix, so there is no extra GPS wake-up and no battery cost.
@@ -286,9 +292,8 @@ Two privacy behaviours are built in: networks whose name ends in `_nomap` (the o
 convention honoured by Google and Mozilla) are dropped on the device, and placeholder
 addresses that Android returns when a permission is missing are discarded rather than hashed.
 
-> **Migration note:** the old `network.wifiSSID` field, which carried the network name in
-> clear text, is replaced by `network.apId`. Nothing downstream needed the name — only a
-> stable identity.
+> **Migration note:** `network.apId` joins `network.wifiSSID` and is the field consumers
+> should read — a stable identity that survives the SSID being dropped later.
 
 ### Permission model: `neverForLocation` and location
 

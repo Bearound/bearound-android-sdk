@@ -27,11 +27,16 @@ data class UserDevice(
     val coldStart: Boolean,
     val lowPowerMode: Boolean?,
     val locationAccuracy: String?,
-    /**
-     * Hash of the connected access point's BSSID — replaces the raw `wifiSSID`, which
-     * leaked the network name (and therefore the household) in clear text.
-     */
+    /** Hash of the connected access point's BSSID — the identity the backend uses. */
     val apId: String?,
+    /**
+     * Name of the connected network.
+     *
+     * **Temporary — kept for validating the collection while the access-point map is being
+     * built.** [apId] is the field that matters; remove this one (and `WifiObservation.ssid`)
+     * once the collection is trusted.
+     */
+    val wifiSSID: String?,
     val connectionMetered: Boolean?,
     val connectionExpensive: Boolean?,
     val os: String = "Android",

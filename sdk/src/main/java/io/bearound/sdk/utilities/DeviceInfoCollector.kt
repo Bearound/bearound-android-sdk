@@ -74,9 +74,9 @@ class DeviceInfoCollector(
             coldStart = firstPayloadOfProcess.getAndSet(false),
             lowPowerMode = isLowPowerMode(),
             locationAccuracy = getLocationAccuracy(locationPermission),
-            // Replaces the old raw SSID: the network name identified the household in
-            // clear text, and nothing downstream needed the name — only a stable identity.
             apId = wifis.firstOrNull { it.connected }?.apId,
+            // Temporary companion to apId while the collection is being validated.
+            wifiSSID = wifis.firstOrNull { it.connected }?.ssid,
             connectionMetered = isConnectionMetered(),
             connectionExpensive = isConnectionExpensive(),
             deviceName = getDeviceName(),

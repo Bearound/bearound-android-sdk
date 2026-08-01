@@ -103,6 +103,8 @@ internal class WifiCollector(private val context: Context) {
             info!!.networkId == -1 && info.bssid == null -> null
             else -> WifiObservation(
                 apId = apId,
+                // Temporary, for validating the collection — see WifiObservation.ssid.
+                ssid = info.ssid?.removeSurrounding("\"")?.takeIf { it != "<unknown ssid>" },
                 rssi = info.rssi.takeIf { it in -100..0 },
                 connected = true,
                 frequencyMhz = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -129,6 +131,8 @@ internal class WifiCollector(private val context: Context) {
                 if (ageMs != null && ageMs > MAX_RESULT_AGE_MS) return@mapNotNull null
                 WifiObservation(
                     apId = apId,
+                    // Temporary, for validating the collection — see WifiObservation.ssid.
+                    ssid = result.SSID?.takeIf { it.isNotBlank() },
                     rssi = result.level.takeIf { it in -100..0 },
                     connected = false,
                     frequencyMhz = result.frequency.takeIf { it > 0 },

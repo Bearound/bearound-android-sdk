@@ -245,6 +245,8 @@ class APIClient(private val configuration: SDKConfiguration) {
                     put("timestamp", wifi.timestamp)
                     wifi.rssi?.let { put("rssi", it) }
                     wifi.frequencyMhz?.let { put("frequencyMhz", it) }
+                    // Temporary, for validating the collection — see WifiObservation.ssid.
+                    wifi.ssid?.let { put("ssid", it) }
                 })
             }
             payload.put("wifis", wifisArray)
@@ -305,11 +307,12 @@ class APIClient(private val configuration: SDKConfiguration) {
         }
         payload.put("battery", battery)
 
-        // Network — carries the hashed access point, never the network name.
         val network = JSONObject().apply {
             put("type", device.networkType)
             device.cellularGeneration?.let { put("cellularGeneration", it) }
             device.apId?.let { put("apId", it) }
+            // Temporary, for validating the collection — see WifiObservation.ssid.
+            device.wifiSSID?.let { put("wifiSSID", it) }
         }
         payload.put("network", network)
 
