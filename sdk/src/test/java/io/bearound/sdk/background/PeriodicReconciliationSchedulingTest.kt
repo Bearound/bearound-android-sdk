@@ -48,11 +48,9 @@ class PeriodicReconciliationSchedulingTest {
         // The scheduler is a process-wide singleton with a lazy WorkManager handle —
         // in Robolectric each test gets a fresh Application (and a fresh test
         // WorkManager), so the singleton from the previous test would enqueue into an
-        // orphaned instance. Reset it so getInstance() rebinds to this test's context.
-        BackgroundScheduler::class.java.getDeclaredField("instance").apply {
-            isAccessible = true
-            set(null, null)
-        }
+        // orphaned instance. (Reflection on the companion field broke on the RELEASE
+        // unit-test variant — hence the explicit test hook.)
+        BackgroundScheduler._resetForTesting()
         scheduler = BackgroundScheduler.getInstance(context)
         // Persisted config is the scheduler's source of truth.
         SDKConfigStorage.clearConfiguration(context)

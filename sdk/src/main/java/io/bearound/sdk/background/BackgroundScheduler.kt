@@ -47,6 +47,16 @@ class BackgroundScheduler private constructor(private val context: Context) {
                 }
             }
         }
+
+        /**
+         * Drops the singleton so the next getInstance() rebinds to a fresh context.
+         * Robolectric gives every test its own Application (and test WorkManager);
+         * without this the lazy WorkManager handle keeps pointing at the previous
+         * test's orphaned instance. Same test-only pattern as RegisterStore.
+         */
+        internal fun _resetForTesting() {
+            synchronized(this) { instance = null }
+        }
     }
     
     private val workManager: WorkManager by lazy { WorkManager.getInstance(context) }
