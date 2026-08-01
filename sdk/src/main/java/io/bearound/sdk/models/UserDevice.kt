@@ -27,7 +27,11 @@ data class UserDevice(
     val coldStart: Boolean,
     val lowPowerMode: Boolean?,
     val locationAccuracy: String?,
-    val wifiSSID: String?,
+    /**
+     * Hash of the connected access point's BSSID — replaces the raw `wifiSSID`, which
+     * leaked the network name (and therefore the household) in clear text.
+     */
+    val apId: String?,
     val connectionMetered: Boolean?,
     val connectionExpensive: Boolean?,
     val os: String = "Android",
@@ -37,6 +41,16 @@ data class UserDevice(
     val systemLanguage: String,
     val thermalState: String,
     val systemUptimeMs: Long,
-    val sdkVersion: Int
+    val sdkVersion: Int,
+    /**
+     * Access points visible at collection time. Empty when the host app lacks the
+     * permissions — the SDK never asks the user for anything on its own.
+     */
+    val wifis: List<WifiObservation> = emptyList(),
+    /**
+     * Last known fix, as context for [wifis] and for the beacons in the same payload.
+     * Null when unavailable; the SDK never requests an active fix.
+     */
+    val location: DeviceLocation? = null
 )
 

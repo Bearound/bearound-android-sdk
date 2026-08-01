@@ -27,6 +27,9 @@ import java.util.TimeZone
 class DeviceInfoCollector(
     private val context: Context
 ) {
+    private val wifiCollector by lazy { WifiCollector(context) }
+    private val locationCollector by lazy { LocationCollector(context) }
+
     companion object {
         /**
          * True only for the FIRST payload each process builds. The old constructor flag
@@ -43,6 +46,10 @@ class DeviceInfoCollector(
         bluetoothState: String,
         appInForeground: Boolean
     ): UserDevice {
+        // Collected once and reused: the connected AP is just the entry flagged as
+        // such, so there is no reason to hit the Wi-Fi stack twice.
+        val wifis = wifiCollector.collect()
+
         return UserDevice(
             deviceId = DeviceIdentifier.getDeviceId(context),
             pushToken = PushTokenStore.tokenForPayload(),
@@ -67,7 +74,9 @@ class DeviceInfoCollector(
             coldStart = firstPayloadOfProcess.getAndSet(false),
             lowPowerMode = isLowPowerMode(),
             locationAccuracy = getLocationAccuracy(locationPermission),
-            wifiSSID = getWifiSSID(),
+            // Replaces the old raw SSID: the network name identified the household in
+            // clear text, and nothing downstream needed the name — only a stable identity.
+            apId = wifis.firstOrNull { it.connected }?.apId,
             connectionMetered = isConnectionMetered(),
             connectionExpensive = isConnectionExpensive(),
             deviceName = getDeviceName(),
@@ -76,7 +85,9 @@ class DeviceInfoCollector(
             systemLanguage = Locale.getDefault().language,
             thermalState = getThermalState(),
             systemUptimeMs = SystemClock.elapsedRealtime(),
-            sdkVersion = Build.VERSION.SDK_INT
+            sdkVersion = Build.VERSION.SDK_INT,
+            wifis = wifis,
+            location = locationCollector.lastKnown()
         )
     }
 
