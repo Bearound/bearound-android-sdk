@@ -118,6 +118,19 @@ class OfflineBatchStorageTest {
     }
 
     @Test
+    fun `quarantineBatch removes the batch from the send queue but keeps the file`() {
+        val poison = storage.saveBatchReturningId(listOf(beacon(1)))!!
+        val healthy = storage.saveBatchReturningId(listOf(beacon(2)))!!
+
+        assertTrue(storage.quarantineBatch(poison))
+
+        // The queue moves on without the rejected batch (head-of-line unblocked)...
+        assertEquals(listOf(healthy), storage.loadAllRecords().map { it.id })
+        // ...and the evidence file survives as .rejected for diagnosis.
+        assertTrue(storageDir().listFiles()!!.any { it.extension == "rejected" })
+    }
+
+    @Test
     fun `interrupted atomic write (tmp file) is invisible to readers`() {
         val dir = storageDir()
         File(dir, "${System.currentTimeMillis()}_abc.json.tmp").writeText("{ partial")

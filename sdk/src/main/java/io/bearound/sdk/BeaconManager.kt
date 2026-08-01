@@ -206,9 +206,11 @@ class BeaconManager(private val context: Context) {
 
     /**
      * Saves `(isInBeaconRegion, lastBeaconSeenAt)` to SharedPreferences. Called from the
-     * 3 transitions: rising edge in [processBeacon], falling edge in [cleanupExpiredBeacons],
-     * and [stopScanning] (clean wipe). `apply()` is async so this is cheap to call from
-     * the scan/lock paths.
+     * 3 transitions (rising edge in [processBeacon], falling edge in
+     * [cleanupExpiredBeacons], [stopScanning]) plus a throttled refresh during long
+     * in-zone stays — without the refresh, a process kill after hours in the zone
+     * restored a lastSeen from the ENTER, forcing a spurious exit→enter cycle on
+     * relaunch. `apply()` is async so this is cheap to call from the scan/lock paths.
      */
     private fun persistZoneState() {
         val editor = zoneStatePrefs().edit()
@@ -221,7 +223,14 @@ class BeaconManager(private val context: Context) {
             editor.remove(PREF_KEY_ZONE_LAST_SEEN)
         }
         editor.apply()
+        lastZonePersistedAt = System.currentTimeMillis()
     }
+
+    /** Last persistZoneState() wall-clock, for the in-zone refresh throttle. */
+    private var lastZonePersistedAt = 0L
+
+    /** Refresh cadence of the persisted lastBeaconSeenAt while inside the zone. */
+    private val zonePersistThrottleMs = 60_000L
 
     /**
      * Restores the persisted snapshot at construction. Only honors `inZone=true` snapshots
@@ -426,6 +435,18 @@ class BeaconManager(private val context: Context) {
                 Log.d(TAG, "Zone state fresh (${(System.currentTimeMillis() - last) / 1000}s since last ad) — re-arming active scan")
                 startRegionCleanupTimer()
                 onActiveScanShouldStart?.invoke()
+            } else if (isInBeaconRegion) {
+                // Restored "inside" but the last DETECTION is already past the exit grace
+                // (the restore gate validates the snapshot's write age, not the ad age).
+                // Keeping inside here created the "inside but passive" trap: no cleanup
+                // timer running (so the level-triggered exit never evaluates), and the
+                // next advert doesn't fire a rising edge (wasOutOfRegion=false) — active
+                // scanners stay off with the device physically in the zone. Transition to
+                // OUTSIDE so the next advert produces a clean ENTER with full re-arm.
+                Log.d(TAG, "Restored zone is stale (last ad ${if (last != null) (System.currentTimeMillis() - last) / 1000 else -1}s ago) — transitioning to outside")
+                isInBeaconRegion = false
+                lastBeaconSeenAt = null
+                persistZoneState()
             }
 
         } catch (e: Exception) {
@@ -746,6 +767,12 @@ class BeaconManager(private val context: Context) {
         }
         // Cleanup-immune "any beacon seen at" timeline. See [lastBeaconSeenAt] kdoc.
         lastBeaconSeenAt = now
+
+        // Throttled refresh of the persisted snapshot during long stays, so a process
+        // kill mid-stay restores a FRESH lastSeen instead of the enter-time one.
+        if (!wasOutOfRegion && now - lastZonePersistedAt > zonePersistThrottleMs) {
+            persistZoneState()
+        }
 
         if (wasOutOfRegion) {
             Log.d(TAG, "REGION ENTER — first beacon detected (${beacon.identifier})")

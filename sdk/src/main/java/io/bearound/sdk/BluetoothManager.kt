@@ -80,7 +80,33 @@ class BluetoothManager(private val context: Context) {
             }
             if (errorCode == 1 /* SCAN_FAILED_ALREADY_STARTED */) {
                 healZombieScanRegistration()
+                return // heal resets isScanning itself
             }
+            // Every failure code means the scan is NOT running — the flag must say so,
+            // or the next startScanning() early-returns "Already scanning" forever.
+            // Recovery is owned by the existing paths (region edges, BT restore, heal).
+            isScanning = false
+        }
+    }
+
+    /**
+     * The stack drops every scan client when the radio powers off, but this object's
+     * flag survived as a lie — the next startScanning() saw "Already scanning" and the
+     * metadata scan stayed a zombie for the rest of the region stay.
+     */
+    fun onBluetoothPoweredOff() {
+        if (isScanning) {
+            Log.d(TAG, "Bluetooth powered off — metadata scan client is gone, clearing flag")
+            isScanning = false
+        }
+    }
+
+    /** Radio back on: re-arm the metadata scan if the host still wants it (in-region). */
+    fun onBluetoothRestored() {
+        isScanning = false
+        if (desiredScanning) {
+            Log.d(TAG, "Bluetooth restored — re-arming metadata scan")
+            startScanning()
         }
     }
 

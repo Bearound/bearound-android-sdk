@@ -368,6 +368,25 @@ class OfflineBatchStorage(private val context: Context) {
 
     /** Removes exactly these batch ids; returns how many were deleted. */
     fun removeBatches(ids: List<String>): Int = ids.count { removeBatch(it) }
+
+    /**
+     * Takes a backend-REJECTED batch out of the send queue (renamed to .rejected — kept
+     * for diagnosis, swept by the 7-day expiry). Without this, one poison batch at the
+     * head of the FIFO blocked every batch behind it until expiry.
+     */
+    fun quarantineBatch(id: String): Boolean = lock.withLock {
+        try {
+            val file = storageDirectory.listFiles()
+                ?.firstOrNull { it.extension == "json" && it.nameWithoutExtension.endsWith(id) }
+                ?: return@withLock false
+            val moved = file.renameTo(File(storageDirectory, "${file.nameWithoutExtension}.rejected"))
+            if (moved) Log.w(TAG, "Quarantined rejected batch: ${file.name}")
+            moved
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to quarantine batch $id: ${e.message}", e)
+            false
+        }
+    }
     
     /**
      * Clears all stored batches
@@ -400,10 +419,14 @@ class OfflineBatchStorage(private val context: Context) {
     
     private fun cleanupExpiredBatches() {
         try {
-            // .json = pending; .corrupt = quarantined; .tmp = interrupted atomic write.
-            // All carry the timestamp in the filename and all expire on the same 7-day clock.
+            // .json = pending; .corrupt = unreadable; .rejected = backend-refused;
+            // .tmp = interrupted atomic write. All carry the timestamp in the filename
+            // and all expire on the same 7-day clock.
             val files = storageDirectory.listFiles()
-                ?.filter { it.extension == "json" || it.extension == "corrupt" || it.extension == "tmp" }
+                ?.filter {
+                    it.extension == "json" || it.extension == "corrupt" ||
+                        it.extension == "rejected" || it.extension == "tmp"
+                }
                 ?: return
             
             val now = System.currentTimeMillis()

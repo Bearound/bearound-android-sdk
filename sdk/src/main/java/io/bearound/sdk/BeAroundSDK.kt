@@ -31,6 +31,7 @@ import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.ScanPrecision
 import io.bearound.sdk.models.UserProperties
 import io.bearound.sdk.network.APIClient
+import io.bearound.sdk.network.HttpException
 import io.bearound.sdk.telemetry.ErrorReporter
 import io.bearound.sdk.utilities.BackgroundReliabilityHelper
 import io.bearound.sdk.utilities.OemPowerProfile
@@ -67,6 +68,14 @@ class BeAroundSDK private constructor() {
 
         /** Scan-log throttle window — same 10 s the iOS SDK uses. */
         private const val SCAN_LOG_THROTTLE_MS = 10_000L
+
+        /**
+         * Statuses where an identical retry fails identically: the payload/credential is
+         * the problem, not the transport. 413 lands here too — if a SINGLE batch still
+         * exceeds the limit it is malformed, not splittable. Everything else (408, 429,
+         * 5xx, transport errors) is treated as transient and retried whole.
+         */
+        private val PERMANENT_HTTP_CODES = setOf(400, 401, 403, 404, 413, 422)
 
         /**
          * Minimum gap between broadcast-triggered background flushes. Beacons
@@ -610,12 +619,22 @@ class BeAroundSDK private constructor() {
         override fun onReceive(ctx: Context?, intent: android.content.Intent?) {
             if (intent?.action != android.bluetooth.BluetoothAdapter.ACTION_STATE_CHANGED) return
             val state = intent.getIntExtra(android.bluetooth.BluetoothAdapter.EXTRA_STATE, -1)
-            if (state == android.bluetooth.BluetoothAdapter.STATE_ON &&
-                ::beaconManager.isInitialized && wasScanningEnabled()
-            ) {
-                Log.i(TAG, "Bluetooth back ON — re-arming scan clients")
-                beaconManager.onBluetoothRestored()
-                backgroundScanManager.refreshBackgroundScanning()
+            if (!::beaconManager.isInitialized) return
+            when (state) {
+                android.bluetooth.BluetoothAdapter.STATE_OFF -> {
+                    // Drop the metadata scan's local flag now — the stack already
+                    // dropped the client. Without this, STATE_ON's re-arm hit the
+                    // "Already scanning" early-return and the scan stayed a zombie.
+                    bluetoothManager.onBluetoothPoweredOff()
+                }
+                android.bluetooth.BluetoothAdapter.STATE_ON -> {
+                    if (wasScanningEnabled()) {
+                        Log.i(TAG, "Bluetooth back ON — re-arming scan clients")
+                        beaconManager.onBluetoothRestored()
+                        bluetoothManager.onBluetoothRestored()
+                        backgroundScanManager.refreshBackgroundScanning()
+                    }
+                }
             }
         }
     }
@@ -1467,29 +1486,82 @@ class BeAroundSDK private constructor() {
 
             if (chunkResult?.isFailure == true) {
                 val error = chunkResult!!.exceptionOrNull()!!
-                Log.e(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} failed: ${error.message}")
+                val status = (error as? HttpException)?.statusCode
+                val isPermanent = status != null && status in PERMANENT_HTTP_CODES
 
-                consecutiveFailures++
-                lastFailureTime = System.currentTimeMillis()
+                if (!isPermanent) {
+                    // Transient (network, timeout, 408/429/5xx): stop and let the caller's
+                    // backoff retry the WHOLE queue later — nothing is lost.
+                    Log.e(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} failed: ${error.message}")
 
-                DiagnosticsStore.recordSync(success = false, beaconCount = beaconsInChunk.size)
-                DiagnosticsStore.recordError("Retry chunk failed: ${error.message}")
-                DetectionLogStore.append(
-                    context,
-                    type = "Sync falhou",
-                    detail = "${beaconsInChunk.size} beacon(s) · ${error.message ?: "erro desconhecido"}"
-                )
+                    consecutiveFailures++
+                    lastFailureTime = System.currentTimeMillis()
 
-                dispatchToListener {
-                    it.onSyncCompleted(
-                        beaconsInChunk.size,
-                        success = false,
-                        error = error as? Exception ?: Exception(error.message)
+                    DiagnosticsStore.recordSync(success = false, beaconCount = beaconsInChunk.size)
+                    DiagnosticsStore.recordError("Retry chunk failed: ${error.message}")
+                    DetectionLogStore.append(
+                        context,
+                        type = "Sync falhou",
+                        detail = "${beaconsInChunk.size} beacon(s) · ${error.message ?: "erro desconhecido"}"
                     )
-                    it.onError(error as? Exception ?: Exception(error.message))
+
+                    dispatchToListener {
+                        it.onSyncCompleted(
+                            beaconsInChunk.size,
+                            success = false,
+                            error = error as? Exception ?: Exception(error.message)
+                        )
+                        it.onError(error as? Exception ?: Exception(error.message))
+                    }
+
+                    return false
                 }
 
-                return false
+                // Permanent rejection (400/401/403/404/413/422): the backend is healthy but
+                // SOME batch in this chunk is poison — an identical retry fails identically,
+                // and stopping here let one bad batch block the whole queue for 7 days
+                // (head-of-line blocking; field case: the 3.4.5 422-rejected payloads).
+                // Bisect: send each batch alone, quarantine the rejected one(s), keep going.
+                // NOT counted as consecutiveFailures — the API is reachable.
+                Log.w(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} rejected permanently (HTTP $status) — bisecting ${chunk.size} batch(es)")
+                var delivered = 0
+                for (record in chunk) {
+                    var singleResult: Result<Unit>? = null
+                    client.sendBeacons(record.beacons, info, userDevice, userProperties) { r ->
+                        singleResult = r
+                    }
+                    val singleStatus = (singleResult?.exceptionOrNull() as? HttpException)?.statusCode
+                    when {
+                        singleResult?.isSuccess == true -> {
+                            offlineBatchStorage.removeBatch(record.id)
+                            delivered += record.beacons.size
+                        }
+                        singleStatus != null && singleStatus in PERMANENT_HTTP_CODES -> {
+                            DiagnosticsStore.recordError("Batch quarantined (HTTP $singleStatus): ${record.id}")
+                            DetectionLogStore.append(
+                                context,
+                                type = "Sync falhou",
+                                detail = "batch rejeitado pelo backend (HTTP $singleStatus) — quarentenado"
+                            )
+                            offlineBatchStorage.quarantineBatch(record.id)
+                        }
+                        else -> {
+                            // Network blinked mid-bisect: stop; everything left stays queued.
+                            return false
+                        }
+                    }
+                }
+                if (delivered > 0) {
+                    PushTokenStore.markSent(userDevice.pushToken)
+                    DiagnosticsStore.recordSync(success = true, beaconCount = delivered)
+                    DetectionLogStore.append(
+                        context,
+                        type = "Sync OK",
+                        detail = "$delivered beacon(s) enviados ao ingester (após bisect)"
+                    )
+                    dispatchToListener { it.onSyncCompleted(delivered, success = true, error = null) }
+                }
+                continue
             }
 
             // Chunk succeeded — remove EXACTLY the batches this chunk carried, by id.
