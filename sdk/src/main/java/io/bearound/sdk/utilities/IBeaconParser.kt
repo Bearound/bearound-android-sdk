@@ -34,6 +34,10 @@ object IBeaconParser {
     /** Full-match (0xFF) mask covering every byte of [BEAROUND_IBEACON_PREFIX]. */
     val BEAROUND_IBEACON_MASK: ByteArray = ByteArray(BEAROUND_IBEACON_PREFIX.size) { 0xFF.toByte() }
 
+    /** iBeacon major reserved by SDK hosts advertising as virtual beacons (encounter
+     * layer). Filtered out of detection — see [parseIBeaconFrame]. */
+    const val VIRTUAL_ENCOUNTER_MAJOR: Int = 0xFFFF
+
     private fun uuidToBytes(uuid: UUID): ByteArray =
         java.nio.ByteBuffer.allocate(16)
             .putLong(uuid.mostSignificantBits)
@@ -112,6 +116,12 @@ object IBeaconParser {
         val major = ((data[18].toInt() and 0xFF) shl 8) or (data[19].toInt() and 0xFF)
         val minor = ((data[20].toInt() and 0xFF) shl 8) or (data[21].toInt() and 0xFF)
         val txPower = data[22].toInt() // sign-extended int8 (calibrated RSSI @ 1 m)
+
+        // Reserved major = another SDK host in foreground (virtual beacon frame emitted
+        // for CoreLocation region visibility on iOS peers). It must never surface as a
+        // physical-beacon detection; the encounter layer tracks those devices through
+        // their service-UUID frames instead.
+        if (major == VIRTUAL_ENCOUNTER_MAJOR) return null
 
         return BeadServiceData(
             major = major,
