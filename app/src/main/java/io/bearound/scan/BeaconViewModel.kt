@@ -6,7 +6,10 @@ import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.LocationManager
+import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
@@ -118,10 +121,28 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         telemetry.configure(bearound)
     }
 
+    // Example-only helper: the SDK reads the SYSTEM's cached Wi-Fi scan results and never
+    // scans on its own (results older than 5 min are dropped). On an idle bench nothing
+    // refreshes that cache, so the demo nudges a scan every 35s while scanning is on —
+    // within Android's 4-scans-per-2-min foreground throttle.
+    private val wifiRefreshHandler = Handler(Looper.getMainLooper())
+    private val wifiRefreshRunnable = object : Runnable {
+        override fun run() {
+            runCatching {
+                @Suppress("DEPRECATION")
+                (getApplication<Application>().applicationContext
+                    .getSystemService(Context.WIFI_SERVICE) as WifiManager).startScan()
+            }
+            wifiRefreshHandler.postDelayed(this, 35_000)
+        }
+    }
+
     fun startScanning() {
         if (_state.value.configurationError != null) {
             return
         }
+        wifiRefreshHandler.removeCallbacks(wifiRefreshRunnable)
+        wifiRefreshHandler.post(wifiRefreshRunnable)
 
         if (!hasRequiredPermissions()) {
             _state.value = _state.value.copy(
@@ -144,6 +165,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun stopScanning() {
+        wifiRefreshHandler.removeCallbacks(wifiRefreshRunnable)
         sdk.stopScanning()
         telemetry.stopScanning()
         scanStartTime = null
