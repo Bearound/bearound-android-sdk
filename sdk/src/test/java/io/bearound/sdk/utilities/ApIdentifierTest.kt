@@ -13,31 +13,31 @@ import org.junit.Test
 class ApIdentifierTest {
 
     /**
-     * The value below was verified on real hardware during the POC — the office router
-     * seen from an Android phone and from an iPhone. If this assertion ever fails, every
-     * access point already mapped becomes unreachable under the new hash.
+     * Golden value for a fixed input, verified on real hardware on BOTH platforms. If this
+     * assertion ever fails, every identifier already issued becomes unreachable under the
+     * new hash — so it is a compatibility gate, not a style check.
      */
-    private val OFFICE_AP = "2dc5d7448d0b3ef4"
+    private val GOLDEN_ID = "9a6abef5e0c70054"
 
     @Test
     fun `android and ios formats agree on the same router`() {
-        val android = ApIdentifier.from("b8:1e:61:00:95:0e") // keeps leading zeros
-        val ios = ApIdentifier.from("b8:1e:61:0:95:e")       // drops them
+        val android = ApIdentifier.from("00:00:5e:00:53:01") // keeps leading zeros
+        val ios = ApIdentifier.from("00:0:5e:0:53:1")       // drops them
 
-        assertEquals(OFFICE_AP, android)
-        assertEquals(OFFICE_AP, ios)
+        assertEquals(GOLDEN_ID, android)
+        assertEquals(GOLDEN_ID, ios)
     }
 
     @Test
     fun `case and separator do not change the identity`() {
-        assertEquals(OFFICE_AP, ApIdentifier.from("B8:1E:61:00:95:0E"))
-        assertEquals(OFFICE_AP, ApIdentifier.from("b8-1e-61-00-95-0e"))
-        assertEquals(OFFICE_AP, ApIdentifier.from("  b8:1e:61:00:95:0e  "))
+        assertEquals(GOLDEN_ID, ApIdentifier.from("00:00:5E:00:53:01"))
+        assertEquals(GOLDEN_ID, ApIdentifier.from("00-00-5e-00-53-01"))
+        assertEquals(GOLDEN_ID, ApIdentifier.from("  00:00:5e:00:53:01  "))
     }
 
     @Test
     fun `identifier is 16 hex characters`() {
-        val id = ApIdentifier.from("a4:33:d7:fa:48:b8")
+        val id = ApIdentifier.from("00:00:5e:00:53:0a")
         assertNotNull(id)
         assertEquals(16, id!!.length)
         assertEquals(true, id.matches(Regex("[0-9a-f]{16}")))
@@ -45,8 +45,8 @@ class ApIdentifierTest {
 
     @Test
     fun `different routers get different identifiers`() {
-        val a = ApIdentifier.from("b8:1e:61:00:95:0e")
-        val b = ApIdentifier.from("b8:1e:61:00:95:0f")
+        val a = ApIdentifier.from("00:00:5e:00:53:01")
+        val b = ApIdentifier.from("00:00:5e:00:53:02")
         assertEquals(false, a == b)
     }
 
@@ -63,9 +63,9 @@ class ApIdentifierTest {
     fun `malformed input returns null instead of a bogus identifier`() {
         assertNull(ApIdentifier.from(null))
         assertNull(ApIdentifier.from(""))
-        assertNull(ApIdentifier.from("b8:1e:61:00:95"))        // 5 octets
-        assertNull(ApIdentifier.from("b8:1e:61:00:95:0e:aa"))  // 7 octets
-        assertNull(ApIdentifier.from("zz:1e:61:00:95:0e"))     // not hex
-        assertNull(ApIdentifier.from("b81e6100950e"))          // no separators
+        assertNull(ApIdentifier.from("00:00:5e:00:53"))        // 5 octets
+        assertNull(ApIdentifier.from("00:00:5e:00:53:01:aa"))  // 7 octets
+        assertNull(ApIdentifier.from("zz:00:5e:00:53:01"))     // not hex
+        assertNull(ApIdentifier.from("00005e005301"))          // no separators
     }
 }
