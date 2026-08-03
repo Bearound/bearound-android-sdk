@@ -5,6 +5,25 @@ All notable changes to the BeAround Android SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.0] - 2026-08-03
+
+### Added
+- **Wi-Fi observations and device location in the `/ingest` payload.** Each sighting can
+  now carry the access points visible at collection time (`wifis[]`, each with a hashed
+  `apId`) plus the last known location, alongside the beacons. Both are omitted entirely
+  when the host app lacks the permissions — an app that grants nothing sends exactly the
+  payload it sent before. The SDK reads the platform's existing scan cache and never calls
+  `startScan()`, and it reads the last known fix rather than requesting an active one, so
+  neither adds a battery cost of its own. Networks whose SSID ends in `_nomap` are dropped.
+  New manifest permission: `NEARBY_WIFI_DEVICES` (declared without `neverForLocation`,
+  deliberately — the SDK's Bluetooth permission keeps that flag).
+- **Google Advertising ID (AAID).** Reported as `device.permissions.advertisingId`, with
+  `limitAdTracking` alongside it so an opt-out is distinguishable from an unavailable id.
+  Declared via the normal `com.google.android.gms.permission.AD_ID` permission (granted at
+  install, no runtime prompt) and fetched off the main thread, since `AdvertisingIdClient`
+  throws when called on it. The Play Services dependency is `compileOnly` — apps without it
+  simply report no id.
+
 ## [3.7.1] - 2026-08-01
 
 ### Fixed
