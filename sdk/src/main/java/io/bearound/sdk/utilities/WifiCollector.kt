@@ -13,17 +13,16 @@ import io.bearound.sdk.models.WifiObservation
 /**
  * Collects the Wi-Fi access points visible to the device.
  *
- * Two deliberate restraints:
+ * Reading always comes from the system's cached results (`scanResults`); on top of
+ * that the SDK periodically NUDGES a scan (see [nudgeScan]) so the cache stays fresh
+ * on idle devices — without it, observations decay to just the connected AP within
+ * 5 minutes of stillness. Nudges run only while the SDK is scanning, only in
+ * foreground, and inside Android's own 4-per-2-minutes throttle (a rejected nudge is
+ * harmless: the cache simply keeps its age).
  *
- * - **Never triggers a scan.** We read the system's cached results (`scanResults`)
- *   instead of calling `startScan()`. Android throttles scans to 4 per 2 minutes
- *   anyway, and every other app on the phone is already refreshing that cache for
- *   us — asking for our own costs battery and buys nothing. It also keeps
- *   `CHANGE_WIFI_STATE` out of the manifest.
- *
- * - **Opt-in by permission.** Nothing is collected unless the host app already holds
- *   the permissions. A host that never asks for location simply sends no `wifis[]`,
- *   and the rest of the SDK behaves exactly as before.
+ * **Opt-in by permission.** Nothing is collected unless the host app already holds
+ * the permissions. A host that never asks for location simply sends no `wifis[]`,
+ * and the rest of the SDK behaves exactly as before.
  */
 internal class WifiCollector(private val context: Context) {
 
@@ -48,6 +47,23 @@ internal class WifiCollector(private val context: Context) {
      * @return the visible access points, strongest first, or an empty list when the
      *         host app lacks the permissions or Wi-Fi is off. Never throws.
      */
+    /**
+     * Asks the system to refresh its Wi-Fi scan cache. Requires `CHANGE_WIFI_STATE`
+     * (install-time, no prompt — ships in the SDK manifest) plus the same scan
+     * permission as [collect]; a rejected request (system throttle, permissions)
+     * is silently ignored. Never throws.
+     */
+    fun nudgeScan() {
+        if (!hasWifiStatePermission() || !hasScanPermission()) return
+        if (!granted(Manifest.permission.CHANGE_WIFI_STATE)) return
+        val wifiManager = context.applicationContext
+            .getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return
+        runCatching {
+            @Suppress("DEPRECATION")
+            wifiManager.startScan()
+        }
+    }
+
     fun collect(): List<WifiObservation> {
         if (!hasWifiStatePermission()) return emptyList()
 

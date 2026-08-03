@@ -14,9 +14,6 @@
 
     <!-- Location for BLE beacon detection on all versions (foreground only; no background). -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <!-- Example-only: refresh the system Wi-Fi scan cache so the SDK's wifi
-         observations stay fresh while the demo runs. The SDK itself never scans. -->
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!-- Internet for API communication -->

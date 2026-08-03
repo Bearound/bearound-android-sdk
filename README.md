@@ -246,13 +246,17 @@ see the [AI setup prompt](./AI-AGENT-SETUP.md), step 2).
 | `RECEIVE_BOOT_COMPLETED` | Re-arm scanning after reboot |
 | `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE` | Optional foreground service (see [Google Play review](#google-play-review--what-the-manifest-merge-means-for-your-app)) |
 | `ACCESS_WIFI_STATE` | Read the connected access point and the system's cached scan results (install-time, no prompt) |
+| `CHANGE_WIFI_STATE` | Keep the system's Wi-Fi scan cache fresh while scanning (install-time, no prompt — see [Wi-Fi observations](#wi-fi-observations)) |
 | `NEARBY_WIFI_DEVICES` | Alternative to location for reading neighbouring access points on Android 13+ — see [Wi-Fi observations](#wi-fi-observations) |
 | `BLUETOOTH_ADVERTISE` | Encounter layer on Android 12+ — lets the device be seen by other SDK devices (see [Encounter layer](#encounter-layer-device-to-device)) |
 | `BLUETOOTH_CONNECT` | Encounter layer on Android 12+ — serves and reads the rotating identifier over GATT |
 | `com.google.android.gms.permission.AD_ID` | Google Advertising ID — see [Advertising identifier](#advertising-identifier-aaid) |
 
-`CHANGE_WIFI_STATE` is **not** declared: the SDK reads the system's cached scan results and
-never triggers a scan of its own.
+Both Wi-Fi permissions are **normal** (granted at install, never prompted): the SDK reads
+the system's cached scan results and periodically nudges a refresh **only while scanning
+and in foreground**, inside Android's own 4-scans-per-2-minutes throttle — on an idle
+device nothing else refreshes that cache, and without the nudge observations decay to
+just the connected access point.
 
 ### Wi-Fi observations
 

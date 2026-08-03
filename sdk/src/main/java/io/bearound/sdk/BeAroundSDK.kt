@@ -147,6 +147,18 @@ class BeAroundSDK private constructor() {
 
     /** Timestamp of the last encounters-only upload, for the 60s throttle. */
     @Volatile private var lastEncounterOnlySyncAt = 0L
+
+    /** Keeps the system Wi-Fi scan cache fresh while scanning (35s cadence stays
+     * inside Android's 4-per-2-minutes foreground throttle; background ticks skip —
+     * background scans are budgeted to ~1-2/hour by the OS and the cache ride-along
+     * covers that regime). */
+    private val wifiNudgeHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val wifiNudgeRunnable = object : Runnable {
+        override fun run() {
+            if (!isInBackground) deviceInfoCollector.nudgeWifiScan()
+            wifiNudgeHandler.postDelayed(this, 35_000)
+        }
+    }
     private lateinit var backgroundScanManager: BackgroundScanManager
     private lateinit var backgroundScheduler: BackgroundScheduler
     private var apiClient: APIClient? = null
@@ -929,6 +941,10 @@ class BeAroundSDK private constructor() {
         beaconManager.startScanning()
         // Encounter layer rides the same scan: advertise + recognise other SDK hosts.
         encounterMesh?.start()
+        // Wi-Fi observations: keep the system scan cache fresh while scanning (see
+        // WifiCollector.nudgeScan — foreground only, inside the OS throttle).
+        wifiNudgeHandler.removeCallbacks(wifiNudgeRunnable)
+        wifiNudgeHandler.post(wifiNudgeRunnable)
         startSyncTimer()
 
         // Enable background mechanisms (WorkManager + AlarmManager)
@@ -1033,6 +1049,7 @@ class BeAroundSDK private constructor() {
     }
 
     fun stopScanning() {
+        wifiNudgeHandler.removeCallbacks(wifiNudgeRunnable)
         encounterMesh?.stop()
         beaconManager.stopScanning()
         bluetoothManager.stopScanning()
