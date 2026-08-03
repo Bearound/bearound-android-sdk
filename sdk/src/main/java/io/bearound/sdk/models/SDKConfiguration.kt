@@ -99,7 +99,7 @@ data class SDKConfiguration(
      */
     val periodicScanDurationMillis: Long = PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS
 ) {
-    val apiBaseURL: String = "http://192.168.15.13:8787" // BENCH ONLY — never commit
+    val apiBaseURL: String = "https://ingest.bearound.io"
 
     // NOTE: the old precisionScanDuration/PauseDuration/CycleCount/CycleInterval props
     // described a manual scan/pause duty cycle the SDK no longer runs — scanning is

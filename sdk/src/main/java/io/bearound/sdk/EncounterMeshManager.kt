@@ -49,7 +49,7 @@ internal class EncounterMeshManager(private val context: Context) {
         const val RPI_ROTATION_MS: Long = 15 * 60 * 1000
 
         /** iBeacon major reserved for hosts advertising as virtual beacons. Must match
-         * [io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR] — every
+         * [io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR_FLOOR] — every
          * receive path filters it out of detection. */
         private const val VIRTUAL_BEACON_MAJOR = 0xFFFF
 

@@ -34,9 +34,11 @@ object IBeaconParser {
     /** Full-match (0xFF) mask covering every byte of [BEAROUND_IBEACON_PREFIX]. */
     val BEAROUND_IBEACON_MASK: ByteArray = ByteArray(BEAROUND_IBEACON_PREFIX.size) { 0xFF.toByte() }
 
-    /** iBeacon major reserved by SDK hosts advertising as virtual beacons (encounter
-     * layer). Filtered out of detection — see [parseIBeaconFrame]. */
-    const val VIRTUAL_ENCOUNTER_MAJOR: Int = 0xFFFF
+    /** Majors at or above this are RESERVED for SDK hosts advertising as virtual
+     * beacons (encounter layer) — physical Bearound beacons never use them. Filtering
+     * the whole band (not just 0xFFFF) also drops air-corrupted virtual frames
+     * (observed in the field: 0xFF32 from a damaged 0xFFFF byte). */
+    const val VIRTUAL_ENCOUNTER_MAJOR_FLOOR: Int = 0xFF00
 
     private fun uuidToBytes(uuid: UUID): ByteArray =
         java.nio.ByteBuffer.allocate(16)
@@ -117,11 +119,10 @@ object IBeaconParser {
         val minor = ((data[20].toInt() and 0xFF) shl 8) or (data[21].toInt() and 0xFF)
         val txPower = data[22].toInt() // sign-extended int8 (calibrated RSSI @ 1 m)
 
-        // Reserved major = another SDK host in foreground (virtual beacon frame emitted
-        // for CoreLocation region visibility on iOS peers). It must never surface as a
-        // physical-beacon detection; the encounter layer tracks those devices through
-        // their service-UUID frames instead.
-        if (major == VIRTUAL_ENCOUNTER_MAJOR) return null
+        // Reserved band = another SDK host advertising as a virtual beacon (or an
+        // air-corrupted copy of that frame). Never a physical-beacon detection; the
+        // encounter layer tracks those devices through their service-UUID frames.
+        if (major >= VIRTUAL_ENCOUNTER_MAJOR_FLOOR) return null
 
         return BeadServiceData(
             major = major,

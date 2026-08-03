@@ -35,19 +35,21 @@ Contrato compartilhado entre os SDKs nativos (branch `feat/encounter-mesh` nos d
 | LocalName do RPI | base64url de 22 chars dos 16 bytes | Como o iOS (foreground) transmite a identidade para scanners Android |
 | Characteristic (RPI) | `B3A20002-0000-4000-8000-BEA0BEA0BEA0` | GATT read-only — SÓ fallback iOS↔iOS (peer iOS em background não carrega nada identificável no frame) |
 | Rotação do RPI | 15 min | `[atual, anterior]` reportados como `encounterIds` no payload |
-| **Major reservado (beacon virtual)** | **65535 (`0xFFFF`)** | Ver abaixo — NUNCA é uma detecção |
+| **Banda de majors reservada (beacon virtual)** | **`0xFF00`–`0xFFFF` (65280–65535)** | Ver abaixo — NUNCA é uma detecção; beacons físicos jamais usam essa faixa |
 
 **Major 65535 (`0xFFFF`) — beacon virtual.** Hosts iOS em foreground intercalam, além do
 service UUID, um frame iBeacon no UUID Bearound com major `0xFFFF` e minor derivado do RPI
 (2 primeiros bytes). O frame existe para que o region monitoring dos vizinhos dispare na
 aproximação de um host (inclusive relançando apps force-quit). **Todo caminho de recepção
-DEVE filtrar esse major antes do pipeline de detecção** — um host nunca pode aparecer como
+DEVE filtrar a BANDA inteira (`major >= 0xFF00`) antes do pipeline de detecção** — o
+filtro por banda também descarta cópias corrompidas no ar do frame virtual (observado
+em campo: `0xFF32` a partir de um byte danificado de `0xFFFF`) — um host nunca pode aparecer como
 beacon físico:
 
 - iOS: `BluetoothManager` (parser iBeacon do CoreBluetooth) + `BeaconManager.processBeacons`
-  (ranging do CoreLocation) descartam `major == 0xFFFF`.
-- Android: `IBeaconParser.parseIBeaconFrame` retorna `null` para `major == 0xFFFF`
-  (constante `VIRTUAL_ENCOUNTER_MAJOR`), cobrindo o scan ativo e o PendingIntent.
+  (ranging do CoreLocation) descartam `major >= 0xFF00` (`virtualBeaconMajorFloor`).
+- Android: `IBeaconParser.parseIBeaconFrame` retorna `null` para `major >= 0xFF00`
+  (`VIRTUAL_ENCOUNTER_MAJOR_FLOOR`), cobrindo o scan ativo e o PendingIntent.
 
 Payload (aditivo, omitido quando a camada não tem nada a reportar):
 `encounters[] = {rpi, rssi, rssiSamples{count,min,max,avg}, firstSeen, lastSeen}` + `encounterIds[]`.
