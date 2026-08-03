@@ -20,6 +20,16 @@
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
 
+    <!-- Encounter layer (device-to-device sightings), API 31+. ADVERTISE lets the host
+         be seen by other SDK devices; CONNECT is required both to serve the identity
+         characteristic (GATT server) and to read a peer's (GATT client). Runtime-checked:
+         a host that never requests them keeps every other feature and the layer degrades
+         to receive-only (RSSI without identity) or off — the SDK never throws. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"
+        tools:targetApi="s" />
+
     <!-- Location — declared on ALL versions. On API ≤ 30 it is the legacy BLE-scan gate
          (detection does not work without it there); on API 31+ detection works with
          Bluetooth alone (neverForLocation above), and granting location is recommended

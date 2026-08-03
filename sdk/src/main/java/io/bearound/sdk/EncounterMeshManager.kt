@@ -1,0 +1,378 @@
+package io.bearound.sdk
+
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattServer
+import android.bluetooth.BluetoothGattServerCallback
+import android.bluetooth.BluetoothGattService
+import android.bluetooth.BluetoothProfile
+import android.bluetooth.le.AdvertiseCallback
+import android.bluetooth.le.AdvertiseData
+import android.bluetooth.le.AdvertiseSettings
+import android.bluetooth.le.ScanResult
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelUuid
+import android.util.Log
+import androidx.core.content.ContextCompat
+import io.bearound.sdk.models.EncounterObservation
+import java.security.SecureRandom
+import java.util.UUID
+
+/**
+ * Device-to-device encounter layer: the host both **transmits** (advertises a fixed
+ * service UUID and serves its rotating identifier over one GATT characteristic) and
+ * **receives** (recognises other hosts in the shared BLE scan and aggregates their
+ * signal strength).
+ *
+ * - RSSI comes from advertisements; the peer's identifier is read over GATT once per
+ *   rotation window, through a strictly serial client with per-peer cooldown/timeout.
+ * - Discoveries arrive through the existing scan — no second radio scan, no timers
+ *   (identifier rotation is evaluated lazily on use).
+ * - Aggregates keep four running integers per peer (no sample buffers); tracked peers
+ *   are capped and stale entries evicted.
+ * - Requires BLUETOOTH_ADVERTISE + BLUETOOTH_CONNECT on API 31+; the layer degrades to
+ *   receive-only (no identity reads) or fully off when they are missing — never throws.
+ */
+internal class EncounterMeshManager(private val context: Context) {
+
+    companion object {
+        private const val TAG = "EncounterMesh"
+        val SERVICE_UUID: UUID = UUID.fromString("B3A20001-0000-4000-8000-BEA0BEA0BEA0")
+        val RPI_CHAR_UUID: UUID = UUID.fromString("B3A20002-0000-4000-8000-BEA0BEA0BEA0")
+        val SERVICE_PARCEL: ParcelUuid = ParcelUuid(SERVICE_UUID)
+
+        const val RPI_ROTATION_MS: Long = 15 * 60 * 1000
+        private const val MAX_TRACKED_PEERS = 64
+        private const val PEER_STALE_EVICTION_MS: Long = 10 * 60 * 1000
+        private const val GATT_COOLDOWN_MS: Long = 60 * 1000
+        private const val GATT_TIMEOUT_MS: Long = 8 * 1000
+
+        private const val PREFS = "io.bearound.sdk.mesh"
+        private const val KEY_CURRENT = "rpi.current"
+        private const val KEY_PREVIOUS = "rpi.previous"
+        private const val KEY_ROTATED_AT = "rpi.rotatedAt"
+    }
+
+    private class PeerAggregate {
+        var rpi: String? = null
+        var lastRssi = 0
+        var sampleCount = 0
+        var rssiMin = 0
+        var rssiMax = Int.MIN_VALUE
+        var rssiSum = 0L
+        var firstSeen = 0L
+        var lastSeen = 0L
+        var lastGattAttempt = 0L
+        var rpiReadAt = 0L
+
+        fun addSample(rssi: Int, now: Long) {
+            if (sampleCount == 0) { firstSeen = now; rssiMin = rssi; rssiMax = rssi }
+            lastRssi = rssi
+            sampleCount++
+            rssiMin = minOf(rssiMin, rssi)
+            rssiMax = maxOf(rssiMax, rssi)
+            rssiSum += rssi
+            lastSeen = now
+        }
+
+        val rssiAvg: Int get() = if (sampleCount == 0) 0 else (rssiSum.toDouble() / sampleCount).toInt()
+    }
+
+    private val lock = Any()
+    private val peers = HashMap<String, PeerAggregate>() // key: device address
+    private val handler = Handler(Looper.getMainLooper())
+    private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+
+    private var started = false
+    private var advertiser: android.bluetooth.le.BluetoothLeAdvertiser? = null
+    private var gattServer: BluetoothGattServer? = null
+    private var gattInFlight: BluetoothGatt? = null
+    private var gattInFlightAddress: String? = null
+    private var gattTimeout: Runnable? = null
+
+    // ── Rotating identifier ──────────────────────────────────────────────────
+
+    /** Current identifier (32 lowercase hex), rotating lazily on read. */
+    fun currentRpi(now: Long = System.currentTimeMillis()): String = synchronized(lock) {
+        val rotatedAt = prefs.getLong(KEY_ROTATED_AT, 0)
+        val existing = prefs.getString(KEY_CURRENT, null)
+        if (existing != null && rotatedAt > 0 && now - rotatedAt < RPI_ROTATION_MS) return existing
+        val fresh = ByteArray(16).also { SecureRandom().nextBytes(it) }
+            .joinToString("") { "%02x".format(it) }
+        prefs.edit()
+            .putString(KEY_PREVIOUS, existing)
+            .putString(KEY_CURRENT, fresh)
+            .putLong(KEY_ROTATED_AT, now)
+            .apply()
+        return fresh
+    }
+
+    /** `[current, previous]` for the sync payload. */
+    fun currentEncounterIds(): List<String> {
+        val current = currentRpi()
+        val previous = prefs.getString(KEY_PREVIOUS, null)
+        return if (previous != null) listOf(current, previous) else listOf(current)
+    }
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+
+    private fun hasPermission(name: String): Boolean =
+        Build.VERSION.SDK_INT < 31 ||
+            ContextCompat.checkSelfPermission(context, name) == PackageManager.PERMISSION_GRANTED
+
+    @SuppressLint("MissingPermission")
+    fun start() {
+        synchronized(lock) {
+            if (started) return
+            started = true
+        }
+        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE)
+            as? android.bluetooth.BluetoothManager)?.adapter
+        if (adapter == null || !adapter.isEnabled) {
+            Log.w(TAG, "Bluetooth unavailable — mesh idle until restart")
+            return
+        }
+        if (!hasPermission(android.Manifest.permission.BLUETOOTH_ADVERTISE)) {
+            Log.w(TAG, "BLUETOOTH_ADVERTISE not granted — mesh is receive-only")
+        } else {
+            startGattServer()
+            startAdvertising(adapter)
+        }
+        Log.i(TAG, "Encounter mesh started (rpi=${currentRpi().take(8)}…)")
+    }
+
+    @SuppressLint("MissingPermission")
+    fun stop() {
+        synchronized(lock) {
+            if (!started) return
+            started = false
+            peers.clear()
+        }
+        runCatching { advertiser?.stopAdvertising(advertiseCallback) }
+        advertiser = null
+        runCatching { gattServer?.close() }
+        gattServer = null
+        cancelInFlight()
+        Log.i(TAG, "Encounter mesh stopped")
+    }
+
+    // ── TX ───────────────────────────────────────────────────────────────────
+
+    private val advertiseCallback = object : AdvertiseCallback() {
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+            Log.i(TAG, "Advertising encounter service")
+        }
+        override fun onStartFailure(errorCode: Int) {
+            Log.w(TAG, "Advertise failed: $errorCode")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startAdvertising(adapter: android.bluetooth.BluetoothAdapter) {
+        val leAdvertiser = adapter.bluetoothLeAdvertiser ?: run {
+            Log.w(TAG, "No LE advertiser on this device")
+            return
+        }
+        advertiser = leAdvertiser
+        val settings = AdvertiseSettings.Builder()
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            .setConnectable(true)
+            .build()
+        val data = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
+            .addServiceUuid(SERVICE_PARCEL)
+            .build()
+        runCatching { leAdvertiser.startAdvertising(settings, data, advertiseCallback) }
+            .onFailure { Log.w(TAG, "startAdvertising threw: ${it.message}") }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startGattServer() {
+        if (!hasPermission(android.Manifest.permission.BLUETOOTH_CONNECT)) return
+        val sys = context.getSystemService(Context.BLUETOOTH_SERVICE)
+            as? android.bluetooth.BluetoothManager ?: return
+        val server = runCatching {
+            sys.openGattServer(context, object : BluetoothGattServerCallback() {
+                override fun onCharacteristicReadRequest(
+                    device: BluetoothDevice, requestId: Int, offset: Int,
+                    characteristic: BluetoothGattCharacteristic
+                ) {
+                    if (characteristic.uuid != RPI_CHAR_UUID) {
+                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
+                        return
+                    }
+                    // Answer the CURRENT identifier as 16 raw bytes (lazy rotation).
+                    val hex = currentRpi()
+                    val bytes = ByteArray(16) { i ->
+                        hex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+                    }
+                    val slice = if (offset <= bytes.size) bytes.copyOfRange(offset, bytes.size) else ByteArray(0)
+                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
+                }
+            })
+        }.getOrNull() ?: return
+        val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
+        service.addCharacteristic(
+            BluetoothGattCharacteristic(
+                RPI_CHAR_UUID,
+                BluetoothGattCharacteristic.PROPERTY_READ,
+                BluetoothGattCharacteristic.PERMISSION_READ
+            )
+        )
+        runCatching { server.addService(service) }
+        gattServer = server
+    }
+
+    // ── RX (fed by the existing scan) ────────────────────────────────────────
+
+    /** True when [result] advertises the encounter service (cheap pre-check). */
+    fun isEncounterFrame(result: ScanResult): Boolean =
+        result.scanRecord?.serviceUuids?.contains(SERVICE_PARCEL) == true
+
+    @SuppressLint("MissingPermission")
+    fun handleScanResult(result: ScanResult) {
+        if (!synchronized(lock) { started }) return
+        val rssi = result.rssi
+        if (rssi >= 0 || rssi == 127) return
+        val address = result.device.address ?: return
+        val now = System.currentTimeMillis()
+
+        var connectTo: BluetoothDevice? = null
+        synchronized(lock) {
+            var peer = peers[address]
+            if (peer == null) {
+                if (peers.size >= MAX_TRACKED_PEERS) {
+                    peers.entries.removeAll { now - it.value.lastSeen > PEER_STALE_EVICTION_MS }
+                    if (peers.size >= MAX_TRACKED_PEERS) return
+                }
+                peer = PeerAggregate()
+                peers[address] = peer
+            }
+            peer.addSample(rssi, now)
+
+            val rpiFresh = now - peer.rpiReadAt < RPI_ROTATION_MS
+            if (!(peer.rpi != null && rpiFresh) &&
+                gattInFlight == null &&
+                now - peer.lastGattAttempt > GATT_COOLDOWN_MS &&
+                hasPermission(android.Manifest.permission.BLUETOOTH_CONNECT)
+            ) {
+                peer.lastGattAttempt = now
+                gattInFlightAddress = address
+                connectTo = result.device
+            }
+        }
+        connectTo?.let { readIdentity(it) }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun readIdentity(device: BluetoothDevice) {
+        Log.i(TAG, "Reading identity of ${device.address}")
+        val gatt = runCatching {
+            device.connectGatt(context, false, object : BluetoothGattCallback() {
+                override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+                    if (newState == BluetoothProfile.STATE_CONNECTED) g.discoverServices()
+                    else if (newState == BluetoothProfile.STATE_DISCONNECTED) finishRead(g)
+                }
+                override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+                    val char = g.getService(SERVICE_UUID)?.getCharacteristic(RPI_CHAR_UUID)
+                    if (char == null) { finishRead(g); return }
+                    @Suppress("DEPRECATION") g.readCharacteristic(char)
+                }
+                @Deprecated("Deprecated in API 33")
+                override fun onCharacteristicRead(
+                    g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int
+                ) {
+                    @Suppress("DEPRECATION") val value = characteristic.value
+                    acceptIdentity(g.device.address, value, status)
+                    finishRead(g)
+                }
+                override fun onCharacteristicRead(
+                    g: BluetoothGatt, characteristic: BluetoothGattCharacteristic,
+                    value: ByteArray, status: Int
+                ) {
+                    acceptIdentity(g.device.address, value, status)
+                    finishRead(g)
+                }
+            }, BluetoothDevice.TRANSPORT_LE)
+        }.getOrNull()
+        if (gatt == null) { clearInFlight(); return }
+        synchronized(lock) { gattInFlight = gatt }
+        val timeout = Runnable {
+            Log.w(TAG, "Identity read timed out for ${device.address}")
+            finishRead(gatt)
+        }
+        gattTimeout = timeout
+        handler.postDelayed(timeout, GATT_TIMEOUT_MS)
+    }
+
+    private fun acceptIdentity(address: String?, value: ByteArray?, status: Int) {
+        if (address == null || status != BluetoothGatt.GATT_SUCCESS || value == null || value.size != 16) return
+        val rpi = value.joinToString("") { "%02x".format(it) }
+        val now = System.currentTimeMillis()
+        synchronized(lock) {
+            var peer = peers[address] ?: PeerAggregate().also { peers[address] = it }
+            if (peer.rpi != null && peer.rpi != rpi) {
+                // Rotated identity = new logical presence: restart the aggregate.
+                peer = PeerAggregate().also { peers[address] = it }
+            }
+            peer.rpi = rpi
+            peer.rpiReadAt = now
+        }
+        Log.i(TAG, "Peer identity read: ${rpi.take(8)}…")
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun finishRead(gatt: BluetoothGatt) {
+        runCatching { gatt.close() }
+        clearInFlight()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun cancelInFlight() {
+        synchronized(lock) { gattInFlight }?.let { runCatching { it.close() } }
+        clearInFlight()
+    }
+
+    private fun clearInFlight() {
+        synchronized(lock) {
+            gattInFlight = null
+            gattInFlightAddress = null
+        }
+        gattTimeout?.let { handler.removeCallbacks(it) }
+        gattTimeout = null
+    }
+
+    // ── Reporting ────────────────────────────────────────────────────────────
+
+    /** Any identified peer seen after [sinceMs]? Cheap gate for encounters-only syncs. */
+    fun hasFreshEncounters(sinceMs: Long): Boolean = synchronized(lock) {
+        peers.values.any { it.rpi != null && it.lastSeen > sinceMs }
+    }
+
+    /** Non-destructive snapshot of every identified peer, for the sync payload. */
+    fun snapshotEncounters(): List<EncounterObservation> = synchronized(lock) {
+        peers.values.mapNotNull { peer ->
+            val rpi = peer.rpi ?: return@mapNotNull null
+            if (peer.sampleCount == 0) return@mapNotNull null
+            EncounterObservation(
+                rpi = rpi,
+                rssi = peer.lastRssi,
+                sampleCount = peer.sampleCount,
+                rssiMin = peer.rssiMin,
+                rssiMax = peer.rssiMax,
+                rssiAvg = peer.rssiAvg,
+                firstSeen = peer.firstSeen,
+                lastSeen = peer.lastSeen,
+            )
+        }
+    }
+}

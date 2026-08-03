@@ -141,6 +141,12 @@ class BeAroundSDK private constructor() {
     private lateinit var deviceInfoCollector: DeviceInfoCollector
     private lateinit var beaconManager: BeaconManager
     private lateinit var bluetoothManager: BluetoothManager
+
+    /** Device-to-device encounter layer — runs whenever scanning runs. */
+    private var encounterMesh: EncounterMeshManager? = null
+
+    /** Timestamp of the last encounters-only upload, for the 60s throttle. */
+    @Volatile private var lastEncounterOnlySyncAt = 0L
     private lateinit var backgroundScanManager: BackgroundScanManager
     private lateinit var backgroundScheduler: BackgroundScheduler
     private var apiClient: APIClient? = null
@@ -290,6 +296,8 @@ class BeAroundSDK private constructor() {
         deviceInfoCollector = DeviceInfoCollector(context)
         beaconManager = BeaconManager(context)
         bluetoothManager = BluetoothManager(context)
+        encounterMesh = EncounterMeshManager(context)
+        bluetoothManager.encounterMesh = encounterMesh
         backgroundScanManager = BackgroundScanManager(context)
         backgroundScheduler = BackgroundScheduler.getInstance(context)
         offlineBatchStorage = OfflineBatchStorage(context)
@@ -918,6 +926,8 @@ class BeAroundSDK private constructor() {
 
         // Scanning mode is automatic based on app state (foreground/background)
         beaconManager.startScanning()
+        // Encounter layer rides the same scan: advertise + recognise other SDK hosts.
+        encounterMesh?.start()
         startSyncTimer()
 
         // Enable background mechanisms (WorkManager + AlarmManager)
@@ -1022,6 +1032,7 @@ class BeAroundSDK private constructor() {
     }
 
     fun stopScanning() {
+        encounterMesh?.stop()
         beaconManager.stopScanning()
         bluetoothManager.stopScanning()
         backgroundScanManager.disableBackgroundScanning()
@@ -1298,6 +1309,27 @@ class BeAroundSDK private constructor() {
         scanRefreshRunnable = null
     }
 
+    /** Attaches encounter-mesh data (sightings + own rotating ids) to a payload.
+     * No-op (empty fields, omitted from JSON) before the mesh spins up. */
+    private fun io.bearound.sdk.models.UserDevice.withEncounterData(): io.bearound.sdk.models.UserDevice {
+        val mesh = encounterMesh ?: return this
+        val sightings = mesh.snapshotEncounters()
+        if (sightings.isEmpty()) return this
+        return copy(encounters = sightings, encounterIds = mesh.currentEncounterIds())
+    }
+
+    /** True when the mesh has identified sightings newer than the last encounters-only
+     * upload AND that upload was 60s+ ago. Advances the throttle timestamp. */
+    private fun shouldSyncEncountersWithoutBeacons(): Boolean {
+        val mesh = encounterMesh ?: return false
+        val now = System.currentTimeMillis()
+        if (now - lastEncounterOnlySyncAt < 60_000) return false
+        if (!mesh.hasFreshEncounters(lastEncounterOnlySyncAt)) return false
+        lastEncounterOnlySyncAt = now
+        Log.d(TAG, "No new beacons — syncing encounter batch")
+        return true
+    }
+
     private fun syncBeacons(forceBackground: Boolean = false) {
         scope.launch { syncBeaconsAwait(forceBackground) }
     }
@@ -1346,7 +1378,10 @@ class BeAroundSDK private constructor() {
                 collectedBeacons.values.filter { !it.alreadySynced }
             }
 
-            if (rawBeaconsToSend.isEmpty()) return true
+            // Encounter mesh: sightings must reach the backend even when no physical
+            // beacon is around — otherwise a device that only sees other devices never
+            // uploads anything. Throttled (60s) and gated on fresh identified sightings.
+            if (rawBeaconsToSend.isEmpty() && !shouldSyncEncountersWithoutBeacons()) return true
 
             // Snapshot + reset per-beacon RSSI accumulators so the payload carries the
             // FULL window stats and the next window starts fresh.
@@ -1383,7 +1418,7 @@ class BeAroundSDK private constructor() {
                 locationPermission = locationPermission,
                 bluetoothState = bluetoothState,
                 appInForeground = !isAppInBackground
-            )
+            ).withEncounterData()
 
             // sendBeacons is suspend and invokes the callback before returning,
             // so syncOk is settled by the time we return it.
