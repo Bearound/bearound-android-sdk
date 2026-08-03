@@ -28,6 +28,9 @@ class DeviceInfoCollector(
     private val context: Context
 ) {
     private val wifiCollector by lazy { WifiCollector(context) }
+
+    /** Nudges the system Wi-Fi scan cache — see [WifiCollector.nudgeScan]. */
+    internal fun nudgeWifiScan() = wifiCollector.nudgeScan()
     private val locationCollector by lazy { LocationCollector(context) }
 
     companion object {

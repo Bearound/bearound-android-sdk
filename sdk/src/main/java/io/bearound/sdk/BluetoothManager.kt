@@ -145,6 +145,10 @@ class BluetoothManager(private val context: Context) {
      * also re-checked in [processScanResult] via the parser, so behaviour is unchanged.
      */
     private fun metadataScanFilters() = listOf(
+        // Encounter mesh: other SDK hosts advertise this service UUID.
+        ScanFilter.Builder()
+            .setServiceUuid(EncounterMeshManager.SERVICE_PARCEL)
+            .build(),
         ScanFilter.Builder()
             .setManufacturerData(IBeaconParser.BEAROUND_MANUFACTURER_ID, byteArrayOf())
             .build(),
@@ -255,6 +259,10 @@ class BluetoothManager(private val context: Context) {
         }
     }
 
+    /** Device-to-device encounter layer; scan results advertising its service UUID are
+     * routed there instead of the beacon parser. Wired by [BeAroundSDK]. */
+    internal var encounterMesh: EncounterMeshManager? = null
+
     private fun processScanResult(result: ScanResult) {
         // Controller-fossil guard — see [ScanResultFreshness]. BeaconManager logs the drops.
         if (ScanResultFreshness.isStale(result)) return
@@ -263,6 +271,14 @@ class BluetoothManager(private val context: Context) {
 
         // Check if RSSI is valid
         if (rssi == 127 || rssi == 0) return
+
+        // Encounter frames (another SDK host) are not beacons — hand them to the mesh.
+        encounterMesh?.let { mesh ->
+            if (mesh.isEncounterFrame(result)) {
+                mesh.handleScanResult(result)
+                return
+            }
+        }
 
         val serviceData = IBeaconParser.parseServiceData(scanRecord, rssi) ?: return
         if (!shouldProcessBeacon(serviceData.major, serviceData.minor)) return

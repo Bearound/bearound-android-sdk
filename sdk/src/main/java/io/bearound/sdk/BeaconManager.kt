@@ -274,6 +274,11 @@ class BeaconManager(private val context: Context) {
         staleThresholdMs = staleMs.coerceAtLeast(5_000L)
     }
 
+    /** Device-to-device encounter layer; frames advertising its service UUID are routed
+     * there from EVERY receive path that funnels into [processScanResult] (regular scan,
+     * slow batch, PendingIntent broadcasts). Wired by [BeAroundSDK]. */
+    internal var encounterMesh: EncounterMeshManager? = null
+
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             processScanResult(result)
@@ -525,6 +530,10 @@ class BeaconManager(private val context: Context) {
                 .build(),
             ScanFilter.Builder()
                 .setServiceData(IBeaconParser.BEAD_SERVICE_UUID, byteArrayOf(), byteArrayOf())
+                .build(),
+            // Encounter layer: other SDK hosts advertise this service UUID.
+            ScanFilter.Builder()
+                .setServiceUuid(EncounterMeshManager.SERVICE_PARCEL)
                 .build()
         )
 
@@ -644,12 +653,17 @@ class BeaconManager(private val context: Context) {
             val beadFilter = ScanFilter.Builder()
                 .setServiceData(IBeaconParser.BEAD_SERVICE_UUID, byteArrayOf(), byteArrayOf())
                 .build()
+            // Encounter layer: this batch scan is the receive path that ALWAYS runs
+            // (ranging only runs in-region), so it must also match other SDK hosts.
+            val meshFilter = ScanFilter.Builder()
+                .setServiceUuid(EncounterMeshManager.SERVICE_PARCEL)
+                .build()
             val settings = ScanSettings.Builder()
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
                 .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
                 .setReportDelay(SLOW_BEACON_BATCH_DELAY_MS)
                 .build()
-            scanner.startScan(listOf(ibFilter, beadFilter), settings, batchScanCallback)
+            scanner.startScan(listOf(ibFilter, beadFilter, meshFilter), settings, batchScanCallback)
             isBatchScanning = true
             lastBatchDeliveryAt = System.currentTimeMillis() // liveness baseline
             Log.d(TAG, "Slow-beacon batch scan started (reportDelay=${SLOW_BEACON_BATCH_DELAY_MS}ms)")
@@ -682,6 +696,16 @@ class BeaconManager(private val context: Context) {
             return
         }
         val scanRecord = result.scanRecord ?: return
+
+        // Encounter frames (another SDK host advertising the mesh UUID) are not beacons —
+        // hand them to the encounter layer. This covers ALL receive paths: regular scan,
+        // slow batch scan and the PendingIntent broadcasts, which all funnel here.
+        encounterMesh?.let { mesh ->
+            if (mesh.isEncounterFrame(result)) {
+                mesh.handleScanResult(result)
+                return
+            }
+        }
 
         // Prefer the 0xBEAD sensor payload; fall back to the iBeacon frame when the scan
         // response wasn't captured (observed on Xiaomi batched results) — detection still

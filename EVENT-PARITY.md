@@ -23,3 +23,44 @@
 \* background-detection: a assinatura nativa difere (iOS `[Beacon]` vs Android `Int`) por design; os bridges expõem `{beaconCount}` idêntico nas duas plataformas.
 
 Os 8 eventos "comuns" têm nomes por convenção de cada plataforma (iOS `didX`, Android `onX`) e payloads equivalentes. Os demais são divergências de capacidade de plataforma (iOS tem o BLE "two-eyes" + push-scan; Android tem foreground-service/app-state) e ficam documentados aqui.
+
+## Encounter layer (device-to-device)
+
+Contrato compartilhado entre os SDKs nativos (branch `feat/encounter-mesh` nos dois repos):
+
+| Constante | Valor | Uso |
+|---|---|---|
+| Service UUID | `B3A20001-0000-4000-8000-BEA0BEA0BEA0` | Anunciado por todo host com o SDK; filtro de scan nas duas plataformas |
+| Service data do RPI | UUID 16-bit `0xBEA1` (16 bytes crus no scan response) | Como o ANDROID transmite a identidade — lida do ar, sem conexão |
+| LocalName do RPI | base64url de 22 chars dos 16 bytes | Como o iOS (foreground) transmite a identidade para scanners Android |
+| Characteristic (RPI) | `B3A20002-0000-4000-8000-BEA0BEA0BEA0` | GATT read-only — SÓ fallback iOS↔iOS (peer iOS em background não carrega nada identificável no frame) |
+| Rotação do RPI | 15 min | `[atual, anterior]` reportados como `encounterIds` no payload |
+| **Banda de majors reservada (beacon virtual)** | **`0xFF00`–`0xFFFF` (65280–65535)** | Ver abaixo — NUNCA é uma detecção; beacons físicos jamais usam essa faixa |
+
+**Major 65535 (`0xFFFF`) — beacon virtual.** Hosts iOS em foreground intercalam, além do
+service UUID, um frame iBeacon no UUID Bearound com major `0xFFFF` e minor derivado do RPI
+(2 primeiros bytes). O frame existe para que o region monitoring dos vizinhos dispare na
+aproximação de um host (inclusive relançando apps force-quit). **Todo caminho de recepção
+DEVE filtrar a BANDA inteira (`major >= 0xFF00`) antes do pipeline de detecção** — o
+filtro por banda também descarta cópias corrompidas no ar do frame virtual (observado
+em campo: `0xFF32` a partir de um byte danificado de `0xFFFF`) — um host nunca pode aparecer como
+beacon físico:
+
+- iOS: `BluetoothManager` (parser iBeacon do CoreBluetooth) + `BeaconManager.processBeacons`
+  (ranging do CoreLocation) descartam `major >= 0xFF00` (`virtualBeaconMajorFloor`).
+- Android: `IBeaconParser.parseIBeaconFrame` retorna `null` para `major >= 0xFF00`
+  (`VIRTUAL_ENCOUNTER_MAJOR_FLOOR`), cobrindo o scan ativo e o PendingIntent.
+
+Payload (aditivo, omitido quando a camada não tem nada a reportar):
+`encounters[] = {rpi, rssi, rssiSamples{count,min,max,avg}, firstSeen, lastSeen}` + `encounterIds[]`.
+O gate de sync de "sem beacons novos" TAMBÉM abre para avistamentos identificados frescos
+(throttle: 1 upload encounters-only por 60s).
+
+Diferenças de plataforma (por capacidade, não por design):
+- Android anuncia o service UUID sempre (fg/bg, enquanto o processo viver); iOS em bg move o
+  advertisement para a overflow area (visível só a scanners iOS filtrando o UUID) e app
+  encerrado não transmite em nenhuma plataforma.
+- iOS em bg NÃO é visível para Android (overflow area é proprietária).
+- Permissões: Android 12+ requer somente `BLUETOOTH_ADVERTISE` (runtime-checked, degrada sem
+  lançar) — a identidade viaja no próprio advertisement, então NÃO há GATT nem
+  `BLUETOOTH_CONNECT` no Android; iOS usa a permissão de Bluetooth existente.

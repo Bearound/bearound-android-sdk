@@ -20,6 +20,14 @@
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
 
+    <!-- Encounter layer (device-to-device sightings), API 31+. ADVERTISE lets the host
+         be seen by other SDK devices — identity travels in the advertisement itself
+         (scan-response service data), so no connections and no BLUETOOTH_CONNECT are
+         ever needed. Runtime-checked: a host that never requests it keeps every other
+         feature and the layer degrades to receive-only — the SDK never throws. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE"
+        tools:targetApi="s" />
+
     <!-- Location — declared on ALL versions. On API ≤ 30 it is the legacy BLE-scan gate
          (detection does not work without it there); on API 31+ detection works with
          Bluetooth alone (neverForLocation above), and granting location is recommended
@@ -48,10 +56,12 @@
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
         tools:targetApi="tiramisu" />
 
-    <!-- NO CHANGE_WIFI_STATE: the SDK reads the system's cached scan results and never
-         calls startScan(). Android throttles scans to 4 per 2 minutes anyway, and every
-         other app on the phone already refreshes that cache — requesting our own would
-         cost battery and buy nothing. -->
+    <!-- Refreshes the system Wi-Fi scan cache (normal permission, granted at install,
+         no user prompt). Product decision: on idle devices nothing else refreshes the
+         cache and observations decay to just the connected AP — the SDK nudges a scan
+         periodically while scanning in foreground, inside Android's own 4-per-2-minutes
+         throttle. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
 
     <!-- Wi-Fi hardware, required="false" for the same reason as Bluetooth below: this
          manifest merges into the host's, and a required feature would hide client apps

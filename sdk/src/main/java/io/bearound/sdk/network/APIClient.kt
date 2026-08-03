@@ -105,7 +105,7 @@ class APIClient(private val configuration: SDKConfiguration) {
         userProperties: UserProperties?,
         onComplete: (Result<Unit>) -> Unit
     ) {
-        if (beacons.isEmpty()) {
+        if (beacons.isEmpty() && userDevice.encounters.isEmpty()) {
             onComplete(Result.success(Unit))
             return
         }
@@ -250,6 +250,29 @@ class APIClient(private val configuration: SDKConfiguration) {
                 })
             }
             payload.put("wifis", wifisArray)
+        }
+
+        // Encounters (same additive contract as `wifis`): omitted entirely when empty.
+        if (userDevice.encounters.isNotEmpty()) {
+            val encountersArray = JSONArray()
+            userDevice.encounters.forEach { e ->
+                encountersArray.put(JSONObject().apply {
+                    put("rpi", e.rpi)
+                    put("rssi", e.rssi)
+                    put("rssiSamples", JSONObject().apply {
+                        put("count", e.sampleCount)
+                        put("min", e.rssiMin)
+                        put("max", e.rssiMax)
+                        put("avg", e.rssiAvg)
+                    })
+                    put("firstSeen", e.firstSeen)
+                    put("lastSeen", e.lastSeen)
+                })
+            }
+            payload.put("encounters", encountersArray)
+        }
+        if (userDevice.encounterIds.isNotEmpty()) {
+            payload.put("encounterIds", JSONArray(userDevice.encounterIds))
         }
 
         userDevice.location?.let { location ->
