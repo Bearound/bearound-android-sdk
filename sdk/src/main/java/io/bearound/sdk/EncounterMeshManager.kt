@@ -49,6 +49,12 @@ internal class EncounterMeshManager(private val context: Context) {
         val SERVICE_PARCEL: ParcelUuid = ParcelUuid(SERVICE_UUID)
 
         const val RPI_ROTATION_MS: Long = 15 * 60 * 1000
+
+        /** iBeacon major reserved for hosts advertising as virtual beacons. Must match
+         * [io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR] — every
+         * receive path filters it out of detection. */
+        private const val VIRTUAL_BEACON_MAJOR = 0xFFFF
+
         private const val MAX_TRACKED_PEERS = 64
         private const val PEER_STALE_EVICTION_MS: Long = 10 * 60 * 1000
         private const val GATT_COOLDOWN_MS: Long = 60 * 1000
@@ -92,6 +98,7 @@ internal class EncounterMeshManager(private val context: Context) {
 
     private var started = false
     private var advertiser: android.bluetooth.le.BluetoothLeAdvertiser? = null
+    private var virtualBeaconMinor = -1
     private var gattServer: BluetoothGattServer? = null
     private var gattInFlight: BluetoothGatt? = null
     private var gattInFlightAddress: String? = null
@@ -111,6 +118,10 @@ internal class EncounterMeshManager(private val context: Context) {
             .putString(KEY_CURRENT, fresh)
             .putLong(KEY_ROTATED_AT, now)
             .apply()
+        // The virtual beacon's minor derives from the identifier — keep them in step.
+        if (virtualBeaconMinor >= 0 && fresh.take(4).toInt(16) != virtualBeaconMinor) {
+            refreshVirtualBeaconAfterRotation()
+        }
         return fresh
     }
 
@@ -156,7 +167,9 @@ internal class EncounterMeshManager(private val context: Context) {
             peers.clear()
         }
         runCatching { advertiser?.stopAdvertising(advertiseCallback) }
+        runCatching { advertiser?.stopAdvertising(virtualBeaconCallback) }
         advertiser = null
+        virtualBeaconMinor = -1
         runCatching { gattServer?.close() }
         gattServer = null
         cancelInFlight()
@@ -171,6 +184,66 @@ internal class EncounterMeshManager(private val context: Context) {
         }
         override fun onStartFailure(errorCode: Int) {
             Log.w(TAG, "Advertise failed: $errorCode")
+        }
+    }
+
+    private val virtualBeaconCallback = object : AdvertiseCallback() {
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+            Log.i(TAG, "Advertising virtual beacon (iBeacon frame, reserved major)")
+        }
+        override fun onStartFailure(errorCode: Int) {
+            // Some chips cap concurrent advertisements — the mesh service UUID
+            // advertisement has priority; the virtual beacon is best-effort.
+            Log.w(TAG, "Virtual beacon advertise failed: $errorCode")
+        }
+    }
+
+    /** iBeacon frame identical to the physical Bearound beacon's (same UUID, Apple
+     * 0x004C 02-15 layout), with reserved major and minor derived from the rotating
+     * identifier. Unlike iOS (foreground-only), Android can emit this in background
+     * for as long as the process lives — a host device can (re)launch terminated iOS
+     * apps nearby through their CoreLocation region monitoring. */
+    private fun virtualBeaconPayload(minor: Int): ByteArray {
+        val uuid = io.bearound.sdk.utilities.IBeaconParser.BEAROUND_IBEACON_PREFIX
+        return ByteArray(2 + uuid.size - 2 + 5).also { out ->
+            // BEAROUND_IBEACON_PREFIX already starts with 02 15 + 16 UUID bytes.
+            uuid.copyInto(out, 0)
+            val base = uuid.size
+            out[base] = ((VIRTUAL_BEACON_MAJOR shr 8) and 0xFF).toByte()
+            out[base + 1] = (VIRTUAL_BEACON_MAJOR and 0xFF).toByte()
+            out[base + 2] = ((minor shr 8) and 0xFF).toByte()
+            out[base + 3] = (minor and 0xFF).toByte()
+            out[base + 4] = (-59).toByte() // calibrated RSSI @ 1 m, same as our beacons
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startVirtualBeacon(leAdvertiser: android.bluetooth.le.BluetoothLeAdvertiser) {
+        val minor = currentRpi().take(4).toInt(16)
+        virtualBeaconMinor = minor
+        val settings = AdvertiseSettings.Builder()
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            .setConnectable(false)
+            .build()
+        val data = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
+            .addManufacturerData(0x004C, virtualBeaconPayload(minor))
+            .build()
+        runCatching { leAdvertiser.startAdvertising(settings, data, virtualBeaconCallback) }
+            .onFailure { Log.w(TAG, "Virtual beacon startAdvertising threw: ${it.message}") }
+    }
+
+    /** Rotation moved the identifier → re-advertise the virtual beacon with the new
+     * minor. Called from the rotation path; safe from any thread. */
+    @SuppressLint("MissingPermission")
+    private fun refreshVirtualBeaconAfterRotation() {
+        val leAdvertiser = advertiser ?: return
+        if (!synchronized(lock) { started }) return
+        handler.post {
+            runCatching { leAdvertiser.stopAdvertising(virtualBeaconCallback) }
+            startVirtualBeacon(leAdvertiser)
         }
     }
 
@@ -193,6 +266,7 @@ internal class EncounterMeshManager(private val context: Context) {
             .build()
         runCatching { leAdvertiser.startAdvertising(settings, data, advertiseCallback) }
             .onFailure { Log.w(TAG, "startAdvertising threw: ${it.message}") }
+        startVirtualBeacon(leAdvertiser)
     }
 
     @SuppressLint("MissingPermission")
