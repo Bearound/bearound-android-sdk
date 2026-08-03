@@ -1,14 +1,6 @@
 package io.bearound.sdk
 
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
-import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothGattServer
-import android.bluetooth.BluetoothGattServerCallback
-import android.bluetooth.BluetoothGattService
-import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
@@ -19,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.util.Base64
 import android.util.Log
 import androidx.core.content.ContextCompat
 import io.bearound.sdk.models.EncounterObservation
@@ -27,26 +20,31 @@ import java.util.UUID
 
 /**
  * Device-to-device encounter layer: the host both **transmits** (advertises a fixed
- * service UUID and serves its rotating identifier over one GATT characteristic) and
- * **receives** (recognises other hosts in the shared BLE scan and aggregates their
- * signal strength).
+ * service UUID with its rotating identifier in the scan response) and **receives**
+ * (recognises other hosts in the shared BLE scan and aggregates their signal strength).
  *
- * - RSSI comes from advertisements; the peer's identifier is read over GATT once per
- *   rotation window, through a strictly serial client with per-peer cooldown/timeout.
- * - Discoveries arrive through the existing scan — no second radio scan, no timers
- *   (identifier rotation is evaluated lazily on use).
- * - Aggregates keep four running integers per peer (no sample buffers); tracked peers
- *   are capped and stale entries evicted.
- * - Requires BLUETOOTH_ADVERTISE + BLUETOOTH_CONNECT on API 31+; the layer degrades to
- *   receive-only (no identity reads) or fully off when they are missing — never throws.
+ * Identity travels ON AIR — no GATT, no connections, no BLUETOOTH_CONNECT:
+ * - Android peers carry the identifier as 16-bit service data (`0xBEA1`, 16 raw bytes)
+ *   in the scan response.
+ * - iOS peers (foreground) carry it as the advertised local name (22-char base64url of
+ *   the same 16 bytes). Backgrounded iOS advertising is invisible to Android scanners
+ *   by platform design, so no pair is lost by not connecting.
+ *
+ * - RSSI comes from advertisements; aggregates keep four running integers per peer
+ *   (no sample buffers); tracked peers are capped and stale entries evicted.
+ * - Requires BLUETOOTH_ADVERTISE on API 31+ to be seen; the layer degrades to
+ *   receive-only when it is missing — never throws, never prompts.
  */
 internal class EncounterMeshManager(private val context: Context) {
 
     companion object {
         private const val TAG = "EncounterMesh"
         val SERVICE_UUID: UUID = UUID.fromString("B3A20001-0000-4000-8000-BEA0BEA0BEA0")
-        val RPI_CHAR_UUID: UUID = UUID.fromString("B3A20002-0000-4000-8000-BEA0BEA0BEA0")
         val SERVICE_PARCEL: ParcelUuid = ParcelUuid(SERVICE_UUID)
+
+        /** 16-bit service-data key carrying the rotating identifier (16 raw bytes) in
+         * the scan response — identity travels on air, no GATT connection needed. */
+        val RPI_DATA_PARCEL: ParcelUuid = ParcelUuid.fromString("0000BEA1-0000-1000-8000-00805F9B34FB")
 
         const val RPI_ROTATION_MS: Long = 15 * 60 * 1000
 
@@ -57,8 +55,6 @@ internal class EncounterMeshManager(private val context: Context) {
 
         private const val MAX_TRACKED_PEERS = 64
         private const val PEER_STALE_EVICTION_MS: Long = 10 * 60 * 1000
-        private const val GATT_COOLDOWN_MS: Long = 60 * 1000
-        private const val GATT_TIMEOUT_MS: Long = 8 * 1000
 
         private const val PREFS = "io.bearound.sdk.mesh"
         private const val KEY_CURRENT = "rpi.current"
@@ -75,8 +71,6 @@ internal class EncounterMeshManager(private val context: Context) {
         var rssiSum = 0L
         var firstSeen = 0L
         var lastSeen = 0L
-        var lastGattAttempt = 0L
-        var rpiReadAt = 0L
 
         fun addSample(rssi: Int, now: Long) {
             if (sampleCount == 0) { firstSeen = now; rssiMin = rssi; rssiMax = rssi }
@@ -99,10 +93,7 @@ internal class EncounterMeshManager(private val context: Context) {
     private var started = false
     private var advertiser: android.bluetooth.le.BluetoothLeAdvertiser? = null
     private var virtualBeaconMinor = -1
-    private var gattServer: BluetoothGattServer? = null
-    private var gattInFlight: BluetoothGatt? = null
-    private var gattInFlightAddress: String? = null
-    private var gattTimeout: Runnable? = null
+    private var advertisedRpi: String? = null
 
     // ── Rotating identifier ──────────────────────────────────────────────────
 
@@ -118,9 +109,9 @@ internal class EncounterMeshManager(private val context: Context) {
             .putString(KEY_CURRENT, fresh)
             .putLong(KEY_ROTATED_AT, now)
             .apply()
-        // The virtual beacon's minor derives from the identifier — keep them in step.
-        if (virtualBeaconMinor >= 0 && fresh.take(4).toInt(16) != virtualBeaconMinor) {
-            refreshVirtualBeaconAfterRotation()
+        // Advertised identity (scan response + virtual-beacon minor) must follow rotation.
+        if (advertisedRpi != null && advertisedRpi != fresh) {
+            refreshAdvertisingAfterRotation()
         }
         return fresh
     }
@@ -153,7 +144,6 @@ internal class EncounterMeshManager(private val context: Context) {
         if (!hasPermission(android.Manifest.permission.BLUETOOTH_ADVERTISE)) {
             Log.w(TAG, "BLUETOOTH_ADVERTISE not granted — mesh is receive-only")
         } else {
-            startGattServer()
             startAdvertising(adapter)
         }
         Log.i(TAG, "Encounter mesh started (rpi=${currentRpi().take(8)}…)")
@@ -170,9 +160,7 @@ internal class EncounterMeshManager(private val context: Context) {
         runCatching { advertiser?.stopAdvertising(virtualBeaconCallback) }
         advertiser = null
         virtualBeaconMinor = -1
-        runCatching { gattServer?.close() }
-        gattServer = null
-        cancelInFlight()
+        advertisedRpi = null
         Log.i(TAG, "Encounter mesh stopped")
     }
 
@@ -180,7 +168,7 @@ internal class EncounterMeshManager(private val context: Context) {
 
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
-            Log.i(TAG, "Advertising encounter service")
+            Log.i(TAG, "Advertising encounter service (identity in scan response)")
         }
         override fun onStartFailure(errorCode: Int) {
             Log.w(TAG, "Advertise failed: $errorCode")
@@ -196,6 +184,36 @@ internal class EncounterMeshManager(private val context: Context) {
             // advertisement has priority; the virtual beacon is best-effort.
             Log.w(TAG, "Virtual beacon advertise failed: $errorCode")
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startAdvertising(adapter: android.bluetooth.BluetoothAdapter) {
+        val leAdvertiser = adapter.bluetoothLeAdvertiser ?: run {
+            Log.w(TAG, "No LE advertiser on this device")
+            return
+        }
+        advertiser = leAdvertiser
+        val settings = AdvertiseSettings.Builder()
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            .setConnectable(false)
+            .build()
+        val data = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
+            .addServiceUuid(SERVICE_PARCEL)
+            .build()
+        // Identity rides the scan response: 2 (hdr) + 2 (uuid16) + 16 (rpi) = 20 bytes.
+        val rpiHex = currentRpi()
+        val rpiBytes = rpiHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        advertisedRpi = rpiHex
+        val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .addServiceData(RPI_DATA_PARCEL, rpiBytes)
+            .build()
+        runCatching { leAdvertiser.startAdvertising(settings, data, scanResponse, advertiseCallback) }
+            .onFailure { Log.w(TAG, "startAdvertising threw: ${it.message}") }
+        startVirtualBeacon(leAdvertiser)
     }
 
     /** iBeacon frame identical to the physical Bearound beacon's (same UUID, Apple
@@ -235,75 +253,19 @@ internal class EncounterMeshManager(private val context: Context) {
             .onFailure { Log.w(TAG, "Virtual beacon startAdvertising threw: ${it.message}") }
     }
 
-    /** Rotation moved the identifier → re-advertise the virtual beacon with the new
-     * minor. Called from the rotation path; safe from any thread. */
+    /** Rotation moved the identifier → re-advertise both sets (scan-response RPI and
+     * virtual-beacon minor). Called from the rotation path; safe from any thread. */
     @SuppressLint("MissingPermission")
-    private fun refreshVirtualBeaconAfterRotation() {
+    private fun refreshAdvertisingAfterRotation() {
         val leAdvertiser = advertiser ?: return
         if (!synchronized(lock) { started }) return
         handler.post {
+            runCatching { leAdvertiser.stopAdvertising(advertiseCallback) }
             runCatching { leAdvertiser.stopAdvertising(virtualBeaconCallback) }
-            startVirtualBeacon(leAdvertiser)
+            val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE)
+                as? android.bluetooth.BluetoothManager)?.adapter ?: return@post
+            startAdvertising(adapter)
         }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun startAdvertising(adapter: android.bluetooth.BluetoothAdapter) {
-        val leAdvertiser = adapter.bluetoothLeAdvertiser ?: run {
-            Log.w(TAG, "No LE advertiser on this device")
-            return
-        }
-        advertiser = leAdvertiser
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
-            .setConnectable(true)
-            .build()
-        val data = AdvertiseData.Builder()
-            .setIncludeDeviceName(false)
-            .setIncludeTxPowerLevel(false)
-            .addServiceUuid(SERVICE_PARCEL)
-            .build()
-        runCatching { leAdvertiser.startAdvertising(settings, data, advertiseCallback) }
-            .onFailure { Log.w(TAG, "startAdvertising threw: ${it.message}") }
-        startVirtualBeacon(leAdvertiser)
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun startGattServer() {
-        if (!hasPermission(android.Manifest.permission.BLUETOOTH_CONNECT)) return
-        val sys = context.getSystemService(Context.BLUETOOTH_SERVICE)
-            as? android.bluetooth.BluetoothManager ?: return
-        val server = runCatching {
-            sys.openGattServer(context, object : BluetoothGattServerCallback() {
-                override fun onCharacteristicReadRequest(
-                    device: BluetoothDevice, requestId: Int, offset: Int,
-                    characteristic: BluetoothGattCharacteristic
-                ) {
-                    if (characteristic.uuid != RPI_CHAR_UUID) {
-                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
-                        return
-                    }
-                    // Answer the CURRENT identifier as 16 raw bytes (lazy rotation).
-                    val hex = currentRpi()
-                    val bytes = ByteArray(16) { i ->
-                        hex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
-                    }
-                    val slice = if (offset <= bytes.size) bytes.copyOfRange(offset, bytes.size) else ByteArray(0)
-                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, slice)
-                }
-            })
-        }.getOrNull() ?: return
-        val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
-        service.addCharacteristic(
-            BluetoothGattCharacteristic(
-                RPI_CHAR_UUID,
-                BluetoothGattCharacteristic.PROPERTY_READ,
-                BluetoothGattCharacteristic.PERMISSION_READ
-            )
-        )
-        runCatching { server.addService(service) }
-        gattServer = server
     }
 
     // ── RX (fed by the existing scan) ────────────────────────────────────────
@@ -312,15 +274,29 @@ internal class EncounterMeshManager(private val context: Context) {
     fun isEncounterFrame(result: ScanResult): Boolean =
         result.scanRecord?.serviceUuids?.contains(SERVICE_PARCEL) == true
 
-    @SuppressLint("MissingPermission")
+    /** Extracts the peer's identity from the frame itself — Android peers put it in
+     * service data, iOS foreground peers in the advertised name (base64url). */
+    private fun identityFromFrame(result: ScanResult): String? {
+        val record = result.scanRecord ?: return null
+        record.getServiceData(RPI_DATA_PARCEL)?.let { data ->
+            if (data.size == 16) return data.joinToString("") { "%02x".format(it) }
+        }
+        val name = record.deviceName ?: return null
+        if (name.length != 22) return null
+        return runCatching {
+            val bytes = Base64.decode(name, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+            if (bytes.size == 16) bytes.joinToString("") { "%02x".format(it) } else null
+        }.getOrNull()
+    }
+
     fun handleScanResult(result: ScanResult) {
         if (!synchronized(lock) { started }) return
         val rssi = result.rssi
         if (rssi >= 0 || rssi == 127) return
         val address = result.device.address ?: return
         val now = System.currentTimeMillis()
+        val frameRpi = identityFromFrame(result)
 
-        var connectTo: BluetoothDevice? = null
         synchronized(lock) {
             var peer = peers[address]
             if (peer == null) {
@@ -331,98 +307,14 @@ internal class EncounterMeshManager(private val context: Context) {
                 peer = PeerAggregate()
                 peers[address] = peer
             }
-            peer.addSample(rssi, now)
-
-            val rpiFresh = now - peer.rpiReadAt < RPI_ROTATION_MS
-            if (!(peer.rpi != null && rpiFresh) &&
-                gattInFlight == null &&
-                now - peer.lastGattAttempt > GATT_COOLDOWN_MS &&
-                hasPermission(android.Manifest.permission.BLUETOOTH_CONNECT)
-            ) {
-                peer.lastGattAttempt = now
-                gattInFlightAddress = address
-                connectTo = result.device
-            }
-        }
-        connectTo?.let { readIdentity(it) }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun readIdentity(device: BluetoothDevice) {
-        Log.i(TAG, "Reading identity of ${device.address}")
-        val gatt = runCatching {
-            device.connectGatt(context, false, object : BluetoothGattCallback() {
-                override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-                    if (newState == BluetoothProfile.STATE_CONNECTED) g.discoverServices()
-                    else if (newState == BluetoothProfile.STATE_DISCONNECTED) finishRead(g)
-                }
-                override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-                    val char = g.getService(SERVICE_UUID)?.getCharacteristic(RPI_CHAR_UUID)
-                    if (char == null) { finishRead(g); return }
-                    @Suppress("DEPRECATION") g.readCharacteristic(char)
-                }
-                @Deprecated("Deprecated in API 33")
-                override fun onCharacteristicRead(
-                    g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int
-                ) {
-                    @Suppress("DEPRECATION") val value = characteristic.value
-                    acceptIdentity(g.device.address, value, status)
-                    finishRead(g)
-                }
-                override fun onCharacteristicRead(
-                    g: BluetoothGatt, characteristic: BluetoothGattCharacteristic,
-                    value: ByteArray, status: Int
-                ) {
-                    acceptIdentity(g.device.address, value, status)
-                    finishRead(g)
-                }
-            }, BluetoothDevice.TRANSPORT_LE)
-        }.getOrNull()
-        if (gatt == null) { clearInFlight(); return }
-        synchronized(lock) { gattInFlight = gatt }
-        val timeout = Runnable {
-            Log.w(TAG, "Identity read timed out for ${device.address}")
-            finishRead(gatt)
-        }
-        gattTimeout = timeout
-        handler.postDelayed(timeout, GATT_TIMEOUT_MS)
-    }
-
-    private fun acceptIdentity(address: String?, value: ByteArray?, status: Int) {
-        if (address == null || status != BluetoothGatt.GATT_SUCCESS || value == null || value.size != 16) return
-        val rpi = value.joinToString("") { "%02x".format(it) }
-        val now = System.currentTimeMillis()
-        synchronized(lock) {
-            var peer = peers[address] ?: PeerAggregate().also { peers[address] = it }
-            if (peer.rpi != null && peer.rpi != rpi) {
+            if (frameRpi != null && peer.rpi != null && peer.rpi != frameRpi) {
                 // Rotated identity = new logical presence: restart the aggregate.
-                peer = PeerAggregate().also { peers[address] = it }
+                peer = PeerAggregate()
+                peers[address] = peer
             }
-            peer.rpi = rpi
-            peer.rpiReadAt = now
+            if (frameRpi != null) peer.rpi = frameRpi
+            peer.addSample(rssi, now)
         }
-        Log.i(TAG, "Peer identity read: ${rpi.take(8)}…")
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun finishRead(gatt: BluetoothGatt) {
-        runCatching { gatt.close() }
-        clearInFlight()
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun cancelInFlight() {
-        synchronized(lock) { gattInFlight }?.let { runCatching { it.close() } }
-        clearInFlight()
-    }
-
-    private fun clearInFlight() {
-        synchronized(lock) {
-            gattInFlight = null
-            gattInFlightAddress = null
-        }
-        gattTimeout?.let { handler.removeCallbacks(it) }
-        gattTimeout = null
     }
 
     // ── Reporting ────────────────────────────────────────────────────────────

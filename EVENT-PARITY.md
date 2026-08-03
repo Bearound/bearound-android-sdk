@@ -31,7 +31,9 @@ Contrato compartilhado entre os SDKs nativos (branch `feat/encounter-mesh` nos d
 | Constante | Valor | Uso |
 |---|---|---|
 | Service UUID | `B3A20001-0000-4000-8000-BEA0BEA0BEA0` | Anunciado por todo host com o SDK; filtro de scan nas duas plataformas |
-| Characteristic (RPI) | `B3A20002-0000-4000-8000-BEA0BEA0BEA0` | Read-only; responde os 16 bytes CRUS do identificador rotativo atual |
+| Service data do RPI | UUID 16-bit `0xBEA1` (16 bytes crus no scan response) | Como o ANDROID transmite a identidade — lida do ar, sem conexão |
+| LocalName do RPI | base64url de 22 chars dos 16 bytes | Como o iOS (foreground) transmite a identidade para scanners Android |
+| Characteristic (RPI) | `B3A20002-0000-4000-8000-BEA0BEA0BEA0` | GATT read-only — SÓ fallback iOS↔iOS (peer iOS em background não carrega nada identificável no frame) |
 | Rotação do RPI | 15 min | `[atual, anterior]` reportados como `encounterIds` no payload |
 | **Major reservado (beacon virtual)** | **65535 (`0xFFFF`)** | Ver abaixo — NUNCA é uma detecção |
 
@@ -57,5 +59,6 @@ Diferenças de plataforma (por capacidade, não por design):
   advertisement para a overflow area (visível só a scanners iOS filtrando o UUID) e app
   encerrado não transmite em nenhuma plataforma.
 - iOS em bg NÃO é visível para Android (overflow area é proprietária).
-- Permissões: Android 12+ requer `BLUETOOTH_ADVERTISE`/`BLUETOOTH_CONNECT` (runtime-checked,
-  degrada sem lançar); iOS usa a permissão de Bluetooth existente.
+- Permissões: Android 12+ requer somente `BLUETOOTH_ADVERTISE` (runtime-checked, degrada sem
+  lançar) — a identidade viaja no próprio advertisement, então NÃO há GATT nem
+  `BLUETOOTH_CONNECT` no Android; iOS usa a permissão de Bluetooth existente.
