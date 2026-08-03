@@ -322,6 +322,11 @@ class APIClient(private val configuration: SDKConfiguration) {
             put("notifications", device.notificationsPermission)
             put("bluetooth", device.bluetoothState)
             device.locationAccuracy?.let { put("locationAccuracy", it) }
+            // Advertising ID lives here because that is where the ingest already reads it
+            // from (`device.permissions.advertisingId`) — it is provided by the SDK so the
+            // backend can skip the matchmaker round-trip.
+            device.advertisingId?.let { put("advertisingId", it) }
+            device.limitAdTracking?.let { put("limitAdTracking", it) }
         }
         payload.put("permissions", permissions)
 

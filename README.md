@@ -247,6 +247,7 @@ see the [AI setup prompt](./AI-AGENT-SETUP.md), step 2).
 | `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE` | Optional foreground service (see [Google Play review](#google-play-review--what-the-manifest-merge-means-for-your-app)) |
 | `ACCESS_WIFI_STATE` | Read the connected access point and the system's cached scan results (install-time, no prompt) |
 | `NEARBY_WIFI_DEVICES` | Alternative to location for reading neighbouring access points on Android 13+ — see [Wi-Fi observations](#wi-fi-observations) |
+| `com.google.android.gms.permission.AD_ID` | Google Advertising ID — see [Advertising identifier](#advertising-identifier-aaid) |
 
 `CHANGE_WIFI_STATE` is **not** declared: the SDK reads the system's cached scan results and
 never triggers a scan of its own.
@@ -319,6 +320,42 @@ addresses that Android returns when a permission is missing are discarded rather
 
 > **Migration note:** `network.apId` joins `network.wifiSSID` and is the field consumers
 > should read — a stable identity that survives the SSID being dropped later.
+
+### Advertising identifier (AAID)
+
+The SDK reports the **Google Advertising ID** — the resettable identifier that lets the same
+person be recognised across apps for advertising. It is what makes audiences built from
+beacon visits usable in ad platforms.
+
+**There is no runtime prompt on Android.** The user's choice lives in system settings, and
+the platform enforces it: opting out of ad personalisation turns the id into zeros, and the
+SDK reports none. The `AD_ID` permission is a *normal* permission — granted at install, no
+dialog — but required from `targetSdk` 33+, otherwise the platform zeroes the id even for
+users who allow it.
+
+To actually receive an id, your app needs Google Play Services on the classpath:
+
+```gradle
+implementation 'com.google.android.gms:play-services-ads-identifier:18.2.0'
+```
+
+The SDK keeps this dependency `compileOnly` — the same soft-dependency pattern it uses for
+Firebase — so **nothing is forced on you**. Apps that already bundle Play Services (most apps
+with FCM already do) get the id automatically; apps that don't simply report none, and every
+other feature works the same.
+
+The payload carries `device.permissions.advertisingId` when available, plus `limitAdTracking`
+— so a user opt-out is distinguishable from Play Services being absent.
+
+> **Google Play Data Safety:** declaring `AD_ID` means ticking **"Device or other IDs"** in
+> your Data Safety form.
+>
+> **Apps for children:** Play Families policy forbids `AD_ID`. Strip it from the merged
+> manifest and the SDK degrades to reporting no id:
+> ```xml
+> <uses-permission android:name="com.google.android.gms.permission.AD_ID"
+>     tools:node="remove" />
+> ```
 
 ### Permission model: `neverForLocation` and location
 

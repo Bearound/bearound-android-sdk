@@ -621,6 +621,11 @@ class BeAroundSDK private constructor() {
 
         tryAutoCollectFcmToken(context)
 
+        // Advertising ID: fetched in the background because AdvertisingIdClient throws if
+        // called on the main thread. Lands in the cache before the first sync in practice;
+        // if it does not, the field is simply absent from that one payload.
+        io.bearound.sdk.utilities.AdvertisingIdCollector.refresh(context)
+
         // First-access contract: the device must appear in the backend as soon as the SDK
         // is configured — registration (with the push token, once available) must NOT
         // depend on the host also calling startScanning(). TTL-gated, so a no-op when

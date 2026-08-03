@@ -87,7 +87,9 @@ class DeviceInfoCollector(
             systemUptimeMs = SystemClock.elapsedRealtime(),
             sdkVersion = Build.VERSION.SDK_INT,
             wifis = wifis,
-            location = locationCollector.lastKnown()
+            location = locationCollector.lastKnown(),
+            advertisingId = AdvertisingIdCollector.current(),
+            limitAdTracking = AdvertisingIdCollector.isLimitAdTrackingEnabled()
         )
     }
 

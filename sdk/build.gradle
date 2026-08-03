@@ -143,4 +143,9 @@ dependencies {
     // Firebase Cloud Messaging — soft dependency (compileOnly, not bundled). See tryAutoCollectFcmToken.
     compileOnly 'com.google.firebase:firebase-messaging:24.0.0'
     compileOnly 'com.google.firebase:firebase-common:21.0.0'
+
+    // Google Advertising ID — soft dependency (compileOnly, not bundled), same pattern as
+    // Firebase above. Hosts that bundle Play Services report the AAID; hosts that do not
+    // report none and nothing else changes. See AdvertisingIdCollector.
+    compileOnly 'com.google.android.gms:play-services-ads-identifier:18.2.0'
 }
