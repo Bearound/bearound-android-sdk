@@ -298,6 +298,7 @@ class BeAroundSDK private constructor() {
         bluetoothManager = BluetoothManager(context)
         encounterMesh = EncounterMeshManager(context)
         bluetoothManager.encounterMesh = encounterMesh
+        beaconManager.encounterMesh = encounterMesh
         backgroundScanManager = BackgroundScanManager(context)
         backgroundScheduler = BackgroundScheduler.getInstance(context)
         offlineBatchStorage = OfflineBatchStorage(context)

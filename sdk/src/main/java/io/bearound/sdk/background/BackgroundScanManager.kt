@@ -144,6 +144,11 @@ class BackgroundScanManager(private val context: Context) {
                         IBeaconParser.BEAROUND_IBEACON_PREFIX,
                         IBeaconParser.BEAROUND_IBEACON_MASK
                     )
+                    .build(),
+                // Encounter layer: nearby SDK hosts wake the PendingIntent too, so the
+                // mesh keeps receiving while the app is backgrounded or process-dead.
+                ScanFilter.Builder()
+                    .setServiceUuid(io.bearound.sdk.EncounterMeshManager.SERVICE_PARCEL)
                     .build()
             )
             
