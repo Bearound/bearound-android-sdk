@@ -64,8 +64,7 @@ class APIClient(private val configuration: SDKConfiguration) {
                 connection.doOutput = true
 
                 // beacons=[] + syncTrigger="register" (iOS parity)
-                val payload = buildPayload(emptyList(), sdkInfo, userDevice, userProperties)
-                payload.put("syncTrigger", "register")
+                val payload = buildPayload(emptyList(), sdkInfo, userDevice, userProperties, "register")
 
                 Log.d(TAG, "Sending register event to $url")
 
@@ -103,6 +102,14 @@ class APIClient(private val configuration: SDKConfiguration) {
         sdkInfo: SDKInfo,
         userDevice: UserDevice,
         userProperties: UserProperties?,
+        /**
+         * Why this payload is going up, when that is not simply "beacons were seen":
+         * `encounter_mesh` (only peers around) or `presence_heartbeat` (nothing at all, so
+         * the location and Wi-Fi ARE the datum). Omitted for an ordinary beacon sync, which
+         * needs no explanation. Without it the backend cannot tell a presence report from a
+         * normal sync — both arrive as a payload with an empty beacon list.
+         */
+        syncTrigger: String? = null,
         onComplete: (Result<Unit>) -> Unit
     ) {
         // Nothing at all to report — not a beacon, not a peer, not even where the device is.
@@ -132,7 +139,7 @@ class APIClient(private val configuration: SDKConfiguration) {
                 connection.doOutput = true
 
                 // Build JSON payload
-                val payload = buildPayload(beacons, sdkInfo, userDevice, userProperties)
+                val payload = buildPayload(beacons, sdkInfo, userDevice, userProperties, syncTrigger)
 
                 // Send request
                 Log.d(TAG, "Sending ${beacons.size} beacon(s) to $url")
@@ -176,7 +183,8 @@ class APIClient(private val configuration: SDKConfiguration) {
         beacons: List<Beacon>,
         sdkInfo: SDKInfo,
         userDevice: UserDevice,
-        userProperties: UserProperties?
+        userProperties: UserProperties?,
+        syncTrigger: String? = null
     ): JSONObject {
         val payload = JSONObject()
 
@@ -224,6 +232,7 @@ class APIClient(private val configuration: SDKConfiguration) {
             beaconsArray.put(beaconObj)
         }
         payload.put("beacons", beaconsArray)
+        syncTrigger?.let { payload.put("syncTrigger", it) }
 
         // SDK info
         val sdkObj = JSONObject().apply {
