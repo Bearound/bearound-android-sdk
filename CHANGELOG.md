@@ -5,6 +5,18 @@ All notable changes to the BeAround Android SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **A scan that finds nothing now reports in too.** Until now a device that saw no beacon
+  and no peer stayed silent, and the backend could not tell "there was no coverage here"
+  apart from "the app was not running". Those scans now upload the device's own location
+  and the Wi-Fi around it. Throttled by the new `configure(presenceHeartbeatIntervalMillis:)`
+  — **5 minutes** by default, accepted range 1 minute to 1 hour, `0` to turn the report off.
+  Only the upload is throttled; scanning is unchanged. Nothing is sent when there is neither
+  a location fix nor an access point to report. Requires an ingest that accepts this payload
+  shape (beacon-ingest ≥ #24).
+
 ## [3.7.1] - 2026-08-01
 
 ### Fixed

@@ -33,6 +33,16 @@ class DeviceInfoCollector(
     internal fun nudgeWifiScan() = wifiCollector.nudgeScan()
     private val locationCollector by lazy { LocationCollector(context) }
 
+    /**
+     * Is there anything worth reporting when the scan found no beacon and no peer?
+     *
+     * Cheap on purpose: the empty-scan decision runs on every sync tick, and building a whole
+     * [UserDevice] just to find out there is nothing to say would be the expensive way to
+     * answer it. Reads the same two sources the payload would carry.
+     */
+    internal fun hasPresenceSignal(): Boolean =
+        locationCollector.lastKnown() != null || wifiCollector.collect().isNotEmpty()
+
     companion object {
         /**
          * True only for the FIRST payload each process builds. The old constructor flag

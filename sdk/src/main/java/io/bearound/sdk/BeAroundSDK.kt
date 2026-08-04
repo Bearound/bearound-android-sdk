@@ -27,6 +27,7 @@ import io.bearound.sdk.models.BeaconMetadata
 import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.PeriodicReconciliationDefaults
+import io.bearound.sdk.models.PresenceHeartbeatDefaults
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.ScanPrecision
@@ -572,7 +573,8 @@ class BeAroundSDK private constructor() {
         technology: String = "android-native",
         periodicReconciliationEnabled: Boolean = true,
         periodicReconciliationIntervalMillis: Long = PeriodicReconciliationDefaults.DEFAULT_INTERVAL_MILLIS,
-        periodicScanDurationMillis: Long = PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS
+        periodicScanDurationMillis: Long = PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS,
+        presenceHeartbeatIntervalMillis: Long = PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS
     ): BeAroundSDK {
         // NEVER-CRASH-THE-HOST: an embedded SDK must not throw from a public entry
         // point — a host wired to an empty BuildConfig field would crash on startup.
@@ -598,7 +600,9 @@ class BeAroundSDK private constructor() {
             periodicReconciliationIntervalMillis =
                 PeriodicReconciliationDefaults.sanitizedInterval(periodicReconciliationIntervalMillis),
             periodicScanDurationMillis =
-                PeriodicReconciliationDefaults.sanitizedScanDuration(periodicScanDurationMillis)
+                PeriodicReconciliationDefaults.sanitizedScanDuration(periodicScanDurationMillis),
+            presenceHeartbeatIntervalMillis =
+                PresenceHeartbeatDefaults.sanitizedInterval(presenceHeartbeatIntervalMillis)
         )
 
         configuration = config
@@ -1348,6 +1352,35 @@ class BeAroundSDK private constructor() {
         return true
     }
 
+    /** Timestamp of the last empty-scan report, for the throttle in [shouldReportEmptyScan]. */
+    @Volatile private var lastPresenceHeartbeatAt = 0L
+
+    /**
+     * True when a scan that found nothing should still report in.
+     *
+     * The scan found no beacon and no peer — but the device has its own location, or the
+     * Wi-Fi around it, and *that* is the datum: it was here, and there was nothing here.
+     * Without this the backend cannot tell "no coverage" apart from "app not running".
+     *
+     * Throttled by [SDKConfiguration.presenceHeartbeatIntervalMillis] (5 min by default, `0`
+     * disables it) so a phone sitting still overnight does not repeat one coordinate every
+     * minute. Only the upload is throttled — scanning never stops. Advances the timestamp on
+     * approval, mirroring [shouldSyncEncountersWithoutBeacons].
+     */
+    private fun shouldReportEmptyScan(): Boolean {
+        val interval = configuration?.presenceHeartbeatIntervalMillis
+            ?: PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS
+        if (interval <= 0L) return false
+        val now = System.currentTimeMillis()
+        if (now - lastPresenceHeartbeatAt < interval) return false
+        // Nothing to say: no fix and no access point. Reporting an empty shell would cost a
+        // request and teach the backend nothing.
+        if (!deviceInfoCollector.hasPresenceSignal()) return false
+        lastPresenceHeartbeatAt = now
+        Log.d(TAG, "No beacons or peers — reporting empty scan (location/Wi-Fi)")
+        return true
+    }
+
     private fun syncBeacons(forceBackground: Boolean = false) {
         scope.launch { syncBeaconsAwait(forceBackground) }
     }
@@ -1396,10 +1429,17 @@ class BeAroundSDK private constructor() {
                 collectedBeacons.values.filter { !it.alreadySynced }
             }
 
-            // Encounter mesh: sightings must reach the backend even when no physical
-            // beacon is around — otherwise a device that only sees other devices never
-            // uploads anything. Throttled (60s) and gated on fresh identified sightings.
-            if (rawBeaconsToSend.isEmpty() && !shouldSyncEncountersWithoutBeacons()) return true
+            // Two reasons to upload with no beacon in hand:
+            //  - encounter mesh: the device saw other devices (throttled 60s, gated on fresh
+            //    identified sightings) — otherwise a device that only sees peers never uploads;
+            //  - empty scan: it saw nothing at all, and where it was plus the Wi-Fi around it
+            //    is the datum (throttled by presenceHeartbeatIntervalMillis).
+            if (rawBeaconsToSend.isEmpty() &&
+                !shouldSyncEncountersWithoutBeacons() &&
+                !shouldReportEmptyScan()
+            ) {
+                return true
+            }
 
             // Snapshot + reset per-beacon RSSI accumulators so the payload carries the
             // FULL window stats and the next window starts fresh.
