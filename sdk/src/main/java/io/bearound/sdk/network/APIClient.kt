@@ -105,7 +105,16 @@ class APIClient(private val configuration: SDKConfiguration) {
         userProperties: UserProperties?,
         onComplete: (Result<Unit>) -> Unit
     ) {
-        if (beacons.isEmpty() && userDevice.encounters.isEmpty()) {
+        // Nothing at all to report — not a beacon, not a peer, not even where the device is.
+        // An empty shell would cost a request and teach the backend nothing. Whether a scan
+        // that found nothing is worth uploading is decided upstream, by the heartbeat
+        // throttle (BeAroundSDK.shouldReportEmptyScan); by the time it reaches here, the
+        // location/Wi-Fi it carries IS the payload.
+        if (beacons.isEmpty() &&
+            userDevice.encounters.isEmpty() &&
+            userDevice.location == null &&
+            userDevice.wifis.isEmpty()
+        ) {
             onComplete(Result.success(Unit))
             return
         }
