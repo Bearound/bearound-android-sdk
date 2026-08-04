@@ -5,6 +5,15 @@ All notable changes to the BeAround Android SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.1] - 2026-08-04
+
+### Fixed
+- **A beacon-less payload never said why it was going up.** `syncTrigger` was only ever set
+  on the register path, so an encounter batch (peers around, no beacon) and an empty-scan
+  report (nothing around — the location and Wi-Fi ARE the datum) both reached `/ingest` with
+  no trigger at all, indistinguishable from an ordinary sync that happened to carry nothing.
+  Telling those apart is the reason the field exists. Both are now stamped, matching iOS.
+
 ## [3.8.0] - 2026-08-04
 
 ### Added
