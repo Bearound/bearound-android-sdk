@@ -103,6 +103,12 @@ class APIClient(private val configuration: SDKConfiguration) {
         sdkInfo: SDKInfo,
         userDevice: UserDevice,
         userProperties: UserProperties?,
+        /**
+         * Why this payload was sent. Omitted when null — historically the Android SDK only
+         * ever set it on `register`, which left the backend unable to tell an ordinary sync
+         * from an encounter batch or an empty-scan report. iOS has always sent one.
+         */
+        syncTrigger: String? = null,
         onComplete: (Result<Unit>) -> Unit
     ) {
         // Nothing at all to report — not a beacon, not a peer, not even where the device is.
@@ -133,6 +139,9 @@ class APIClient(private val configuration: SDKConfiguration) {
 
                 // Build JSON payload
                 val payload = buildPayload(beacons, sdkInfo, userDevice, userProperties)
+                // Same contract as iOS: the reason travels with the payload, so the backend can
+                // tell an ordinary sync from an encounter batch or an empty-scan report.
+                syncTrigger?.let { payload.put("syncTrigger", it) }
 
                 // Send request
                 Log.d(TAG, "Sending ${beacons.size} beacon(s) to $url")

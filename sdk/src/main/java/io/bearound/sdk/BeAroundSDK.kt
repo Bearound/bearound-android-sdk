@@ -1434,11 +1434,16 @@ class BeAroundSDK private constructor() {
             //    identified sightings) — otherwise a device that only sees peers never uploads;
             //  - empty scan: it saw nothing at all, and where it was plus the Wi-Fi around it
             //    is the datum (throttled by presenceHeartbeatIntervalMillis).
-            if (rawBeaconsToSend.isEmpty() &&
-                !shouldSyncEncountersWithoutBeacons() &&
-                !shouldReportEmptyScan()
-            ) {
-                return true
+            // Also the payload's reason-for-being: carried to the backend as `syncTrigger`
+            // (iOS parity), so an encounter batch and an empty-scan report are not read as
+            // ordinary syncs that happened to come back empty.
+            var trigger: String? = null
+            if (rawBeaconsToSend.isEmpty()) {
+                trigger = when {
+                    shouldSyncEncountersWithoutBeacons() -> "encounter_mesh"
+                    shouldReportEmptyScan() -> "presence_heartbeat"
+                    else -> return true
+                }
             }
 
             // Snapshot + reset per-beacon RSSI accumulators so the payload carries the
@@ -1481,7 +1486,7 @@ class BeAroundSDK private constructor() {
             // sendBeacons is suspend and invokes the callback before returning,
             // so syncOk is settled by the time we return it.
             var syncOk = false
-            client.sendBeacons(beaconsToSend, info, userDevice, userProperties) { result ->
+            client.sendBeacons(beaconsToSend, info, userDevice, userProperties, trigger) { result ->
                 result.fold(
                     onSuccess = {
                         syncOk = true
