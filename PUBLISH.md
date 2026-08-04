@@ -103,8 +103,10 @@ git push origin vX.Y.Z
 > O push da tag dispara automaticamente o workflow `release.yml` que:
 > 1. Valida que `gradle.properties` e `CHANGELOG.md` estao de acordo com a tag
 > 2. Roda **testes**, lint e build do AAR
-> 3. Dispara o build no JitPack (precisa do secret `JITPACK_TOKEN`; falha do trigger vira
->    so warning — o job pode ficar verde sem o JitPack ter aceitado; conferir no passo 6)
+> 3. Tenta disparar o build no JitPack. **Hoje isso e um no-op**: o secret `JITPACK_TOKEN`
+>    nao esta configurado no repo, entao o POST volta `Missing access token` / HTTP 401 e o
+>    passo so registra um warning — o job fica verde sem o JitPack ter recebido nada.
+>    Quem publica de fato e o GET do passo 6.
 > 4. Cria a GitHub Release com as notas do CHANGELOG (precisa do secret `GH_PUSH_TOKEN`)
 
 ## 6. Verificar publicacao
@@ -113,7 +115,21 @@ git push origin vX.Y.Z
 
 Acessar https://jitpack.io/#Bearound/bearound-android-sdk e confirmar que a versao `vX.Y.Z` foi buildada com sucesso (icone verde).
 
+O primeiro GET nessa URL e o que faz o JitPack clonar a tag e buildar; ele responde 404
+enquanto compila. Repetir o GET ate virar 200 (ou acompanhar em https://jitpack.io/#Bearound/bearound-android-sdk).
+
 Se falhou, clicar no log para investigar. O build do JitPack usa `jitpack.yml` na raiz do projeto.
+
+**Se a falha foi de infra do JitPack** (ex.: `Temporary failure in name resolution` ao
+alcancar o Maven Central), o resultado fica **cacheado por versao+commit**: repetir o GET
+so devolve o mesmo `Error`, e apagar/recriar a tag no MESMO commit tambem nao adianta.
+Para forcar um build novo sem queimar o numero da versao, aponte a tag para um commit
+novo (qualquer commit posterior em `main` serve):
+
+```bash
+git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z
+git tag vX.Y.Z <novo-commit> && git push origin vX.Y.Z
+```
 
 ### GitHub Release
 

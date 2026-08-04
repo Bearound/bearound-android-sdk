@@ -73,8 +73,12 @@ Follow `PUBLISH.md` strictly. Highlights: version lives ONLY in `gradle.properti
 (`SDK_VERSION`); CHANGELOG entry `## [X.Y.Z]` is enforced by CI when the version
 changes; README install-snippet pin is manual; tag from `main` AFTER merge; do NOT use
 the `gradle-publish.yml` dispatch (parallel flow, double release). The release job's
-JitPack trigger is a silent no-op — force the build with a GET on the artifact:
+JitPack trigger is a silent no-op — the `JITPACK_TOKEN` secret does not exist, so the POST
+gets `Missing access token` / 401 and the step only warns. Force the build with a GET on
+the artifact:
 `https://jitpack.io/com/github/Bearound/bearound-android-sdk/vX.Y.Z/bearound-android-sdk-vX.Y.Z.pom`.
+A failed build is cached per version+commit — retrying the GET, or re-tagging the same
+commit, replays the same error. Move the tag to a newer commit to get a fresh build.
 
 ## Language
 
