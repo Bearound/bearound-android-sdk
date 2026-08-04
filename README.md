@@ -246,11 +246,16 @@ see the [AI setup prompt](./AI-AGENT-SETUP.md), step 2).
 | `RECEIVE_BOOT_COMPLETED` | Re-arm scanning after reboot |
 | `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE` | Optional foreground service (see [Google Play review](#google-play-review--what-the-manifest-merge-means-for-your-app)) |
 | `ACCESS_WIFI_STATE` | Read the connected access point and the system's cached scan results (install-time, no prompt) |
+| `CHANGE_WIFI_STATE` | Keep the system's Wi-Fi scan cache fresh while scanning (install-time, no prompt — see [Wi-Fi observations](#wi-fi-observations)) |
 | `NEARBY_WIFI_DEVICES` | Alternative to location for reading neighbouring access points on Android 13+ — see [Wi-Fi observations](#wi-fi-observations) |
+| `BLUETOOTH_ADVERTISE` | Encounter layer on Android 12+ — lets the device be seen by other SDK devices (see [Encounter layer](#encounter-layer-device-to-device)) |
 | `com.google.android.gms.permission.AD_ID` | Google Advertising ID — see [Advertising identifier](#advertising-identifier-aaid) |
 
-`CHANGE_WIFI_STATE` is **not** declared: the SDK reads the system's cached scan results and
-never triggers a scan of its own.
+Both Wi-Fi permissions are **normal** (granted at install, never prompted): the SDK reads
+the system's cached scan results and periodically nudges a refresh **only while scanning
+and in foreground**, inside Android's own 4-scans-per-2-minutes throttle — on an idle
+device nothing else refreshes that cache, and without the nudge observations decay to
+just the connected access point.
 
 ### Wi-Fi observations
 
@@ -320,6 +325,60 @@ addresses that Android returns when a permission is missing are discarded rather
 
 > **Migration note:** `network.apId` joins `network.wifiSSID` and is the field consumers
 > should read — a stable identity that survives the SSID being dropped later.
+
+### Encounter layer (device-to-device)
+
+Besides listening for beacons, every SDK device also **advertises a fixed Bearound service**
+and **recognises other SDK devices nearby**, reporting "saw identifier X at Y dBm" batches in
+the regular sync. Nothing stable goes on the air: each device transmits a random rotating
+identifier renewed every 15 minutes, served over one read-only GATT characteristic. The
+device also emits an iBeacon-format frame with a reserved major (`65535`) so nearby iOS
+devices' region monitoring can fire on its proximity — that frame is filtered out of
+detection on every receive path and never surfaces as a beacon.
+
+**Permission involved (Android 12+ only):**
+
+| Permission | What it enables | If not granted |
+|---|---|---|
+| `BLUETOOTH_ADVERTISE` | Being seen by other SDK devices (service + virtual-beacon frames) | Device becomes receive-only — it still detects others |
+
+There are **no connections and no GATT** in this layer — the identifier travels inside
+the advertisement itself (scan-response service data), so `BLUETOOTH_CONNECT` is not
+declared and never requested. The permission above is runtime-checked on every use: a
+host that never requests it keeps beacon detection and every other feature working
+exactly as before — the layer degrades, it never throws and never prompts on its own.
+
+**How to request them** — all three Bluetooth permissions belong to the same
+**"Nearby devices"** runtime group, so requesting them together shows the user a
+**single dialog** (the same one your app already shows for `BLUETOOTH_SCAN`):
+
+```kotlin
+val permissions = buildList {
+    add(Manifest.permission.ACCESS_FINE_LOCATION)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        add(Manifest.permission.BLUETOOTH_SCAN)
+        add(Manifest.permission.BLUETOOTH_ADVERTISE) // encounter layer: be seen
+    }
+}
+permissionLauncher.launch(permissions.toTypedArray())
+```
+
+**FAQ**
+
+- **Do I have to change anything?** Only add `BLUETOOTH_ADVERTISE` to the runtime
+  request above if you want the encounter layer active. The manifest declarations ship with the
+  SDK via manifest merge.
+- **What does the user see?** The same single "Allow *app* to find, connect to and
+  determine the relative position of nearby devices?" dialog Android already shows for
+  scanning — adding advertise does not add a second prompt.
+- **Android 11 and below?** These permissions don't exist there — the legacy install-time
+  Bluetooth permissions cover everything and no runtime request is needed.
+- **Google Play / Data Safety?** No new data-safety category: the layer transmits only a
+  random rotating identifier (no personal data on the air), and neither permission is
+  location-deriving.
+- **Battery?** The layer reuses the SDK's existing scan (no second radio scan, no polling
+  timers); advertising runs in the radio's low-power mode, and identities are read
+  passively from the advertisements themselves — zero connections.
 
 ### Advertising identifier (AAID)
 

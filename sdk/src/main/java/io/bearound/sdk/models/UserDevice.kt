@@ -58,6 +58,13 @@ data class UserDevice(
      */
     val location: DeviceLocation? = null,
     /**
+     * Nearby SDK-carrying devices aggregated by the encounter layer. Empty until it
+     * spins up (requires Bluetooth).
+     */
+    val encounters: List<EncounterObservation> = emptyList(),
+    /** This device's own rotating identifiers (`[current, previous]`). */
+    val encounterIds: List<String> = emptyList(),
+    /**
      * Google Advertising ID (AAID) — resettable, user-controlled identifier for advertising.
      * Null when the user opted out, when Play Services is absent, or before the first
      * async fetch lands.

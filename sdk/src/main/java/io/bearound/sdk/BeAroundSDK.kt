@@ -27,6 +27,7 @@ import io.bearound.sdk.models.BeaconMetadata
 import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.PeriodicReconciliationDefaults
+import io.bearound.sdk.models.PresenceHeartbeatDefaults
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.ScanPrecision
@@ -141,6 +142,24 @@ class BeAroundSDK private constructor() {
     private lateinit var deviceInfoCollector: DeviceInfoCollector
     private lateinit var beaconManager: BeaconManager
     private lateinit var bluetoothManager: BluetoothManager
+
+    /** Device-to-device encounter layer — runs whenever scanning runs. */
+    private var encounterMesh: EncounterMeshManager? = null
+
+    /** Timestamp of the last encounters-only upload, for the 60s throttle. */
+    @Volatile private var lastEncounterOnlySyncAt = 0L
+
+    /** Keeps the system Wi-Fi scan cache fresh while scanning (35s cadence stays
+     * inside Android's 4-per-2-minutes foreground throttle; background ticks skip —
+     * background scans are budgeted to ~1-2/hour by the OS and the cache ride-along
+     * covers that regime). */
+    private val wifiNudgeHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val wifiNudgeRunnable = object : Runnable {
+        override fun run() {
+            if (!isInBackground) deviceInfoCollector.nudgeWifiScan()
+            wifiNudgeHandler.postDelayed(this, 35_000)
+        }
+    }
     private lateinit var backgroundScanManager: BackgroundScanManager
     private lateinit var backgroundScheduler: BackgroundScheduler
     private var apiClient: APIClient? = null
@@ -290,6 +309,9 @@ class BeAroundSDK private constructor() {
         deviceInfoCollector = DeviceInfoCollector(context)
         beaconManager = BeaconManager(context)
         bluetoothManager = BluetoothManager(context)
+        encounterMesh = EncounterMeshManager(context)
+        bluetoothManager.encounterMesh = encounterMesh
+        beaconManager.encounterMesh = encounterMesh
         backgroundScanManager = BackgroundScanManager(context)
         backgroundScheduler = BackgroundScheduler.getInstance(context)
         offlineBatchStorage = OfflineBatchStorage(context)
@@ -551,7 +573,8 @@ class BeAroundSDK private constructor() {
         technology: String = "android-native",
         periodicReconciliationEnabled: Boolean = true,
         periodicReconciliationIntervalMillis: Long = PeriodicReconciliationDefaults.DEFAULT_INTERVAL_MILLIS,
-        periodicScanDurationMillis: Long = PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS
+        periodicScanDurationMillis: Long = PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS,
+        presenceHeartbeatIntervalMillis: Long = PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS
     ): BeAroundSDK {
         // NEVER-CRASH-THE-HOST: an embedded SDK must not throw from a public entry
         // point — a host wired to an empty BuildConfig field would crash on startup.
@@ -577,7 +600,9 @@ class BeAroundSDK private constructor() {
             periodicReconciliationIntervalMillis =
                 PeriodicReconciliationDefaults.sanitizedInterval(periodicReconciliationIntervalMillis),
             periodicScanDurationMillis =
-                PeriodicReconciliationDefaults.sanitizedScanDuration(periodicScanDurationMillis)
+                PeriodicReconciliationDefaults.sanitizedScanDuration(periodicScanDurationMillis),
+            presenceHeartbeatIntervalMillis =
+                PresenceHeartbeatDefaults.sanitizedInterval(presenceHeartbeatIntervalMillis)
         )
 
         configuration = config
@@ -918,6 +943,12 @@ class BeAroundSDK private constructor() {
 
         // Scanning mode is automatic based on app state (foreground/background)
         beaconManager.startScanning()
+        // Encounter layer rides the same scan: advertise + recognise other SDK hosts.
+        encounterMesh?.start()
+        // Wi-Fi observations: keep the system scan cache fresh while scanning (see
+        // WifiCollector.nudgeScan — foreground only, inside the OS throttle).
+        wifiNudgeHandler.removeCallbacks(wifiNudgeRunnable)
+        wifiNudgeHandler.post(wifiNudgeRunnable)
         startSyncTimer()
 
         // Enable background mechanisms (WorkManager + AlarmManager)
@@ -1022,6 +1053,8 @@ class BeAroundSDK private constructor() {
     }
 
     fun stopScanning() {
+        wifiNudgeHandler.removeCallbacks(wifiNudgeRunnable)
+        encounterMesh?.stop()
         beaconManager.stopScanning()
         bluetoothManager.stopScanning()
         backgroundScanManager.disableBackgroundScanning()
@@ -1298,6 +1331,56 @@ class BeAroundSDK private constructor() {
         scanRefreshRunnable = null
     }
 
+    /** Attaches encounter-mesh data (sightings + own rotating ids) to a payload.
+     * No-op (empty fields, omitted from JSON) before the mesh spins up. */
+    private fun io.bearound.sdk.models.UserDevice.withEncounterData(): io.bearound.sdk.models.UserDevice {
+        val mesh = encounterMesh ?: return this
+        val sightings = mesh.snapshotEncounters()
+        if (sightings.isEmpty()) return this
+        return copy(encounters = sightings, encounterIds = mesh.currentEncounterIds())
+    }
+
+    /** True when the mesh has identified sightings newer than the last encounters-only
+     * upload AND that upload was 60s+ ago. Advances the throttle timestamp. */
+    private fun shouldSyncEncountersWithoutBeacons(): Boolean {
+        val mesh = encounterMesh ?: return false
+        val now = System.currentTimeMillis()
+        if (now - lastEncounterOnlySyncAt < 60_000) return false
+        if (!mesh.hasFreshEncounters(lastEncounterOnlySyncAt)) return false
+        lastEncounterOnlySyncAt = now
+        Log.d(TAG, "No new beacons — syncing encounter batch")
+        return true
+    }
+
+    /** Timestamp of the last empty-scan report, for the throttle in [shouldReportEmptyScan]. */
+    @Volatile private var lastPresenceHeartbeatAt = 0L
+
+    /**
+     * True when a scan that found nothing should still report in.
+     *
+     * The scan found no beacon and no peer — but the device has its own location, or the
+     * Wi-Fi around it, and *that* is the datum: it was here, and there was nothing here.
+     * Without this the backend cannot tell "no coverage" apart from "app not running".
+     *
+     * Throttled by [SDKConfiguration.presenceHeartbeatIntervalMillis] (5 min by default, `0`
+     * disables it) so a phone sitting still overnight does not repeat one coordinate every
+     * minute. Only the upload is throttled — scanning never stops. Advances the timestamp on
+     * approval, mirroring [shouldSyncEncountersWithoutBeacons].
+     */
+    private fun shouldReportEmptyScan(): Boolean {
+        val interval = configuration?.presenceHeartbeatIntervalMillis
+            ?: PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS
+        if (interval <= 0L) return false
+        val now = System.currentTimeMillis()
+        if (now - lastPresenceHeartbeatAt < interval) return false
+        // Nothing to say: no fix and no access point. Reporting an empty shell would cost a
+        // request and teach the backend nothing.
+        if (!deviceInfoCollector.hasPresenceSignal()) return false
+        lastPresenceHeartbeatAt = now
+        Log.d(TAG, "No beacons or peers — reporting empty scan (location/Wi-Fi)")
+        return true
+    }
+
     private fun syncBeacons(forceBackground: Boolean = false) {
         scope.launch { syncBeaconsAwait(forceBackground) }
     }
@@ -1346,7 +1429,17 @@ class BeAroundSDK private constructor() {
                 collectedBeacons.values.filter { !it.alreadySynced }
             }
 
-            if (rawBeaconsToSend.isEmpty()) return true
+            // Two reasons to upload with no beacon in hand:
+            //  - encounter mesh: the device saw other devices (throttled 60s, gated on fresh
+            //    identified sightings) — otherwise a device that only sees peers never uploads;
+            //  - empty scan: it saw nothing at all, and where it was plus the Wi-Fi around it
+            //    is the datum (throttled by presenceHeartbeatIntervalMillis).
+            if (rawBeaconsToSend.isEmpty() &&
+                !shouldSyncEncountersWithoutBeacons() &&
+                !shouldReportEmptyScan()
+            ) {
+                return true
+            }
 
             // Snapshot + reset per-beacon RSSI accumulators so the payload carries the
             // FULL window stats and the next window starts fresh.
@@ -1383,7 +1476,7 @@ class BeAroundSDK private constructor() {
                 locationPermission = locationPermission,
                 bluetoothState = bluetoothState,
                 appInForeground = !isAppInBackground
-            )
+            ).withEncounterData()
 
             // sendBeacons is suspend and invokes the callback before returning,
             // so syncOk is settled by the time we return it.

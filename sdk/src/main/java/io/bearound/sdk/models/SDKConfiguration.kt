@@ -17,6 +17,43 @@ import android.util.Log
  * - **Scan window (3–30 s)**: bounded so a misconfigured window can neither miss the
  *   advertising cadence (< 3 s) nor camp on the radio (> 30 s).
  */
+/**
+ * Defaults and bounds for the empty-scan report (see
+ * [SDKConfiguration.presenceHeartbeatIntervalMillis]).
+ */
+object PresenceHeartbeatDefaults {
+    private const val TAG = "BeAroundSDK-Config"
+
+    /** Default floor between two consecutive "saw nothing" reports. */
+    const val DEFAULT_INTERVAL_MILLIS: Long = 5L * 60L * 1000L
+    /**
+     * Interval floor. Below a minute the same coordinate is repeated for no added meaning,
+     * and every report wakes the radio.
+     */
+    const val MINIMUM_INTERVAL_MILLIS: Long = 60L * 1000L
+    /** Interval ceiling. Past an hour the trail is too sparse to say anything about presence. */
+    const val MAXIMUM_INTERVAL_MILLIS: Long = 60L * 60L * 1000L
+
+    /**
+     * Sanitizes a host-provided interval. Non-positive means "off" and is returned as `0`
+     * (that is the documented way to disable the report); out-of-range values are clamped
+     * with an ERROR-level log — never a silent change, never a crash.
+     */
+    fun sanitizedInterval(value: Long): Long {
+        // Explicit opt-out — not an error, and not clamped into the accepted range.
+        if (value <= 0L) return 0L
+        if (value < MINIMUM_INTERVAL_MILLIS) {
+            Log.e(TAG, "⚠️ presenceHeartbeatIntervalMillis ${value}ms is below the ${MINIMUM_INTERVAL_MILLIS / 1000}s floor — CLAMPED. A still device would repeat the same coordinate every few seconds, waking the radio each time, and the extra points say nothing new.")
+            return MINIMUM_INTERVAL_MILLIS
+        }
+        if (value > MAXIMUM_INTERVAL_MILLIS) {
+            Log.e(TAG, "⚠️ presenceHeartbeatIntervalMillis ${value}ms is above the 1h ceiling — CLAMPED. To turn the empty-scan report off, pass 0 instead.")
+            return MAXIMUM_INTERVAL_MILLIS
+        }
+        return value
+    }
+}
+
 object PeriodicReconciliationDefaults {
     private const val TAG = "BeAroundSDK-Config"
 
@@ -97,7 +134,23 @@ data class SDKConfiguration(
      * **3–30 seconds**. Only used while waiting for the continuous scanners to deliver;
      * the worker never registers scanners of its own.
      */
-    val periodicScanDurationMillis: Long = PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS
+    val periodicScanDurationMillis: Long = PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS,
+    /**
+     * How often a scan that found **nothing** still reports in.
+     *
+     * A scan that finds no beacon and no peer is data too: the device was *here* and saw
+     * nothing. Those payloads carry the device's own location and the Wi-Fi it can see, and
+     * they are what make coverage — and the absence of it — visible.
+     *
+     * Only the *upload* is throttled, never the scan: a beacon or an encounter still syncs at
+     * the normal cadence. This is the floor between two consecutive "saw nothing" reports, so
+     * a phone sitting still all night does not repeat the same coordinate every minute.
+     *
+     * Accepted range: **1 minute … 1 hour**; out-of-range values are clamped with an
+     * ERROR-level log. Use **0** to turn the empty-scan report off entirely. Sanitize via
+     * [PresenceHeartbeatDefaults.sanitizedInterval] before constructing directly.
+     */
+    val presenceHeartbeatIntervalMillis: Long = PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS
 ) {
     val apiBaseURL: String = "https://ingest.bearound.io"
 
