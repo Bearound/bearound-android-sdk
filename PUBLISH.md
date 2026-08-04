@@ -120,16 +120,24 @@ enquanto compila. Repetir o GET ate virar 200 (ou acompanhar em https://jitpack.
 
 Se falhou, clicar no log para investigar. O build do JitPack usa `jitpack.yml` na raiz do projeto.
 
-**Se a falha foi de infra do JitPack** (ex.: `Temporary failure in name resolution` ao
-alcancar o Maven Central), o resultado fica **cacheado por versao+commit**: repetir o GET
-so devolve o mesmo `Error`, e apagar/recriar a tag no MESMO commit tambem nao adianta.
-Para forcar um build novo sem queimar o numero da versao, aponte a tag para um commit
-novo (qualquer commit posterior em `main` serve):
+**Se a falha foi de infra do JitPack** (ex.: `UnknownHostException: services.gradle.org` —
+o runner deles sem DNS, nem baixa o Gradle), o resultado fica **cacheado permanentemente
+por coordenada**. Repetir o GET, apagar/recriar a tag e re-disparar o `release.yml` todos
+devolvem o mesmo `Error`, apontando o commit antigo; mover a tag para um commit novo
+tambem nao adianta.
+
+**A saida sem queimar o numero da versao**: `vX.Y.Z` e `X.Y.Z` sao coordenadas
+DISTINTAS para o JitPack, com caches separados, e as duas resolvem a mesma tag. Se a
+coordenada com `v` estiver queimada, buildar a sem `v` — foi o que destravou a 3.8.0:
 
 ```bash
-git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z
-git tag vX.Y.Z <novo-commit> && git push origin vX.Y.Z
+curl -sI https://jitpack.io/com/github/Bearound/bearound-android-sdk/X.Y.Z/bearound-android-sdk-X.Y.Z.pom
 ```
+
+Nesse caso o README e os wrappers precisam pinar a forma que existe (`:3.8.0`, sem `v`).
+Para so checar se a infra deles voltou, sondar por **prefixo de hash** (`abc1234`,
+`abc12345`, …): cada prefixo e uma coordenada nova, entao builda de verdade, sem tocar
+em tag nenhuma.
 
 ### GitHub Release
 

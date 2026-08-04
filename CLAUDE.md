@@ -77,8 +77,12 @@ JitPack trigger is a silent no-op — the `JITPACK_TOKEN` secret does not exist,
 gets `Missing access token` / 401 and the step only warns. Force the build with a GET on
 the artifact:
 `https://jitpack.io/com/github/Bearound/bearound-android-sdk/vX.Y.Z/bearound-android-sdk-vX.Y.Z.pom`.
-A failed build is cached per version+commit — retrying the GET, or re-tagging the same
-commit, replays the same error. Move the tag to a newer commit to get a fresh build.
+A failed build is cached **permanently per coordinate** — retrying the GET, re-tagging, or
+moving the tag to a newer commit all replay the same error. But `vX.Y.Z` and `X.Y.Z` are
+distinct coordinates with separate caches that resolve the same tag, so building the one
+without the `v` recovers a burnt version (that is how 3.8.0 shipped — README and both
+wrappers pin `:3.8.0`, no `v`). To probe whether their infra is back, request a **hash
+prefix** (`abc1234`, `abc12345`, …): each prefix is a fresh coordinate, so it really builds.
 
 ## Language
 
