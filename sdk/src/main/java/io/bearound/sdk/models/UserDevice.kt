@@ -27,6 +27,19 @@ data class UserDevice(
     val coldStart: Boolean,
     val lowPowerMode: Boolean?,
     val locationAccuracy: String?,
+    /**
+     * Whether the host app holds `ACCESS_BACKGROUND_LOCATION`.
+     *
+     * Reported because a `false` here is otherwise **invisible**: from Android 10 on, a
+     * backgrounded app without it gets an empty Wi-Fi scan list and the placeholder BSSID
+     * `02:00:00:00:00:00` instead of an error. The SDK discards the placeholder (as it
+     * must — otherwise every device on earth would map to the same access point), so
+     * `wifis[]` and `network.apId` simply arrive empty, with every permission the app
+     * asked for granted and nothing in any log.
+     *
+     * Always `true` below Android 10, where background location was not a separate grant.
+     */
+    val backgroundLocation: Boolean,
     /** Hash of the connected access point's BSSID — the identity the backend uses. */
     val apId: String?,
     /**

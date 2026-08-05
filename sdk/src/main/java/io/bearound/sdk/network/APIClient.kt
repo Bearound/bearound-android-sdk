@@ -363,6 +363,9 @@ class APIClient(private val configuration: SDKConfiguration) {
             put("notifications", device.notificationsPermission)
             put("bluetooth", device.bluetoothState)
             device.locationAccuracy?.let { put("locationAccuracy", it) }
+            // Sem isto, Wi-Fi vazio em background e Wi-Fi vazio por falta de permissao sao
+            // indistinguiveis do backend — e a segunda causa nao aparece em log nenhum.
+            put("backgroundLocation", device.backgroundLocation)
             // Advertising ID lives here because that is where the ingest already reads it
             // from (`device.permissions.advertisingId`) — it is provided by the SDK so the
             // backend can skip the matchmaker round-trip.

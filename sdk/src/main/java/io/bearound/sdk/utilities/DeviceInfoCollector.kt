@@ -87,6 +87,7 @@ class DeviceInfoCollector(
             coldStart = firstPayloadOfProcess.getAndSet(false),
             lowPowerMode = isLowPowerMode(),
             locationAccuracy = getLocationAccuracy(locationPermission),
+            backgroundLocation = hasBackgroundLocation(),
             apId = wifis.firstOrNull { it.connected }?.apId,
             // Temporary companion to apId while the collection is being validated.
             wifiSSID = wifis.firstOrNull { it.connected }?.ssid,
@@ -132,6 +133,25 @@ class DeviceInfoCollector(
             "denied"
         }
     }
+
+    /**
+     * Whether the host holds `ACCESS_BACKGROUND_LOCATION`.
+     *
+     * The SDK deliberately does **not** declare this permission. It is a dangerous
+     * permission with a Play Store policy review attached, so declaring it here would drag
+     * every host app through that review — including the ones that never collect Wi-Fi.
+     * Declaring it is the host's decision; making its absence visible is ours.
+     *
+     * Measured in production on 2026-08-05: the same device, same session, every permission
+     * it asked for granted, went from 25 access points to zero the instant it was
+     * backgrounded — and nothing anywhere said why.
+     */
+    private fun hasBackgroundLocation(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
 
     private fun getLocationAccuracy(locationPermission: String): String? {
         if (!locationPermission.contains("authorized")) return null

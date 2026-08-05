@@ -295,6 +295,27 @@ on which permissions the user granted:
 | Nothing | No `wifis[]` at all — payload identical to before |
 | `ACCESS_WIFI_STATE` (automatic, no prompt) | The connected access point |
 | Location **or** `NEARBY_WIFI_DEVICES` (13+) | The connected access point **and** its neighbours |
+| …plus `ACCESS_BACKGROUND_LOCATION` | **The same, while your app is in the background** |
+
+> ### ⚠️ Without background location you collect Wi-Fi only in the foreground
+>
+> This is the single most surprising thing on this page, so it is worth being blunt about:
+> from **Android 10** on, a backgrounded app without `ACCESS_BACKGROUND_LOCATION` gets an
+> **empty scan list** and the placeholder BSSID `02:00:00:00:00:00` — not an error, not a
+> `SecurityException`, nothing in logcat. The SDK discards the placeholder (it must — every
+> device on earth returns the same one), so `wifis[]` and `network.apId` simply arrive
+> empty.
+>
+> Measured on a real device: the same app, same session, every permission it asked for
+> granted, went from **25 access points to zero** the instant it was backgrounded. Location
+> stopped coming through in the same payload.
+>
+> Since a fleet spends almost all of its time in the background, "foreground only" means
+> "almost never". If your integration tests by hand with the app open, it will look perfect.
+>
+> **Check it without guessing:** every payload reports
+> `device.permissions.backgroundLocation`. If it is `false`, you are collecting Wi-Fi in the
+> foreground only.
 
 If you followed the [Quick Start](#quick-start), **you are already at the last row on Android
 ≤ 12** — it requests location, which is what unlocks the neighbours there. To cover Android
@@ -310,14 +331,41 @@ if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
 `BLUETOOTH_SCAN`, so requesting both together shows the user a single dialog — the setup
 that maximises the data costs no extra prompt.
 
+#### Collecting in the background
+
+`ACCESS_BACKGROUND_LOCATION` is **not** declared by the SDK, on purpose: it is a dangerous
+permission with a Google Play policy review attached, and declaring it here would drag every
+host app through that review — including the ones that only detect beacons and never touch
+Wi-Fi. It has to be your decision.
+
+If you want it, declare it in **your** manifest and request it as a **separate, second**
+prompt — from Android 11 on the system refuses to grant it in the same dialog as foreground
+location, and sends the user to Settings to pick "Allow all the time":
+
+```kotlin
+// AndroidManifest.xml (yours, not the SDK's)
+<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+```
+
+```kotlin
+// Only AFTER foreground location has been granted, and never in the same request.
+if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+    requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQ)
+}
+```
+
 Two things worth knowing before you ship it:
 
-- **Nothing degrades if you skip it.** Detection, background behaviour and every other field
-  are unaffected; you simply report fewer access points.
+- **Beacon detection does not need it.** Detection, background wake-up and every other field
+  work exactly the same without it — on Android 12+ the SDK detects on `BLUETOOTH_SCAN`,
+  with no location at all. What you lose by skipping it is Wi-Fi in the background, nothing
+  else.
 - **Google Play Data Safety:** the Quick Start already declares **Location**, and Wi-Fi
   observations do not add a new data type to that form — the access point identity travels
-  hashed. If you enable the transitional `ssid` fields, network names do leave the device,
-  which is worth reflecting in your own privacy policy.
+  hashed. But background location itself **does** require a Play Console declaration and a
+  demonstration video. Budget for that review before you promise the feature.
+- If you enable the transitional `ssid` fields, network names do leave the device, which is
+  worth reflecting in your own privacy policy.
 
 Two privacy behaviours are built in: networks whose name ends in `_nomap` (the opt-out
 convention honoured by Google and Mozilla) are dropped on the device, and placeholder
