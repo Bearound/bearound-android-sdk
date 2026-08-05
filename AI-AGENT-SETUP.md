@@ -27,10 +27,21 @@ below refine it).
    (BLUETOOTH_SCAN with neverForLocation, ACCESS_FINE_LOCATION + ACCESS_COARSE_LOCATION,
    FOREGROUND_SERVICE, FOREGROUND_SERVICE_CONNECTED_DEVICE, POST_NOTIFICATIONS, INTERNET,
    RECEIVE_BOOT_COMPLETED, ACCESS_WIFI_STATE, NEARBY_WIFI_DEVICES,
-   com.google.android.gms.permission.AD_ID). Do NOT re-declare
-   them, and do NOT add or request ACCESS_BACKGROUND_LOCATION — background detection on Android 12+ runs on
-   BLUETOOTH_SCAN, and requesting it drags the app into Google Play's background-location
-   review for zero benefit.
+   com.google.android.gms.permission.AD_ID). Do NOT re-declare them.
+   ACCESS_BACKGROUND_LOCATION: do NOT add it on your own — but do NOT silently skip it
+   either. It is NOT needed for beacon detection (on Android 12+ that runs on
+   BLUETOOTH_SCAN, no location at all), and it costs a Google Play policy review plus a
+   demonstration video. BUT without it, from Android 10 on, Wi-Fi observations only work
+   while the app is in the FOREGROUND: a backgrounded app gets an empty scan list and the
+   placeholder BSSID 02:00:00:00:00:00 — no error, nothing in logcat, and `wifis[]` simply
+   arrives empty. Measured on a real device: 25 access points dropped to zero the instant
+   the app was backgrounded, with every permission it asked for granted. Since a fleet lives
+   in the background, "foreground only" means "almost never". So: ASK ME whether Wi-Fi
+   collection in the background matters for this app. If I say yes, add it to MY manifest
+   and request it as a SEPARATE, SECOND prompt after foreground location is already granted
+   (Android 11+ refuses to grant both in one dialog and sends the user to Settings). If I
+   say no, or if this app only detects beacons, leave it out — that is a valid choice, just
+   not a silent one.
    ADVERTISING ID (AD_ID): the SDK reports the Google Advertising ID when the host app
    bundles Play Services — add
    `implementation("com.google.android.gms:play-services-ads-identifier:18.2.0")` to the
@@ -165,7 +176,10 @@ Guardrails — follow strictly:
   and the device never appears in the Control Hub. Keep it that way.
 - Ask me for my businessToken; do not invent one, never hardcode/commit it, and never
   fall back to the BearoundScan public test token — the app/build.gradle fallback is "".
-- Do NOT request ACCESS_BACKGROUND_LOCATION.
+- Do NOT request ACCESS_BACKGROUND_LOCATION without asking me first — see step 2. It is
+  irrelevant to beacon detection and costs a Play review, but leaving it out silently caps
+  Wi-Fi collection to the foreground, which for a real fleet is close to collecting nothing.
+  Verify the outcome in the payload: `device.permissions.backgroundLocation`.
 - Default to plain startScanning() and strip FOREGROUND_SERVICE_CONNECTED_DEVICE
   (tools:node="remove"). Only wire the connectedDevice foreground service after asking me.
 - STOP and hand me click-by-click steps for anything only a human can do: the on-device
