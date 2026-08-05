@@ -12,9 +12,18 @@
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
 
-    <!-- Location for BLE beacon detection on all versions (foreground only; no background). -->
+    <!-- Location for BLE beacon detection on all versions. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Background location is NOT needed to detect beacons — the scan gate is
+         BLUETOOTH_SCAN on 12+. It is what keeps Wi-Fi observations coming once the app is
+         backgrounded: from Android 10 on, a backgrounded app without it gets an empty scan
+         list and the placeholder BSSID 02:00:00:00:00:00, with no error anywhere. The SDK
+         deliberately does not declare it (it drags every host through a Play policy review
+         with a demo video) — the host declares it if Wi-Fi in background matters, which is
+         exactly what this bench app is for. Check the outcome in the payload:
+         device.permissions.backgroundLocation. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
     <!-- Network -->
     <uses-permission android:name="android.permission.INTERNET" />
