@@ -39,12 +39,25 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
 
+    // Background location MUST be its own request: from Android 11 on, asking for it in the
+    // same call as foreground location makes the system deny the whole thing without a
+    // dialog. On 11+ the system dialog also routes through app settings ("Allow all the
+    // time") rather than granting inline.
+    val backgroundLocationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        viewModel.updatePermissionStatus()
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ ->
+    ) { granted ->
         viewModel.updatePermissionStatus()
         viewModel.checkBluetoothStatus()
         viewModel.checkNotificationStatus()
+        if (granted[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
+            viewModel.requestBackgroundLocationOnce(backgroundLocationLauncher::launch)
+        }
         // Start scanning once the technical gate is satisfied: BLUETOOTH_SCAN on Android 12+
         // (neverForLocation in the SDK manifest makes Bluetooth-only delivery work, so the
         // scan runs even if location was denied), FINE/COARSE location on Android <= 11.
@@ -56,6 +69,12 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
     }
 
     LaunchedEffect(Unit) {
+        // An app that already had the base permissions never reaches the callback above —
+        // which is precisely the app that just added Wi-Fi collection in an update. Ask here
+        // too, or the upgrade path silently never asks.
+        if (viewModel.hasRequiredPermissions()) {
+            viewModel.requestBackgroundLocationOnce(backgroundLocationLauncher::launch)
+        }
         if (!viewModel.hasRequiredPermissions()) {
             val permissions = buildList {
                 add(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -300,6 +319,13 @@ fun PermissionsCard(state: BeAroundScanState) {
                 label = "Localização:",
                 value = state.locationPermissionStatus,
                 color = getLocationPermissionColor(state.locationPermissionStatus)
+            )
+
+            PermissionRow(
+                icon = Icons.Default.LocationOn,
+                label = "Loc. background:",
+                value = state.backgroundLocationStatus,
+                color = getLocationPermissionColor(state.backgroundLocationStatus)
             )
 
             PermissionRow(

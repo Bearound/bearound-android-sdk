@@ -59,6 +59,7 @@ data class BeAroundScanState(
     val beacons: List<Beacon> = emptyList(),
     val statusMessage: String = "Pronto",
     val locationPermissionStatus: String = "Verificando...",
+    val backgroundLocationStatus: String = "Verificando...",
     val bluetoothStatus: String = "Verificando...",
     val notificationStatus: String = "Verificando...",
     val lastScanTime: Date? = null,
@@ -604,8 +605,49 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             }
         }
 
-        _state.value = _state.value.copy(locationPermissionStatus = locationPermission)
+        val backgroundLocation = when {
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q -> "Não se aplica (Android ≤ 9)"
+            hasBackgroundLocation() -> "Concedida — Wi-Fi continua em background"
+            else -> "Negada — Wi-Fi só com o app na tela"
+        }
+
+        _state.value = _state.value.copy(
+            locationPermissionStatus = locationPermission,
+            backgroundLocationStatus = backgroundLocation
+        )
     }
+
+    /**
+     * Asks for background location at most once per install.
+     *
+     * From Android 11 on this does not resolve in a dialog — the system routes to the app's
+     * settings page ("Allow all the time"). Firing it on every cold start would throw the
+     * user into Settings every launch, so the attempt is remembered. Denying is a valid
+     * answer; the row in the UI keeps showing the cost.
+     */
+    fun requestBackgroundLocationOnce(launch: (String) -> Unit) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        if (hasBackgroundLocation()) return
+        val prefs = getApplication<Application>()
+            .getSharedPreferences("bearoundscan_bench", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("bg_location_asked", false)) return
+        prefs.edit().putBoolean("bg_location_asked", true).apply()
+        launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+    }
+
+    /**
+     * Mirrors what the SDK reports as `device.permissions.backgroundLocation`.
+     *
+     * Not part of the scan gate — beacons are detected without it. It gates the Wi-Fi
+     * observations once the app leaves the screen, and its absence is silent: the system
+     * returns an empty scan list, never an error.
+     */
+    fun hasBackgroundLocation(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+            ContextCompat.checkSelfPermission(
+                getApplication(),
+                Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
 
     fun checkBluetoothStatus() {
         val context = getApplication<Application>()
