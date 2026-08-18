@@ -5,6 +5,27 @@ All notable changes to the BeAround Android SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.2] - 2026-08-18
+
+### Fixed
+- **Failing to read the advertising ID once left the device without one forever.**
+  `refresh()` ran a single time at `configure()`; if that read failed — Play Services slow,
+  updating, or the coroutine frozen by an aggressive OEM — the cache stayed null and nothing
+  ever tried again. Measured in production: of 115 Android devices, 63 never reported an ID,
+  while the 52 that did reported one in 1,158 of 1,158 sessions. Never intermittent, always
+  binary per device — and in the SAME app and SAME SDK version, a Samsung reported in 100%
+  of its sessions and a Xiaomi in 0% of 33.
+
+  The read is now attempted whenever a payload is built and the value is missing or stale:
+  - exponential backoff (30s → 30min) instead of giving up after the first failure;
+  - a 6h TTL on the cached value, because the advertising ID is resettable by design and a
+    cached one would otherwise outlive the user's reset;
+  - opting out counts as a *successful* read, so the SDK honours that choice instead of
+    retrying against it.
+
+  Payload building never blocks on the fetch — the request in flight goes with whatever is
+  cached, and the next one carries the recovered ID.
+
 ## [3.8.1] - 2026-08-04
 
 ### Fixed
