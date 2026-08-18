@@ -59,6 +59,7 @@ class DeviceInfoCollector(
         bluetoothState: String,
         appInForeground: Boolean
     ): UserDevice {
+        AdvertisingIdCollector.ensureFresh(context)
         // Collected once and reused: the connected AP is just the entry flagged as
         // such, so there is no reason to hit the Wi-Fi stack twice.
         val wifis = wifiCollector.collect()
@@ -102,6 +103,8 @@ class DeviceInfoCollector(
             sdkVersion = Build.VERSION.SDK_INT,
             wifis = wifis,
             location = locationCollector.lastKnown(),
+            // Cada payload é a nossa chance de recuperar um ID que faltou: ensureFresh só
+            // dispara leitura quando falta ou venceu o TTL, então é barato chamar aqui.
             advertisingId = AdvertisingIdCollector.current(),
             limitAdTracking = AdvertisingIdCollector.isLimitAdTrackingEnabled()
         )
