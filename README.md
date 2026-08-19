@@ -149,14 +149,14 @@ allprojects {
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("com.github.Bearound:bearound-android-sdk:3.8.2")
+    implementation("com.github.Bearound:bearound-android-sdk:3.9.0")
 }
 ```
 
 ```gradle
 // build.gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:3.8.2'
+    implementation 'com.github.Bearound:bearound-android-sdk:3.9.0'
 }
 ```
 
@@ -166,7 +166,7 @@ for how they wire together with one line):
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:3.8.2'
+    implementation 'com.github.Bearound:bearound-android-sdk:3.9.0'
     implementation 'com.github.Bearound:bearound-telemetry-android-sdk:v0.1.2'
 }
 ```
