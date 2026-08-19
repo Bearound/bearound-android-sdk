@@ -119,7 +119,7 @@ internal class WifiCollector(private val context: Context) {
             info!!.networkId == -1 && info.bssid == null -> null
             else -> WifiObservation(
                 apId = apId,
-                // Temporary, for validating the collection — see WifiObservation.ssid.
+                // Part of the contract, not a leftover — see WifiObservation.ssid.
                 ssid = info.ssid?.removeSurrounding("\"")?.takeIf { it != "<unknown ssid>" },
                 rssi = info.rssi.takeIf { it in -100..0 },
                 connected = true,
@@ -147,7 +147,7 @@ internal class WifiCollector(private val context: Context) {
                 if (ageMs != null && ageMs > MAX_RESULT_AGE_MS) return@mapNotNull null
                 WifiObservation(
                     apId = apId,
-                    // Temporary, for validating the collection — see WifiObservation.ssid.
+                    // Part of the contract, not a leftover — see WifiObservation.ssid.
                     ssid = result.SSID?.takeIf { it.isNotBlank() },
                     rssi = result.level.takeIf { it in -100..0 },
                     connected = false,

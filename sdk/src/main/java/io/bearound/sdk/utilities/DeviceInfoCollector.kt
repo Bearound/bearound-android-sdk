@@ -111,7 +111,7 @@ class DeviceInfoCollector(
             locationAccuracy = getLocationAccuracy(locationPermission),
             backgroundLocation = hasBackgroundLocation(),
             apId = wifis.firstOrNull { it.connected }?.apId,
-            // Temporary companion to apId while the collection is being validated.
+            // Reported next to apId — see WifiObservation.ssid.
             wifiSSID = wifis.firstOrNull { it.connected }?.ssid,
             connectionMetered = isConnectionMetered(),
             connectionExpensive = isConnectionExpensive(),

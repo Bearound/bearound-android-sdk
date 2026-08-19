@@ -275,12 +275,13 @@ on iOS.
 | `connected` | Whether this is the access point the device is joined to |
 | `frequencyMhz` | Channel frequency |
 | `timestamp` | When the access point was seen (not when the payload was sent) |
-| `ssid` | Network name — **temporary**, see below |
+| `ssid` | Network name (see the note below) |
 
-> **`ssid` and `network.wifiSSID` are transitional.** They ride along so the collection can
-> be validated against real networks while the access-point map is being built. Nothing
-> downstream consumes them — `apId` is the identity. They are marked for removal in the
-> source, so dropping them later is a single grep.
+> **`ssid` and `network.wifiSSID` carry the network name**, and the backend consumes them:
+> the name says something the hashed `apId` cannot. Because a network name identifies a
+> place — and at home a household — both are personal data and ship only while Wi-Fi
+> collection is on. `configure(collectWifi = false)` drops them with the rest of the Wi-Fi
+> block; see [Controlling what the SDK collects](#controlling-what-the-sdk-collects).
 
 Each payload also carries the device's **last known** location as context — the SDK never
 requests an active fix, so there is no extra GPS wake-up and no battery cost.
@@ -364,15 +365,16 @@ Two things worth knowing before you ship it:
   observations do not add a new data type to that form — the access point identity travels
   hashed. But background location itself **does** require a Play Console declaration and a
   demonstration video. Budget for that review before you promise the feature.
-- If you enable the transitional `ssid` fields, network names do leave the device, which is
-  worth reflecting in your own privacy policy.
+- **Network names leave the device.** The `ssid` fields ride along with the hashed `apId`
+  (see the Wi-Fi observations table), so reflect that in your own privacy policy —
+  or pass `configure(collectWifi = false)` to send no Wi-Fi data at all.
 
 Two privacy behaviours are built in: networks whose name ends in `_nomap` (the opt-out
 convention honoured by Google and Mozilla) are dropped on the device, and placeholder
 addresses that Android returns when a permission is missing are discarded rather than hashed.
 
-> **Migration note:** `network.apId` joins `network.wifiSSID` and is the field consumers
-> should read — a stable identity that survives the SSID being dropped later.
+> **Migration note:** `network.apId` joins `network.wifiSSID` — a stable, hashed identity for
+> the access point, reported next to the name rather than instead of it.
 
 ### Encounter layer (device-to-device)
 
