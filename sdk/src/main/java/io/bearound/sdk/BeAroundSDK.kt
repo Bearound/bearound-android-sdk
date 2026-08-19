@@ -24,6 +24,7 @@ import io.bearound.sdk.interfaces.BluetoothManagerListener
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.BeAroundDiagnostics
 import io.bearound.sdk.models.BeaconMetadata
+import io.bearound.sdk.models.DataCollectionPolicyStore
 import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.PeriodicReconciliationDefaults
@@ -272,6 +273,11 @@ class BeAroundSDK private constructor() {
         
         if (savedConfig != null) {
             configuration = savedConfig
+            // The host's data-collection switches are part of the configuration and must
+            // survive a restore: without this a worker-revived process would come back with
+            // everything on and upload a signal the host turned off — in background, where
+            // nobody is looking.
+            DataCollectionPolicyStore.apply(savedConfig.dataCollectionPolicy)
             apiClient = APIClient(savedConfig)
             
             val buildNumber = try {
@@ -574,7 +580,10 @@ class BeAroundSDK private constructor() {
         periodicReconciliationEnabled: Boolean = true,
         periodicReconciliationIntervalMillis: Long = PeriodicReconciliationDefaults.DEFAULT_INTERVAL_MILLIS,
         periodicScanDurationMillis: Long = PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS,
-        presenceHeartbeatIntervalMillis: Long = PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS
+        presenceHeartbeatIntervalMillis: Long = PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS,
+        collectAdvertisingId: Boolean = true,
+        collectLocation: Boolean = true,
+        collectWifi: Boolean = true
     ): BeAroundSDK {
         // NEVER-CRASH-THE-HOST: an embedded SDK must not throw from a public entry
         // point — a host wired to an empty BuildConfig field would crash on startup.
@@ -602,8 +611,16 @@ class BeAroundSDK private constructor() {
             periodicScanDurationMillis =
                 PeriodicReconciliationDefaults.sanitizedScanDuration(periodicScanDurationMillis),
             presenceHeartbeatIntervalMillis =
-                PresenceHeartbeatDefaults.sanitizedInterval(presenceHeartbeatIntervalMillis)
+                PresenceHeartbeatDefaults.sanitizedInterval(presenceHeartbeatIntervalMillis),
+            collectAdvertisingId = collectAdvertisingId,
+            collectLocation = collectLocation,
+            collectWifi = collectWifi
         )
+
+        // Applied FIRST: everything below (telemetry install, the advertising-ID fetch, the
+        // register call, an in-flight sync) can reach a collector, and a collector that runs
+        // before the policy lands would read a signal the host just turned off.
+        DataCollectionPolicyStore.apply(config.dataCollectionPolicy)
 
         configuration = config
         apiClient = APIClient(config)
@@ -649,7 +666,11 @@ class BeAroundSDK private constructor() {
         // Advertising ID: fetched in the background because AdvertisingIdClient throws if
         // called on the main thread. Lands in the cache before the first sync in practice;
         // if it does not, the field is simply absent from that one payload.
-        io.bearound.sdk.utilities.AdvertisingIdCollector.refresh(context)
+        // Skipped entirely when the host opted out — an identifier we will never send is one
+        // we have no reason to ask Play Services for.
+        if (config.collectAdvertisingId) {
+            io.bearound.sdk.utilities.AdvertisingIdCollector.refresh(context)
+        }
 
         // First-access contract: the device must appear in the backend as soon as the SDK
         // is configured — registration (with the push token, once available) must NOT

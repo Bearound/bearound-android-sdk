@@ -150,8 +150,49 @@ data class SDKConfiguration(
      * ERROR-level log. Use **0** to turn the empty-scan report off entirely. Sanitize via
      * [PresenceHeartbeatDefaults.sanitizedInterval] before constructing directly.
      */
-    val presenceHeartbeatIntervalMillis: Long = PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS
+    val presenceHeartbeatIntervalMillis: Long = PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS,
+    /**
+     * Whether the SDK may read and report the Google Advertising ID (AAID).
+     *
+     * `false` means the identifier is never read and never leaves the device:
+     * `permissions.advertisingId` and `permissions.limitAdTracking` are absent from every
+     * payload, and Play Services is never queried for it.
+     *
+     * For an app that collects the advertising ID for its own purposes but does not want to
+     * share it with Bearound. Default: `true`.
+     */
+    val collectAdvertisingId: Boolean = true,
+    /**
+     * Whether the SDK may report the device's own location.
+     *
+     * `false` means the last known fix is never read and the `location` block is absent from
+     * every payload. The `permissions.location` / `permissions.locationAccuracy` fields
+     * stay — they describe the authorisation, not the position.
+     *
+     * Does **not** stop beacon detection: scanning is driven by Bluetooth, and the location
+     * permission it requires is about radio access, not about reporting coordinates.
+     *
+     * Default: `true`.
+     */
+    val collectLocation: Boolean = true,
+    /**
+     * Whether the SDK may report the Wi-Fi access points around the device.
+     *
+     * `false` means no Wi-Fi read or scan nudge is issued and the `wifis` array plus the
+     * `network.apId` / `network.wifiSSID` fields are absent from every payload.
+     *
+     * Default: `true`.
+     */
+    val collectWifi: Boolean = true
 ) {
+    /** The three switches above as one value, for the collectors. */
+    val dataCollectionPolicy: DataCollectionPolicy
+        get() = DataCollectionPolicy(
+            advertisingId = collectAdvertisingId,
+            location = collectLocation,
+            wifi = collectWifi
+        )
+
     val apiBaseURL: String = "https://ingest.bearound.io"
 
     // NOTE: the old precisionScanDuration/PauseDuration/CycleCount/CycleInterval props

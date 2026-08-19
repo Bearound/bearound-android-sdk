@@ -45,9 +45,9 @@ data class UserDevice(
     /**
      * Name of the connected network.
      *
-     * **Temporary — kept for validating the collection while the access-point map is being
-     * built.** [apId] is the field that matters; remove this one (and `WifiObservation.ssid`)
-     * once the collection is trusted.
+     * **Consumed by the backend — keep it.** See `WifiObservation.ssid`: the name carries
+     * information the hashed [apId] cannot. Personal data, so it ships only while the host
+     * allows Wi-Fi collection (`configure(collectWifi = ...)`).
      */
     val wifiSSID: String?,
     val connectionMetered: Boolean?,

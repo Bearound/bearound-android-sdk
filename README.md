@@ -275,12 +275,13 @@ on iOS.
 | `connected` | Whether this is the access point the device is joined to |
 | `frequencyMhz` | Channel frequency |
 | `timestamp` | When the access point was seen (not when the payload was sent) |
-| `ssid` | Network name — **temporary**, see below |
+| `ssid` | Network name (see the note below) |
 
-> **`ssid` and `network.wifiSSID` are transitional.** They ride along so the collection can
-> be validated against real networks while the access-point map is being built. Nothing
-> downstream consumes them — `apId` is the identity. They are marked for removal in the
-> source, so dropping them later is a single grep.
+> **`ssid` and `network.wifiSSID` carry the network name**, and the backend consumes them:
+> the name says something the hashed `apId` cannot. Because a network name identifies a
+> place — and at home a household — both are personal data and ship only while Wi-Fi
+> collection is on. `configure(collectWifi = false)` drops them with the rest of the Wi-Fi
+> block; see [Controlling what the SDK collects](#controlling-what-the-sdk-collects).
 
 Each payload also carries the device's **last known** location as context — the SDK never
 requests an active fix, so there is no extra GPS wake-up and no battery cost.
@@ -364,15 +365,16 @@ Two things worth knowing before you ship it:
   observations do not add a new data type to that form — the access point identity travels
   hashed. But background location itself **does** require a Play Console declaration and a
   demonstration video. Budget for that review before you promise the feature.
-- If you enable the transitional `ssid` fields, network names do leave the device, which is
-  worth reflecting in your own privacy policy.
+- **Network names leave the device.** The `ssid` fields ride along with the hashed `apId`
+  (see the Wi-Fi observations table), so reflect that in your own privacy policy —
+  or pass `configure(collectWifi = false)` to send no Wi-Fi data at all.
 
 Two privacy behaviours are built in: networks whose name ends in `_nomap` (the opt-out
 convention honoured by Google and Mozilla) are dropped on the device, and placeholder
 addresses that Android returns when a permission is missing are discarded rather than hashed.
 
-> **Migration note:** `network.apId` joins `network.wifiSSID` and is the field consumers
-> should read — a stable identity that survives the SSID being dropped later.
+> **Migration note:** `network.apId` joins `network.wifiSSID` — a stable, hashed identity for
+> the access point, reported next to the name rather than instead of it.
 
 ### Encounter layer (device-to-device)
 
@@ -453,6 +455,10 @@ other feature works the same.
 
 The payload carries `device.permissions.advertisingId` when available, plus `limitAdTracking`
 — so a user opt-out is distinguishable from Play Services being absent.
+
+If your app collects the AAID for its own purposes but you do not want it sent to Bearound,
+pass `collectAdvertisingId = false` — the SDK then never queries Play Services for it. See
+[Controlling what the SDK collects](#controlling-what-the-sdk-collects).
 
 > **Google Play Data Safety:** declaring `AD_ID` means ticking **"Device or other IDs"** in
 > your Data Safety form.
@@ -880,6 +886,50 @@ val batches: List<List<Beacon>> = sdk.pendingBatches
 
 Beacon metadata (battery, temperature, firmware, movements) arrives in the same `0xBEAD`
 service-data payload and is exposed via `Beacon.metadata`. No configuration needed.
+
+### Controlling what the SDK collects
+
+Three of the signals in the payload describe the **person**, not the sighting: the
+advertising identifier (AAID), the device's own coordinates, and the Wi-Fi access points
+around it. Your app may collect them for its own purposes and still not want to share them
+with Bearound — a different legal basis, a Data Safety declaration you do not want to
+extend, or a client policy that simply says no.
+
+Each one has a switch in `configure(...)`:
+
+```kotlin
+sdk.configure(
+    businessToken = "your-business-token",
+    collectAdvertisingId = false,  // default: true — my app collects the AAID, but don't send it
+    collectLocation = false,       // default: true — don't send the device's coordinates
+    collectWifi = true             // default: true
+)
+```
+
+**All three default to `true`**, so an integration that does not mention them keeps behaving
+exactly as it does today.
+
+A switch turned off means **collect nothing**, not "collect and withhold": the value is never
+read from the platform in the first place.
+
+| Switch | What disappears from the payload | Also |
+|--------|----------------------------------|------|
+| `collectAdvertisingId = false` | `device.permissions.advertisingId`, `device.permissions.limitAdTracking` | Play Services is never queried for the identifier |
+| `collectLocation = false` | the top-level `location` block | `device.permissions.location` / `locationAccuracy` **stay** — they report the authorisation the user granted, not where they are |
+| `collectWifi = false` | the top-level `wifis` array, `device.network.apId`, `device.network.wifiSSID` | No Wi-Fi read and no scan nudge is issued at all |
+
+**Beacon detection is never affected.** The location permission Android requires for BLE
+scanning is about radio access, not about reporting coordinates: with `collectLocation =
+false` the SDK still scans, still detects and still reports beacons — it just stops saying
+*where* the device was.
+
+What it does affect is the **empty-scan report** (`presenceHeartbeatIntervalMillis`): a scan
+that found no beacon and no peer only reports in when it has a location or an access point to
+carry. Turn both off and there is nothing left to report, so the heartbeat stops firing — by
+design.
+
+The choice is persisted with the rest of the configuration, so it survives the process
+restores WorkManager and the background scan perform on the SDK's behalf.
 
 ### Periodic reconciliation (WorkManager)
 

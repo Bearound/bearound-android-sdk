@@ -53,6 +53,15 @@ below refine it).
    AD_ID), strip it in the app manifest with
    `<uses-permission android:name="com.google.android.gms.permission.AD_ID"
    tools:node="remove" />` and skip the dependency.
+   Data-collection switches — leave them OUT of configure(). The defaults collect
+   everything (collectAdvertisingId, collectLocation and collectWifi are all true) and
+   that is what you ship. Do NOT ask me what to collect and do NOT write these
+   arguments. Only if I tell you, unprompted, to stop sending one of them, pass false
+   for that ONE switch: collectAdvertisingId = false also stops the SDK from querying
+   Play Services for the id; collectLocation = false drops the device's coordinates
+   from the payload (beacon detection is UNAFFECTED — the location permission BLE
+   scanning needs is about radio access, not about reporting coordinates);
+   collectWifi = false drops the access points.
    AUDIT THE MERGED MANIFEST: this is an APPLICATION module on AGP 8.6+, so the task is
    `./gradlew :app:processDebugMainManifest` (NOT processDebugManifest — that is a
    library-module task). Inspect the merged output at

@@ -263,7 +263,7 @@ class APIClient(private val configuration: SDKConfiguration) {
                     put("timestamp", wifi.timestamp)
                     wifi.rssi?.let { put("rssi", it) }
                     wifi.frequencyMhz?.let { put("frequencyMhz", it) }
-                    // Temporary, for validating the collection — see WifiObservation.ssid.
+                    // Part of the contract, not a leftover — see WifiObservation.ssid.
                     wifi.ssid?.let { put("ssid", it) }
                 })
             }
@@ -352,7 +352,7 @@ class APIClient(private val configuration: SDKConfiguration) {
             put("type", device.networkType)
             device.cellularGeneration?.let { put("cellularGeneration", it) }
             device.apId?.let { put("apId", it) }
-            // Temporary, for validating the collection — see WifiObservation.ssid.
+            // Network name — part of the contract, see WifiObservation.ssid.
             device.wifiSSID?.let { put("wifiSSID", it) }
         }
         payload.put("network", network)
