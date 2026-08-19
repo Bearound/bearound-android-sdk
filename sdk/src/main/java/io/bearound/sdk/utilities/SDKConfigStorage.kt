@@ -35,6 +35,10 @@ object SDKConfigStorage {
     private const val KEY_PERIODIC_ENABLED = "periodic_reconciliation_enabled"
     private const val KEY_PERIODIC_INTERVAL = "periodic_reconciliation_interval_ms"
     private const val KEY_PERIODIC_SCAN_DURATION = "periodic_scan_duration_ms"
+    // Data-collection switches (see DataCollectionPolicy)
+    private const val KEY_COLLECT_ADVERTISING_ID = "collect_advertising_id"
+    private const val KEY_COLLECT_LOCATION = "collect_location"
+    private const val KEY_COLLECT_WIFI = "collect_wifi"
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -49,6 +53,9 @@ object SDKConfigStorage {
             putBoolean(KEY_PERIODIC_ENABLED, config.periodicReconciliationEnabled)
             putLong(KEY_PERIODIC_INTERVAL, config.periodicReconciliationIntervalMillis)
             putLong(KEY_PERIODIC_SCAN_DURATION, config.periodicScanDurationMillis)
+            putBoolean(KEY_COLLECT_ADVERTISING_ID, config.collectAdvertisingId)
+            putBoolean(KEY_COLLECT_LOCATION, config.collectLocation)
+            putBoolean(KEY_COLLECT_WIFI, config.collectWifi)
             putBoolean(KEY_IS_CONFIGURED, true)
             // Remove legacy keys if they exist
             remove(KEY_FOREGROUND_INTERVAL)
@@ -99,6 +106,14 @@ object SDKConfigStorage {
             prefs.getLong(KEY_PERIODIC_SCAN_DURATION, PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS)
         )
 
+        // Backward-compatible: a config persisted before these switches existed restores
+        // everything ON, which is what that install was already doing. An app that opted out
+        // keeps the opt-out across every worker-revived process — the alternative is a
+        // restored session quietly uploading the signal the host disabled.
+        val collectAdvertisingId = prefs.getBoolean(KEY_COLLECT_ADVERTISING_ID, true)
+        val collectLocation = prefs.getBoolean(KEY_COLLECT_LOCATION, true)
+        val collectWifi = prefs.getBoolean(KEY_COLLECT_WIFI, true)
+
         return SDKConfiguration(
             businessToken = businessToken,
             appId = appId,
@@ -107,7 +122,10 @@ object SDKConfigStorage {
             technology = technology,
             periodicReconciliationEnabled = periodicEnabled,
             periodicReconciliationIntervalMillis = periodicInterval,
-            periodicScanDurationMillis = periodicScanDuration
+            periodicScanDurationMillis = periodicScanDuration,
+            collectAdvertisingId = collectAdvertisingId,
+            collectLocation = collectLocation,
+            collectWifi = collectWifi
         )
     }
 

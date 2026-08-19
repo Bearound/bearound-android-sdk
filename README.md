@@ -454,6 +454,10 @@ other feature works the same.
 The payload carries `device.permissions.advertisingId` when available, plus `limitAdTracking`
 — so a user opt-out is distinguishable from Play Services being absent.
 
+If your app collects the AAID for its own purposes but you do not want it sent to Bearound,
+pass `collectAdvertisingId = false` — the SDK then never queries Play Services for it. See
+[Controlling what the SDK collects](#controlling-what-the-sdk-collects).
+
 > **Google Play Data Safety:** declaring `AD_ID` means ticking **"Device or other IDs"** in
 > your Data Safety form.
 >
@@ -880,6 +884,50 @@ val batches: List<List<Beacon>> = sdk.pendingBatches
 
 Beacon metadata (battery, temperature, firmware, movements) arrives in the same `0xBEAD`
 service-data payload and is exposed via `Beacon.metadata`. No configuration needed.
+
+### Controlling what the SDK collects
+
+Three of the signals in the payload describe the **person**, not the sighting: the
+advertising identifier (AAID), the device's own coordinates, and the Wi-Fi access points
+around it. Your app may collect them for its own purposes and still not want to share them
+with Bearound — a different legal basis, a Data Safety declaration you do not want to
+extend, or a client policy that simply says no.
+
+Each one has a switch in `configure(...)`:
+
+```kotlin
+sdk.configure(
+    businessToken = "your-business-token",
+    collectAdvertisingId = false,  // default: true — my app collects the AAID, but don't send it
+    collectLocation = false,       // default: true — don't send the device's coordinates
+    collectWifi = true             // default: true
+)
+```
+
+**All three default to `true`**, so an integration that does not mention them keeps behaving
+exactly as it does today.
+
+A switch turned off means **collect nothing**, not "collect and withhold": the value is never
+read from the platform in the first place.
+
+| Switch | What disappears from the payload | Also |
+|--------|----------------------------------|------|
+| `collectAdvertisingId = false` | `device.permissions.advertisingId`, `device.permissions.limitAdTracking` | Play Services is never queried for the identifier |
+| `collectLocation = false` | the top-level `location` block | `device.permissions.location` / `locationAccuracy` **stay** — they report the authorisation the user granted, not where they are |
+| `collectWifi = false` | the top-level `wifis` array, `device.network.apId`, `device.network.wifiSSID` | No Wi-Fi read and no scan nudge is issued at all |
+
+**Beacon detection is never affected.** The location permission Android requires for BLE
+scanning is about radio access, not about reporting coordinates: with `collectLocation =
+false` the SDK still scans, still detects and still reports beacons — it just stops saying
+*where* the device was.
+
+What it does affect is the **empty-scan report** (`presenceHeartbeatIntervalMillis`): a scan
+that found no beacon and no peer only reports in when it has a location or an access point to
+carry. Turn both off and there is nothing left to report, so the heartbeat stops firing — by
+design.
+
+The choice is persisted with the rest of the configuration, so it survives the process
+restores WorkManager and the background scan perform on the SDK's behalf.
 
 ### Periodic reconciliation (WorkManager)
 

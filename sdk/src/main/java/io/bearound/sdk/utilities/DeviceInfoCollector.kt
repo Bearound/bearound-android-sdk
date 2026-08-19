@@ -17,6 +17,7 @@ import android.util.DisplayMetrics
 import android.view.WindowManager
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import io.bearound.sdk.models.DataCollectionPolicyStore
 import io.bearound.sdk.models.UserDevice
 import java.util.Locale
 import java.util.TimeZone
@@ -29,8 +30,14 @@ class DeviceInfoCollector(
 ) {
     private val wifiCollector by lazy { WifiCollector(context) }
 
-    /** Nudges the system Wi-Fi scan cache — see [WifiCollector.nudgeScan]. */
-    internal fun nudgeWifiScan() = wifiCollector.nudgeScan()
+    /**
+     * Nudges the system Wi-Fi scan cache — see [WifiCollector.nudgeScan]. No-op when the host
+     * turned Wi-Fi collection off: refreshing a cache nothing will read is pure cost.
+     */
+    internal fun nudgeWifiScan() {
+        if (!DataCollectionPolicyStore.current.wifi) return
+        wifiCollector.nudgeScan()
+    }
     private val locationCollector by lazy { LocationCollector(context) }
 
     /**
@@ -40,8 +47,14 @@ class DeviceInfoCollector(
      * [UserDevice] just to find out there is nothing to say would be the expensive way to
      * answer it. Reads the same two sources the payload would carry.
      */
-    internal fun hasPresenceSignal(): Boolean =
-        locationCollector.lastKnown() != null || wifiCollector.collect().isNotEmpty()
+    internal fun hasPresenceSignal(): Boolean {
+        // Mirrors the policy the payload builder applies: a signal the host turned off is not
+        // a reason to spend a request. With both off the heartbeat has nothing to carry and
+        // correctly stops firing.
+        val policy = DataCollectionPolicyStore.current
+        if (policy.location && locationCollector.lastKnown() != null) return true
+        return policy.wifi && wifiCollector.collect().isNotEmpty()
+    }
 
     companion object {
         /**
@@ -59,10 +72,18 @@ class DeviceInfoCollector(
         bluetoothState: String,
         appInForeground: Boolean
     ): UserDevice {
-        AdvertisingIdCollector.ensureFresh(context)
+        // What the host allows us to collect. Read once per payload so a reconfigure lands on
+        // the next one instead of mid-build.
+        val policy = DataCollectionPolicyStore.current
+
+        // Cada payload é a nossa chance de recuperar um ID que faltou — mas não quando o
+        // host desligou a coleta: aí não há ID para recuperar.
+        if (policy.advertisingId) AdvertisingIdCollector.ensureFresh(context)
+
         // Collected once and reused: the connected AP is just the entry flagged as
-        // such, so there is no reason to hit the Wi-Fi stack twice.
-        val wifis = wifiCollector.collect()
+        // such, so there is no reason to hit the Wi-Fi stack twice. Skipped entirely when
+        // Wi-Fi collection is off — nothing to withhold later if the value is never read.
+        val wifis = if (policy.wifi) wifiCollector.collect() else emptyList()
 
         return UserDevice(
             deviceId = DeviceIdentifier.getDeviceId(context),
@@ -102,11 +123,12 @@ class DeviceInfoCollector(
             systemUptimeMs = SystemClock.elapsedRealtime(),
             sdkVersion = Build.VERSION.SDK_INT,
             wifis = wifis,
-            location = locationCollector.lastKnown(),
-            // Cada payload é a nossa chance de recuperar um ID que faltou: ensureFresh só
-            // dispara leitura quando falta ou venceu o TTL, então é barato chamar aqui.
-            advertisingId = AdvertisingIdCollector.current(),
-            limitAdTracking = AdvertisingIdCollector.isLimitAdTrackingEnabled()
+            location = if (policy.location) locationCollector.lastKnown() else null,
+            // ensureFresh (acima) só dispara leitura quando falta ou venceu o TTL, então é
+            // barato chamar por payload.
+            advertisingId = if (policy.advertisingId) AdvertisingIdCollector.current() else null,
+            limitAdTracking =
+                if (policy.advertisingId) AdvertisingIdCollector.isLimitAdTrackingEnabled() else null
         )
     }
 
