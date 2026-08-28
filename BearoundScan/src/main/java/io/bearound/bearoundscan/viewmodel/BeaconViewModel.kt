@@ -624,6 +624,24 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
      * settings page ("Allow all the time"). Firing it on every cold start would throw the
      * user into Settings every launch, so the attempt is remembered. Denying is a valid
      * answer; the row in the UI keeps showing the cost.
+     *
+     * The write is `commit()`, not `apply()`, and that is the whole bug this once-guard had.
+     *
+     * `apply()` queues the write and returns immediately. The very next statement hands the
+     * user to the system Settings activity, so this process goes to the background — and on
+     * OEM builds with aggressive process management it is killed there, before the queued
+     * write ever reaches disk. The flag is lost, the next cold start finds `false`, asks
+     * again, and lands in Settings again: a loop with no exit, where granting everything the
+     * dialog offers changes nothing.
+     *
+     * Reproduced on a Redmi (HyperOS, Android 15) on 2026-08-28: four consecutive launches,
+     * including one straight after a clean install, each one redirected to the location
+     * settings page and the process gone seconds later.
+     *
+     * `commit()` blocks until the value is durable. It is disk I/O on the main thread, which
+     * is normally worth avoiding — here it runs at most once per install, immediately before
+     * an activity transition that already costs far more, and the alternative is a permission
+     * loop the user cannot escape.
      */
     fun requestBackgroundLocationOnce(launch: (String) -> Unit) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
@@ -631,7 +649,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         val prefs = getApplication<Application>()
             .getSharedPreferences("bearoundscan_bench", Context.MODE_PRIVATE)
         if (prefs.getBoolean("bg_location_asked", false)) return
-        prefs.edit().putBoolean("bg_location_asked", true).apply()
+        prefs.edit().putBoolean("bg_location_asked", true).commit()
         launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
     }
 
