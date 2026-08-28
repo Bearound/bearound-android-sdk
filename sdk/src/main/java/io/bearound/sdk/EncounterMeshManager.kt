@@ -454,47 +454,14 @@ internal class EncounterMeshManager(private val context: Context) {
     }
 
     /**
-     * Identified peers seen since the last call, and CLOSES their window.
+     * Identified peers seen since the last call, and CLOSES their window. Destructive —
+     * call it exactly once per payload, like [drainVirtualBeacons].
      *
-     * Read this together with [drainVirtualBeacons]: both ports must upload exactly ONE
-     * window per payload, the same way the hardware-beacon statistics do. This function
-     * used to be a non-destructive snapshot, and the cost was measured in production: a
-     * real 4m42s encounter was re-uploaded for two more days (~30k uploads) because the
-     * aggregate lived as long as the process. Every one of those replays was useless —
-     * the identifier rotates every [RPI_ROTATION_MS], so the backend can only resolve a
-     * pair inside the window it was actually seen in; a replayed encounter resolves to
-     * nobody, forever.
+     * Resets the window of every reported peer but keeps the entry, so [PeerAggregate.rpi]
+     * survives to detect rotation; entries stale for [PEER_STALE_EVICTION_MS] are dropped.
      *
-     * **Design: drain the WINDOW, keep the PEER — not `clear()`, not age-based eviction
-     * alone.** Three options were on the table:
-     *
-     * - *Pure drain* (`peers.clear()`, like [drainVirtualBeacons]) — correct for the
-     *   replay bug, but it throws away [PeerAggregate.rpi] too. That identity is what
-     *   detects a rotation as "same address, new logical presence" (see [handleScanResult])
-     *   and what lets a still-present peer be recognised rather than rediscovered. Losing
-     *   it every sync would make rotation indistinguishable from a new peer.
-     * - *Age-based eviction only* (run [PEER_STALE_EVICTION_MS] outside the overflow
-     *   branch) — fixes nothing on its own: a peer that is still physically present is
-     *   never stale, so its aggregate keeps growing without bound and the reported window
-     *   still spans hours.
-     * - *This one*: report, then [PeerAggregate.resetWindow] every reported peer and drop
-     *   the ones nothing has heard from for [PEER_STALE_EVICTION_MS]. A peer still nearby
-     *   is reported again next sync with a FRESH window; a peer that walked away goes
-     *   quiet immediately (`sampleCount == 0` withholds it) and its entry is reclaimed
-     *   once it is stale.
-     *
-     * What it costs: the boundary sample is not carried over, so an encounter that spans
-     * N syncs arrives as N adjacent windows rather than one interval — stitching them back
-     * together is the backend's job, and it is the same job it already does for hardware
-     * beacons. A peer heard exactly once between two syncs is reported once and then never
-     * again, which is the intended behaviour, not a loss.
-     *
-     * The eviction pass lives HERE rather than only inside the `peers.size >=
-     * MAX_TRACKED_PEERS` branch of [handleScanResult]: that branch is dead code on a
-     * device that only ever sees one or two peers, which is the ordinary case.
-     *
-     * @param now injectable clock — production always takes the default; tests use it to
-     *   step past [PEER_STALE_EVICTION_MS] without sleeping.
+     * @param now injectable clock — production takes the default; tests use it to step
+     *   past [PEER_STALE_EVICTION_MS] without sleeping.
      */
     fun drainEncounters(now: Long = System.currentTimeMillis()): List<EncounterObservation> = synchronized(lock) {
         val out = peers.values.mapNotNull { peer ->

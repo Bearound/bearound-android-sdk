@@ -143,10 +143,8 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
                     // Start/Stop Button
                     Button(
                         onClick = {
-                            // Sem desvio para os Ajustes do sistema: um toque em
-                            // "Iniciar Scan" que abre outra tela e uma navegacao que o
-                            // usuario nao pediu. Faltando permissao o botao fica
-                            // desabilitado e o cartao acima ja diz qual e.
+                            // Never opens system settings: the button is disabled while
+                            // a permission is missing, and the card above names it.
                             if (state.isScanning) {
                                 viewModel.stopScanning()
                             } else {
@@ -318,10 +316,8 @@ fun PermissionsCard(state: BeAroundScanState) {
                 color = getLocationPermissionColor(state.locationPermissionStatus)
             )
 
-            // Informa, nao navega. Pedir background location no Android 11+ SEMPRE leva
-            // para a pagina de Ajustes do sistema, e tirar o usuario do app por conta
-            // propria e o defeito que esta linha existe para nao repetir. O texto ja diz
-            // o custo de nao conceder.
+            // Informational only: requesting background location on Android 11+ always
+            // sends the user to system settings, so this row never asks for it.
             PermissionRow(
                 icon = Icons.Default.LocationOn,
                 label = "Loc. background:",

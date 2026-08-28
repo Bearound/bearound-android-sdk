@@ -1368,9 +1368,8 @@ class BeAroundSDK private constructor() {
      *
      * No-op (empty fields, omitted from JSON) before the mesh spins up.
      *
-     * `encounters` are DRAINED, not snapshotted — one window per payload, exactly like
-     * the virtual-beacon sightings above and like the hardware-beacon statistics. Called
-     * from a single place, once per sync, so draining here cannot double-consume a window.
+     * `encounters` are DRAINED, not snapshotted — one window per payload. This is the
+     * only call site, so a window is never double-consumed.
      */
     private fun io.bearound.sdk.models.UserDevice.withEncounterData(): io.bearound.sdk.models.UserDevice {
         val mesh = encounterMesh ?: return this
