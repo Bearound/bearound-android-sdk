@@ -88,6 +88,23 @@ internal class EncounterMeshManager(private val context: Context) {
         }
 
         val rssiAvg: Int get() = if (sampleCount == 0) 0 else (rssiSum.toDouble() / sampleCount).toInt()
+
+        /**
+         * Closes the current reporting window: the running statistics go back to zero, but
+         * the peer entry itself survives with its identity and its [lastSeen].
+         *
+         * [lastSeen] is deliberately NOT cleared — it is what tells the eviction pass how
+         * long ago this peer was last heard, and it is the only thing that keeps an
+         * emptied entry from looking brand new.
+         */
+        fun resetWindow() {
+            sampleCount = 0
+            rssiSum = 0
+            rssiMin = 0
+            rssiMax = Int.MIN_VALUE
+            lastRssi = 0
+            firstSeen = 0
+        }
     }
 
     /**
@@ -127,6 +144,11 @@ internal class EncounterMeshManager(private val context: Context) {
 
     /** True between [start] and [stop] — the mesh is running, whether or not it can be seen. */
     internal val isActive: Boolean get() = synchronized(lock) { started }
+
+    /** Peer entries currently held. Exposed so the eviction in [drainEncounters] is
+     * observable: a drained-but-retained entry is invisible in the payload, and without
+     * this nothing would notice the table growing until it hit [MAX_TRACKED_PEERS]. */
+    internal val trackedPeerCount: Int get() = synchronized(lock) { peers.size }
 
     private var advertiser: android.bluetooth.le.BluetoothLeAdvertiser? = null
     private var virtualBeaconMinor = -1
@@ -424,13 +446,58 @@ internal class EncounterMeshManager(private val context: Context) {
      * encounters-only sync — a device that only ever sees virtual beacons (the common
      * case in background) must be able to open it too. */
     fun hasFreshEncounters(sinceMs: Long): Boolean = synchronized(lock) {
-        peers.values.any { it.rpi != null && it.lastSeen > sinceMs } ||
-            virtualPeers.values.any { it.lastSeen > sinceMs }
+        // `sampleCount > 0` matters since [drainEncounters] keeps drained peers around:
+        // an emptied entry still carries its old `lastSeen`, and without this it would
+        // keep opening the encounters-only sync for a window that has nothing in it.
+        peers.values.any { it.rpi != null && it.sampleCount > 0 && it.lastSeen > sinceMs } ||
+            virtualPeers.values.any { it.sampleCount > 0 && it.lastSeen > sinceMs }
     }
 
-    /** Non-destructive snapshot of every identified peer, for the sync payload. */
-    fun snapshotEncounters(): List<EncounterObservation> = synchronized(lock) {
-        peers.values.mapNotNull { peer ->
+    /**
+     * Identified peers seen since the last call, and CLOSES their window.
+     *
+     * Read this together with [drainVirtualBeacons]: both ports must upload exactly ONE
+     * window per payload, the same way the hardware-beacon statistics do. This function
+     * used to be a non-destructive snapshot, and the cost was measured in production: a
+     * real 4m42s encounter was re-uploaded for two more days (~30k uploads) because the
+     * aggregate lived as long as the process. Every one of those replays was useless —
+     * the identifier rotates every [RPI_ROTATION_MS], so the backend can only resolve a
+     * pair inside the window it was actually seen in; a replayed encounter resolves to
+     * nobody, forever.
+     *
+     * **Design: drain the WINDOW, keep the PEER — not `clear()`, not age-based eviction
+     * alone.** Three options were on the table:
+     *
+     * - *Pure drain* (`peers.clear()`, like [drainVirtualBeacons]) — correct for the
+     *   replay bug, but it throws away [PeerAggregate.rpi] too. That identity is what
+     *   detects a rotation as "same address, new logical presence" (see [handleScanResult])
+     *   and what lets a still-present peer be recognised rather than rediscovered. Losing
+     *   it every sync would make rotation indistinguishable from a new peer.
+     * - *Age-based eviction only* (run [PEER_STALE_EVICTION_MS] outside the overflow
+     *   branch) — fixes nothing on its own: a peer that is still physically present is
+     *   never stale, so its aggregate keeps growing without bound and the reported window
+     *   still spans hours.
+     * - *This one*: report, then [PeerAggregate.resetWindow] every reported peer and drop
+     *   the ones nothing has heard from for [PEER_STALE_EVICTION_MS]. A peer still nearby
+     *   is reported again next sync with a FRESH window; a peer that walked away goes
+     *   quiet immediately (`sampleCount == 0` withholds it) and its entry is reclaimed
+     *   once it is stale.
+     *
+     * What it costs: the boundary sample is not carried over, so an encounter that spans
+     * N syncs arrives as N adjacent windows rather than one interval — stitching them back
+     * together is the backend's job, and it is the same job it already does for hardware
+     * beacons. A peer heard exactly once between two syncs is reported once and then never
+     * again, which is the intended behaviour, not a loss.
+     *
+     * The eviction pass lives HERE rather than only inside the `peers.size >=
+     * MAX_TRACKED_PEERS` branch of [handleScanResult]: that branch is dead code on a
+     * device that only ever sees one or two peers, which is the ordinary case.
+     *
+     * @param now injectable clock — production always takes the default; tests use it to
+     *   step past [PEER_STALE_EVICTION_MS] without sleeping.
+     */
+    fun drainEncounters(now: Long = System.currentTimeMillis()): List<EncounterObservation> = synchronized(lock) {
+        val out = peers.values.mapNotNull { peer ->
             val rpi = peer.rpi ?: return@mapNotNull null
             if (peer.sampleCount == 0) return@mapNotNull null
             EncounterObservation(
@@ -444,14 +511,19 @@ internal class EncounterMeshManager(private val context: Context) {
                 lastSeen = peer.lastSeen,
             )
         }
+        peers.values.forEach { it.resetWindow() }
+        peers.entries.removeAll { now - it.value.lastSeen > PEER_STALE_EVICTION_MS }
+        return out
     }
 
     /**
      * Virtual-beacon sightings accumulated since the last call, and RESETS them.
      *
-     * Draining (unlike [snapshotEncounters], which is non-destructive) keeps a phone that
-     * sat next to another phone for an hour from re-uploading the same aggregate every
-     * sync — each payload carries exactly one window, like the hardware-beacon stats do.
+     * Draining keeps a phone that sat next to another phone for an hour from re-uploading
+     * the same aggregate every sync — each payload carries exactly one window, like the
+     * hardware-beacon stats do. [drainEncounters] applies the same rule to the other port;
+     * it clears the window rather than the whole entry, because that port has a per-peer
+     * identity worth keeping across windows (see its documentation).
      */
     fun drainVirtualBeacons(): List<VirtualBeaconSighting> = synchronized(lock) {
         if (virtualPeers.isEmpty()) return emptyList()
