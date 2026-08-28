@@ -144,8 +144,10 @@ class BeAroundSDK private constructor() {
     private lateinit var beaconManager: BeaconManager
     private lateinit var bluetoothManager: BluetoothManager
 
-    /** Device-to-device encounter layer — runs whenever scanning runs. */
-    private var encounterMesh: EncounterMeshManager? = null
+    /** Device-to-device encounter layer — runs whenever scanning runs.
+     * Internal (not private) so the background revive paths can be asserted in tests. */
+    internal var encounterMesh: EncounterMeshManager? = null
+        private set
 
     /** Timestamp of the last encounters-only upload, for the 60s throttle. */
     @Volatile private var lastEncounterOnlySyncAt = 0L
@@ -1109,6 +1111,13 @@ class BeAroundSDK private constructor() {
             }
         }
 
+        // Rejoin the mesh BEFORE routing the frames: this process may have just been
+        // revived by the scan PendingIntent, and nothing else on this path calls start().
+        // With the mesh stopped, handleScanResult and handleVirtualBeacon drop everything
+        // this broadcast is carrying and the device does not advertise either — until the
+        // 15-min watchdog happens to run.
+        rejoinEncounterMesh()
+
         val isAppInForeground = isAppInForeground()
 
         Log.d(TAG, "Processing ${scanResults.size} broadcast results (app in foreground: $isAppInForeground)")
@@ -1953,6 +1962,20 @@ class BeAroundSDK private constructor() {
         backgroundScanManager.refreshBackgroundScanning()
     }
     
+    /**
+     * Puts the process back on the encounter mesh from a background entry point.
+     *
+     * Same gate the watchdog path runs under: configured, and scanning still wanted — a
+     * stale PendingIntent delivered after [stopScanning] must not resurrect the
+     * advertisement. Bluetooth state and BLUETOOTH_ADVERTISE are checked inside
+     * [EncounterMeshManager.start], which is also idempotent, so calling this on every
+     * broadcast costs one lock check once the mesh is up.
+     */
+    private fun rejoinEncounterMesh() {
+        if (!isConfigured || !wasScanningEnabled()) return
+        encounterMesh?.start()
+    }
+
     /**
      * Restart scanning from background (after app kill/reboot)
      * Only starts beacon detection, not full UI updates
