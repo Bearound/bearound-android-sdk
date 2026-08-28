@@ -8,6 +8,7 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -43,21 +44,12 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
     // same call as foreground location makes the system deny the whole thing without a
     // dialog. On 11+ the system dialog also routes through app settings ("Allow all the
     // time") rather than granting inline.
-    val backgroundLocationLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { _ ->
-        viewModel.updatePermissionStatus()
-    }
-
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { granted ->
         viewModel.updatePermissionStatus()
         viewModel.checkBluetoothStatus()
         viewModel.checkNotificationStatus()
-        if (granted[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
-            viewModel.requestBackgroundLocationOnce(backgroundLocationLauncher::launch)
-        }
         // Start scanning once the technical gate is satisfied: BLUETOOTH_SCAN on Android 12+
         // (neverForLocation in the SDK manifest makes Bluetooth-only delivery work, so the
         // scan runs even if location was denied), FINE/COARSE location on Android <= 11.
@@ -69,12 +61,6 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
     }
 
     LaunchedEffect(Unit) {
-        // An app that already had the base permissions never reaches the callback above —
-        // which is precisely the app that just added Wi-Fi collection in an update. Ask here
-        // too, or the upgrade path silently never asks.
-        if (viewModel.hasRequiredPermissions()) {
-            viewModel.requestBackgroundLocationOnce(backgroundLocationLauncher::launch)
-        }
         val permissions = buildList {
             if (!viewModel.hasRequiredPermissions()) {
                 add(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -157,19 +143,17 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
                     // Start/Stop Button
                     Button(
                         onClick = {
+                            // Sem desvio para os Ajustes do sistema: um toque em
+                            // "Iniciar Scan" que abre outra tela e uma navegacao que o
+                            // usuario nao pediu. Faltando permissao o botao fica
+                            // desabilitado e o cartao acima ja diz qual e.
                             if (state.isScanning) {
                                 viewModel.stopScanning()
                             } else {
-                                if (!viewModel.hasRequiredPermissions()) {
-                                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                        data = Uri.fromParts("package", context.packageName, null)
-                                    }
-                                    context.startActivity(intent)
-                                } else {
-                                    viewModel.startScanning()
-                                }
+                                viewModel.startScanning()
                             }
                         },
+                        enabled = state.isScanning || viewModel.hasRequiredPermissions(),
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (state.isScanning) {
@@ -334,6 +318,10 @@ fun PermissionsCard(state: BeAroundScanState) {
                 color = getLocationPermissionColor(state.locationPermissionStatus)
             )
 
+            // Informa, nao navega. Pedir background location no Android 11+ SEMPRE leva
+            // para a pagina de Ajustes do sistema, e tirar o usuario do app por conta
+            // propria e o defeito que esta linha existe para nao repetir. O texto ja diz
+            // o custo de nao conceder.
             PermissionRow(
                 icon = Icons.Default.LocationOn,
                 label = "Loc. background:",
@@ -386,10 +374,13 @@ fun PermissionRow(
     icon: ImageVector,
     label: String,
     value: String,
-    color: Color
+    color: Color,
+    onClick: (() -> Unit)? = null
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .let { if (onClick != null) it.clickable(onClick = onClick) else it },
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
