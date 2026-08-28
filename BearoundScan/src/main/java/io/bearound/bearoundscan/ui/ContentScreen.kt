@@ -75,8 +75,8 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
         if (viewModel.hasRequiredPermissions()) {
             viewModel.requestBackgroundLocationOnce(backgroundLocationLauncher::launch)
         }
-        if (!viewModel.hasRequiredPermissions()) {
-            val permissions = buildList {
+        val permissions = buildList {
+            if (!viewModel.hasRequiredPermissions()) {
                 add(Manifest.permission.ACCESS_FINE_LOCATION)
                 add(Manifest.permission.ACCESS_COARSE_LOCATION)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -86,6 +86,19 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
                     add(Manifest.permission.POST_NOTIFICATIONS)
                 }
             }
+            // Encounter layer: without BLUETOOTH_ADVERTISE this device is INVISIBLE to
+            // every other device — it can only watch the mesh, never appear in it.
+            // Requested separately from the block above because an install that already
+            // had BLUETOOTH_SCAN never enters it, which is exactly the upgrade path.
+            // Same runtime group as BLUETOOTH_SCAN, so once that is granted this one is
+            // granted with no extra dialog.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                !viewModel.hasAdvertisePermission()
+            ) {
+                add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            }
+        }
+        if (permissions.isNotEmpty()) {
             permissionLauncher.launch(permissions.toTypedArray())
         }
     }

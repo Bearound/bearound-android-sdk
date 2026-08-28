@@ -381,16 +381,25 @@ addresses that Android returns when a permission is missing are discarded rather
 Besides listening for beacons, every SDK device also **advertises a fixed Bearound service**
 and **recognises other SDK devices nearby**, reporting "saw identifier X at Y dBm" batches in
 the regular sync. Nothing stable goes on the air: each device transmits a random rotating
-identifier renewed every 15 minutes, served over one read-only GATT characteristic. The
-device also emits an iBeacon-format frame with a reserved major (`65535`) so nearby iOS
-devices' region monitoring can fire on its proximity — that frame is filtered out of
-detection on every receive path and never surfaces as a beacon.
+identifier renewed every 15 minutes, carried inside the advertisement itself (scan-response
+service data) — there is no GATT and no connection.
+
+The device also emits an **iBeacon-format frame with a reserved major (`65535`)** and a minor
+derived from the same rotating identifier. That frame is never treated as a beacon detection —
+it does not enter region monitoring, ranging or the detection log — but it IS reported as an
+encounter: it rides the beacon scan filters that already run in background (including the
+PendingIntent broadcast, the only delivery path left on some AOSP-like Android 14 builds), so
+it is the port that keeps producing pairs when the app is not in the foreground.
+
+Every payload from a running device also carries `encounterIds` — the identifiers this device
+is currently advertising. It is sent whether or not the device saw anyone: it is the half that
+lets the backend turn somebody else's sighting into a real pair.
 
 **Permission involved (Android 12+ only):**
 
 | Permission | What it enables | If not granted |
 |---|---|---|
-| `BLUETOOTH_ADVERTISE` | Being seen by other SDK devices (service + virtual-beacon frames) | Device becomes receive-only — it still detects others |
+| `BLUETOOTH_ADVERTISE` | Being seen by other SDK devices (service + virtual-beacon frames) | Device becomes receive-only — it still detects beacons and others, but **no other device can ever see it**, so it produces no pair |
 
 There are **no connections and no GATT** in this layer — the identifier travels inside
 the advertisement itself (scan-response service data), so `BLUETOOTH_CONNECT` is not
@@ -415,9 +424,14 @@ permissionLauncher.launch(permissions.toTypedArray())
 
 **FAQ**
 
-- **Do I have to change anything?** Only add `BLUETOOTH_ADVERTISE` to the runtime
-  request above if you want the encounter layer active. The manifest declarations ship with the
-  SDK via manifest merge.
+- **Do I have to change anything?** Yes — add `BLUETOOTH_ADVERTISE` to the runtime request
+  above if you want the encounter layer active. The manifest declarations ship with the SDK via
+  manifest merge, but a permission that is never *requested* is never granted, and the device
+  stays invisible. Watch out for the upgrade path: an install that already holds
+  `BLUETOOTH_SCAN` usually skips the app's permission block entirely, so request
+  `BLUETOOTH_ADVERTISE` on its own when it is missing (it is granted with no extra dialog once
+  the group is allowed). The SDK logs `BLUETOOTH_ADVERTISE not granted — this device is
+  INVISIBLE to the mesh` under the `EncounterMesh` tag when this happens.
 - **What does the user see?** The same single "Allow *app* to find, connect to and
   determine the relative position of nearby devices?" dialog Android already shows for
   scanning — adding advertise does not add a second prompt.

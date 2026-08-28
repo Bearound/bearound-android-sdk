@@ -679,6 +679,15 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         _state.value = _state.value.copy(notificationStatus = status)
     }
 
+    /** Encounter layer: granted means this device can be SEEN by other SDK devices.
+     * Always true below Android 12, where advertising needs no runtime permission. */
+    fun hasAdvertisePermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(
+                getApplication<Application>(),
+                Manifest.permission.BLUETOOTH_ADVERTISE
+            ) == PackageManager.PERMISSION_GRANTED
+
     fun hasRequiredPermissions(): Boolean {
         val context = getApplication<Application>()
 
