@@ -117,7 +117,54 @@ class IBeaconParserTest {
         assertNull(IBeaconParser.parseIBeaconFrame(parseScanRecord(advBytes), rssi = -40))
     }
 
+    // ── virtual-beacon band (encounter layer) ──
+
+    @Test
+    fun `an SDK host pulsing as a virtual beacon is never a physical detection`() {
+        assertNull(IBeaconParser.parseIBeaconFrame(virtualBeaconRecord(0xFFFF, 24284), rssi = -54))
+    }
+
+    @Test
+    fun `the virtual-beacon parse recovers the peer's minor`() {
+        val parsed = IBeaconParser.parseVirtualEncounterFrame(
+            virtualBeaconRecord(0xFFFF, 24284), rssi = -54
+        )!!
+
+        assertEquals(0xFFFF, parsed.major)
+        assertEquals(24284, parsed.minor)
+        assertEquals(-54, parsed.rssi)
+        assertNull(parsed.metadata)
+    }
+
+    @Test
+    fun `an air-corrupted virtual frame is neither a detection nor an encounter`() {
+        // 0xFF32: one damaged byte off 0xFFFF, observed in the field. Its minor is just as
+        // unreliable as its major, and the minor IS the peer's identity.
+        val record = virtualBeaconRecord(0xFF32, 24284)
+
+        assertNull(IBeaconParser.parseIBeaconFrame(record, rssi = -54))
+        assertNull(IBeaconParser.parseVirtualEncounterFrame(record, rssi = -54))
+    }
+
+    @Test
+    fun `a physical beacon is never mistaken for a peer`() {
+        assertNull(IBeaconParser.parseVirtualEncounterFrame(iBeaconOnlyRecord(), rssi = -62))
+    }
+
     // ── helpers ──
+
+    /** iBeacon frame as an SDK host advertises it: our UUID, reserved major, ephemeral minor. */
+    private fun virtualBeaconRecord(major: Int, minor: Int): ScanRecord {
+        val manufacturerData = IBeaconParser.BEAROUND_IBEACON_PREFIX + byteArrayOf(
+            ((major shr 8) and 0xFF).toByte(), (major and 0xFF).toByte(),
+            ((minor shr 8) and 0xFF).toByte(), (minor and 0xFF).toByte(),
+            (-59).toByte()
+        )
+        val advBytes = byteArrayOf(
+            (3 + manufacturerData.size).toByte(), 0xFF.toByte(), 0x4C, 0x00
+        ) + manufacturerData
+        return parseScanRecord(advBytes)
+    }
 
     /** iBeacon-only primary PDU — B:0.135's advertisement without the scan response. */
     private fun iBeaconOnlyRecord(): ScanRecord {

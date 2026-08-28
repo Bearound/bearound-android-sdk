@@ -703,12 +703,15 @@ class BeAroundSDK private constructor() {
                     // dropped the client. Without this, STATE_ON's re-arm hit the
                     // "Already scanning" early-return and the scan stayed a zombie.
                     bluetoothManager.onBluetoothPoweredOff()
+                    encounterMesh?.onBluetoothPoweredOff()
                 }
                 android.bluetooth.BluetoothAdapter.STATE_ON -> {
                     if (wasScanningEnabled()) {
                         Log.i(TAG, "Bluetooth back ON — re-arming scan clients")
                         beaconManager.onBluetoothRestored()
                         bluetoothManager.onBluetoothRestored()
+                        // Scanning alone would leave the device on the mesh as a spectator.
+                        encounterMesh?.onBluetoothRestored()
                         backgroundScanManager.refreshBackgroundScanning()
                     }
                 }
@@ -1352,14 +1355,54 @@ class BeAroundSDK private constructor() {
         scanRefreshRunnable = null
     }
 
-    /** Attaches encounter-mesh data (sightings + own rotating ids) to a payload.
-     * No-op (empty fields, omitted from JSON) before the mesh spins up. */
+    /**
+     * Attaches encounter-mesh data (sightings + own rotating ids) to a payload.
+     *
+     * `encounterIds` is the device DECLARING ITS OWN IDENTITY, and it must go up whenever
+     * the mesh is running — not only when this device happened to see someone. It is the
+     * other half of every pair: the backend resolves a sighting reported by A into a real
+     * device only if B declared that identifier in the same window. Gating it on
+     * `sightings.isEmpty()` (as 3.8.x did) made the two halves depend on each other, so a
+     * device that saw nobody stayed anonymous and no pair could ever be closed — measured
+     * in production as zero `encounterIds` from every Android host.
+     *
+     * No-op (empty fields, omitted from JSON) before the mesh spins up.
+     *
+     * `encounters` are DRAINED, not snapshotted — one window per payload. This is the
+     * only call site, so a window is never double-consumed.
+     */
     private fun io.bearound.sdk.models.UserDevice.withEncounterData(): io.bearound.sdk.models.UserDevice {
         val mesh = encounterMesh ?: return this
-        val sightings = mesh.snapshotEncounters()
-        if (sightings.isEmpty()) return this
-        return copy(encounters = sightings, encounterIds = mesh.currentEncounterIds())
+        if (!mesh.isActive) return this
+        return copy(
+            encounters = mesh.drainEncounters(),
+            encounterIds = mesh.currentEncounterIds(),
+        )
     }
+
+    /** A virtual-beacon sighting as a `beacons[]` entry: same UUID as the physical fleet,
+     * reserved major, ephemeral minor. `accuracy = -1` is the iBeacon convention for "not
+     * computable", and BT proximity says the distance was never estimated. */
+    private fun EncounterMeshManager.VirtualBeaconSighting.toBeacon(): Beacon = Beacon(
+        uuid = io.bearound.sdk.utilities.IBeaconParser.BEAROUND_UUID,
+        major = io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR,
+        minor = minor,
+        rssi = rssi,
+        proximity = Beacon.Proximity.BT,
+        accuracy = -1.0,
+        timestamp = java.util.Date(lastSeen),
+        txPower = EncounterMeshManager.VIRTUAL_BEACON_CALIBRATED_TX_POWER,
+        rssiRaw = rssi,
+        rssiSamples = io.bearound.sdk.models.RssiStats(
+            count = sampleCount,
+            min = rssiMin,
+            max = rssiMax,
+            avg = rssiAvg.toDouble(),
+            stdDev = 0.0,
+            firstSeen = firstSeen,
+            lastSeen = lastSeen,
+        ),
+    )
 
     /** True when the mesh has identified sightings newer than the last encounters-only
      * upload AND that upload was 60s+ ago. Advances the throttle timestamp. */
@@ -1491,6 +1534,15 @@ class BeAroundSDK private constructor() {
                 DiagnosticsStore.recordError("persist-before-send: saveBatch returned null")
             }
 
+            // Peers pulsing as VIRTUAL BEACONS ride inside `beacons[]` with the reserved
+            // major — the exact shape the backend rebuilds mesh edges from, and the only
+            // mesh port that has ever produced pairs in the field. Deliberately added
+            // AFTER the diagnostics and the durable batch: they are encounters using the
+            // beacon envelope, not detections, so they must not inflate the scan counters
+            // and must not be replayed by the offline retry drain (a rotating identity is
+            // worthless once its window has passed).
+            val meshBeacons = encounterMesh?.drainVirtualBeacons().orEmpty().map { it.toBeacon() }
+
             // Notify listener that sync is starting
             dispatchToListener { it.onSyncStarted(beaconsToSend.size) }
 
@@ -1508,7 +1560,9 @@ class BeAroundSDK private constructor() {
             // sendBeacons is suspend and invokes the callback before returning,
             // so syncOk is settled by the time we return it.
             var syncOk = false
-            client.sendBeacons(beaconsToSend, info, userDevice, userProperties, syncTrigger) { result ->
+            client.sendBeacons(
+                beaconsToSend + meshBeacons, info, userDevice, userProperties, syncTrigger
+            ) { result ->
                 result.fold(
                     onSuccess = {
                         syncOk = true
@@ -1918,6 +1972,12 @@ class BeAroundSDK private constructor() {
         
         // Scanning mode is automatic based on app state
         beaconManager.startScanning()
+
+        // The encounter mesh must be revived too. Without this, a process brought back by
+        // the watchdog, the boot receiver or a scan broadcast scanned for beacons but
+        // neither advertised nor recognised peers — which is most of the lifetime of a
+        // background host, and exactly the state the field devices are in.
+        encounterMesh?.start()
 
         // Re-enable background mechanisms
         backgroundScanManager.enableBackgroundScanning()

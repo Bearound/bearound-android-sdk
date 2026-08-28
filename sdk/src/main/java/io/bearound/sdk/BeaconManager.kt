@@ -707,6 +707,19 @@ class BeaconManager(private val context: Context) {
             }
         }
 
+        // A host pulsing as a virtual beacon (iBeacon frame, reserved major) is an
+        // ENCOUNTER, never a detection. It reaches this funnel through the beacon filters
+        // that already run in background — including the PendingIntent broadcast, which on
+        // AOSP-like Android 14 is the only path that delivers at all. Dropping it in the
+        // parser (as the SDK did since 3.8.0) silently removed the one mesh port that had
+        // ever produced pairs in the field.
+        encounterMesh?.let { mesh ->
+            IBeaconParser.parseVirtualEncounterFrame(scanRecord, result.rssi)?.let { virtual ->
+                mesh.handleVirtualBeacon(virtual.minor, virtual.rssi)
+                return
+            }
+        }
+
         // Prefer the 0xBEAD sensor payload; fall back to the iBeacon frame when the scan
         // response wasn't captured (observed on Xiaomi batched results) — detection still
         // works, metadata stays null until a 0xBEAD frame arrives ("first sighting" case).

@@ -40,6 +40,12 @@ object IBeaconParser {
      * (observed in the field: 0xFF32 from a damaged 0xFFFF byte). */
     const val VIRTUAL_ENCOUNTER_MAJOR_FLOOR: Int = 0xFF00
 
+    /** The exact major an SDK host advertises with (see
+     * [io.bearound.sdk.EncounterMeshManager]). Only this value identifies a peer: the rest
+     * of the reserved band is air corruption, which carries no usable minor. The backend
+     * keys the mesh on the same constant, so the two definitions must not drift. */
+    const val VIRTUAL_ENCOUNTER_MAJOR: Int = 0xFFFF
+
     private fun uuidToBytes(uuid: UUID): ByteArray =
         java.nio.ByteBuffer.allocate(16)
             .putLong(uuid.mostSignificantBits)
@@ -108,6 +114,37 @@ object IBeaconParser {
      * Only frames carrying [BEAROUND_UUID] are accepted.
      */
     fun parseIBeaconFrame(scanRecord: ScanRecord, rssi: Int): BeadServiceData? {
+        val frame = parseAnyIBeaconFrame(scanRecord, rssi) ?: return null
+
+        // Reserved band = another SDK host advertising as a virtual beacon (or an
+        // air-corrupted copy of that frame). Never a physical-beacon detection — the
+        // encounter layer picks it up through [parseVirtualEncounterFrame].
+        if (frame.major >= VIRTUAL_ENCOUNTER_MAJOR_FLOOR) return null
+
+        return frame
+    }
+
+    /**
+     * The other half of [parseIBeaconFrame]: the frames it deliberately refuses.
+     *
+     * An SDK host pulsing as a virtual beacon is not a detection, but it IS the encounter
+     * signal that works in the field — a backgrounded Android emits it for as long as its
+     * process lives, and every receive path (regular scan, batch scan, PendingIntent
+     * broadcast) already carries it because the scan filter matches on the UUID prefix,
+     * not on the major.
+     *
+     * Only the exact [VIRTUAL_ENCOUNTER_MAJOR] is returned: an air-corrupted copy
+     * (`0xFF32`, one damaged byte off `0xFFFF`) has an equally unreliable minor, and the
+     * minor is the entire identity of the peer.
+     */
+    fun parseVirtualEncounterFrame(scanRecord: ScanRecord, rssi: Int): BeadServiceData? {
+        val frame = parseAnyIBeaconFrame(scanRecord, rssi) ?: return null
+        return if (frame.major == VIRTUAL_ENCOUNTER_MAJOR) frame else null
+    }
+
+    /** Layout-only parse, no policy: `02 15 <16-byte UUID> <major BE> <minor BE> <txPower>`
+     * under Apple's manufacturer id, restricted to [BEAROUND_UUID]. */
+    private fun parseAnyIBeaconFrame(scanRecord: ScanRecord, rssi: Int): BeadServiceData? {
         val data = scanRecord.getManufacturerSpecificData(APPLE_MANUFACTURER_ID) ?: return null
         if (data.size < 23) return null
         if (data[0] != 0x02.toByte() || data[1] != 0x15.toByte()) return null
@@ -118,11 +155,6 @@ object IBeaconParser {
         val major = ((data[18].toInt() and 0xFF) shl 8) or (data[19].toInt() and 0xFF)
         val minor = ((data[20].toInt() and 0xFF) shl 8) or (data[21].toInt() and 0xFF)
         val txPower = data[22].toInt() // sign-extended int8 (calibrated RSSI @ 1 m)
-
-        // Reserved band = another SDK host advertising as a virtual beacon (or an
-        // air-corrupted copy of that frame). Never a physical-beacon detection; the
-        // encounter layer tracks those devices through their service-UUID frames.
-        if (major >= VIRTUAL_ENCOUNTER_MAJOR_FLOOR) return null
 
         return BeadServiceData(
             major = major,

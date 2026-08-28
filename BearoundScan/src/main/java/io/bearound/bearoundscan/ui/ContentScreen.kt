@@ -8,6 +8,7 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -43,21 +44,12 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
     // same call as foreground location makes the system deny the whole thing without a
     // dialog. On 11+ the system dialog also routes through app settings ("Allow all the
     // time") rather than granting inline.
-    val backgroundLocationLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { _ ->
-        viewModel.updatePermissionStatus()
-    }
-
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { granted ->
         viewModel.updatePermissionStatus()
         viewModel.checkBluetoothStatus()
         viewModel.checkNotificationStatus()
-        if (granted[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
-            viewModel.requestBackgroundLocationOnce(backgroundLocationLauncher::launch)
-        }
         // Start scanning once the technical gate is satisfied: BLUETOOTH_SCAN on Android 12+
         // (neverForLocation in the SDK manifest makes Bluetooth-only delivery work, so the
         // scan runs even if location was denied), FINE/COARSE location on Android <= 11.
@@ -69,14 +61,8 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
     }
 
     LaunchedEffect(Unit) {
-        // An app that already had the base permissions never reaches the callback above —
-        // which is precisely the app that just added Wi-Fi collection in an update. Ask here
-        // too, or the upgrade path silently never asks.
-        if (viewModel.hasRequiredPermissions()) {
-            viewModel.requestBackgroundLocationOnce(backgroundLocationLauncher::launch)
-        }
-        if (!viewModel.hasRequiredPermissions()) {
-            val permissions = buildList {
+        val permissions = buildList {
+            if (!viewModel.hasRequiredPermissions()) {
                 add(Manifest.permission.ACCESS_FINE_LOCATION)
                 add(Manifest.permission.ACCESS_COARSE_LOCATION)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -86,6 +72,19 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
                     add(Manifest.permission.POST_NOTIFICATIONS)
                 }
             }
+            // Encounter layer: without BLUETOOTH_ADVERTISE this device is INVISIBLE to
+            // every other device — it can only watch the mesh, never appear in it.
+            // Requested separately from the block above because an install that already
+            // had BLUETOOTH_SCAN never enters it, which is exactly the upgrade path.
+            // Same runtime group as BLUETOOTH_SCAN, so once that is granted this one is
+            // granted with no extra dialog.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                !viewModel.hasAdvertisePermission()
+            ) {
+                add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            }
+        }
+        if (permissions.isNotEmpty()) {
             permissionLauncher.launch(permissions.toTypedArray())
         }
     }
@@ -144,19 +143,15 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
                     // Start/Stop Button
                     Button(
                         onClick = {
+                            // Never opens system settings: the button is disabled while
+                            // a permission is missing, and the card above names it.
                             if (state.isScanning) {
                                 viewModel.stopScanning()
                             } else {
-                                if (!viewModel.hasRequiredPermissions()) {
-                                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                        data = Uri.fromParts("package", context.packageName, null)
-                                    }
-                                    context.startActivity(intent)
-                                } else {
-                                    viewModel.startScanning()
-                                }
+                                viewModel.startScanning()
                             }
                         },
+                        enabled = state.isScanning || viewModel.hasRequiredPermissions(),
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (state.isScanning) {
@@ -321,6 +316,8 @@ fun PermissionsCard(state: BeAroundScanState) {
                 color = getLocationPermissionColor(state.locationPermissionStatus)
             )
 
+            // Informational only: requesting background location on Android 11+ always
+            // sends the user to system settings, so this row never asks for it.
             PermissionRow(
                 icon = Icons.Default.LocationOn,
                 label = "Loc. background:",
@@ -373,10 +370,13 @@ fun PermissionRow(
     icon: ImageVector,
     label: String,
     value: String,
-    color: Color
+    color: Color,
+    onClick: (() -> Unit)? = null
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .let { if (onClick != null) it.clickable(onClick = onClick) else it },
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {

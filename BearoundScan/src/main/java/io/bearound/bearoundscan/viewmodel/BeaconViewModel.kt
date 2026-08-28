@@ -618,12 +618,11 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
     }
 
     /**
-     * Asks for background location at most once per install.
+     * Asks for background location at most once per install. From Android 11 on this never
+     * resolves in a dialog — it always routes to the app's settings page.
      *
-     * From Android 11 on this does not resolve in a dialog — the system routes to the app's
-     * settings page ("Allow all the time"). Firing it on every cold start would throw the
-     * user into Settings every launch, so the attempt is remembered. Denying is a valid
-     * answer; the row in the UI keeps showing the cost.
+     * The guard flag is written with `commit()`, not `apply()`: the launch below sends the
+     * process to the background, where a queued `apply()` write can be lost.
      */
     fun requestBackgroundLocationOnce(launch: (String) -> Unit) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
@@ -631,7 +630,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         val prefs = getApplication<Application>()
             .getSharedPreferences("bearoundscan_bench", Context.MODE_PRIVATE)
         if (prefs.getBoolean("bg_location_asked", false)) return
-        prefs.edit().putBoolean("bg_location_asked", true).apply()
+        prefs.edit().putBoolean("bg_location_asked", true).commit()
         launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
     }
 
@@ -678,6 +677,15 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
 
         _state.value = _state.value.copy(notificationStatus = status)
     }
+
+    /** Encounter layer: granted means this device can be SEEN by other SDK devices.
+     * Always true below Android 12, where advertising needs no runtime permission. */
+    fun hasAdvertisePermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(
+                getApplication<Application>(),
+                Manifest.permission.BLUETOOTH_ADVERTISE
+            ) == PackageManager.PERMISSION_GRANTED
 
     fun hasRequiredPermissions(): Boolean {
         val context = getApplication<Application>()

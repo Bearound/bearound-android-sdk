@@ -48,10 +48,15 @@ internal class EncounterMeshManager(private val context: Context) {
 
         const val RPI_ROTATION_MS: Long = 15 * 60 * 1000
 
-        /** iBeacon major reserved for hosts advertising as virtual beacons. Must match
-         * [io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR_FLOOR] — every
-         * receive path filters it out of detection. */
-        private const val VIRTUAL_BEACON_MAJOR = 0xFFFF
+        /** iBeacon major reserved for hosts advertising as virtual beacons. Single-sourced
+         * from the parser so TX and RX can never drift: every receive path keeps it out of
+         * DETECTION and routes it here instead. */
+        private val VIRTUAL_BEACON_MAJOR = io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR
+
+        /** Calibrated RSSI at 1 m stamped into the virtual-beacon frame — the same value
+         * the physical beacons advertise, so a receiver's distance maths does not have to
+         * special-case us. */
+        const val VIRTUAL_BEACON_CALIBRATED_TX_POWER: Int = -59
 
         private const val MAX_TRACKED_PEERS = 64
         private const val PEER_STALE_EVICTION_MS: Long = 10 * 60 * 1000
@@ -83,14 +88,68 @@ internal class EncounterMeshManager(private val context: Context) {
         }
 
         val rssiAvg: Int get() = if (sampleCount == 0) 0 else (rssiSum.toDouble() / sampleCount).toInt()
+
+        /**
+         * Closes the current reporting window: the running statistics go back to zero, but
+         * the peer entry itself survives with its identity and its [lastSeen].
+         *
+         * [lastSeen] is deliberately NOT cleared — it is what tells the eviction pass how
+         * long ago this peer was last heard, and it is the only thing that keeps an
+         * emptied entry from looking brand new.
+         */
+        fun resetWindow() {
+            sampleCount = 0
+            rssiSum = 0
+            rssiMin = 0
+            rssiMax = Int.MIN_VALUE
+            lastRssi = 0
+            firstSeen = 0
+        }
     }
+
+    /**
+     * A peer seen through its VIRTUAL BEACON (iBeacon frame, reserved major) rather than
+     * through the mesh service UUID.
+     *
+     * Kept separate from [EncounterObservation] because the identity is different: the
+     * virtual beacon carries a `minor` derived from the rotating identifier, not the
+     * identifier itself. It goes up as a `beacons[]` entry with the reserved major — the
+     * exact shape the backend reconstructs mesh edges from.
+     */
+    internal data class VirtualBeaconSighting(
+        val minor: Int,
+        val rssi: Int,
+        val sampleCount: Int,
+        val rssiMin: Int,
+        val rssiMax: Int,
+        val rssiAvg: Int,
+        val firstSeen: Long,
+        val lastSeen: Long,
+    )
 
     private val lock = Any()
     private val peers = HashMap<String, PeerAggregate>() // key: device address
+    /** Virtual-beacon sightings, keyed by the peer's advertised minor. */
+    private val virtualPeers = HashMap<Int, PeerAggregate>()
     private val handler = Handler(Looper.getMainLooper())
     private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
 
     private var started = false
+
+    /** True once the platform accepted the advertisement — i.e. this host can be SEEN.
+     * False means receive-only (no BLUETOOTH_ADVERTISE, no LE advertiser, or the chip
+     * refused), which is the difference between being on the mesh and merely watching it. */
+    @Volatile internal var advertising = false
+        private set
+
+    /** True between [start] and [stop] — the mesh is running, whether or not it can be seen. */
+    internal val isActive: Boolean get() = synchronized(lock) { started }
+
+    /** Peer entries currently held. Exposed so the eviction in [drainEncounters] is
+     * observable: a drained-but-retained entry is invisible in the payload, and without
+     * this nothing would notice the table growing until it hit [MAX_TRACKED_PEERS]. */
+    internal val trackedPeerCount: Int get() = synchronized(lock) { peers.size }
+
     private var advertiser: android.bluetooth.le.BluetoothLeAdvertiser? = null
     private var virtualBeaconMinor = -1
     private var advertisedRpi: String? = null
@@ -142,7 +201,12 @@ internal class EncounterMeshManager(private val context: Context) {
             return
         }
         if (!hasPermission(android.Manifest.permission.BLUETOOTH_ADVERTISE)) {
-            Log.w(TAG, "BLUETOOTH_ADVERTISE not granted — mesh is receive-only")
+            // Not a soft warning: on API 31+ a host that never REQUESTS this permission at
+            // runtime is invisible to every other device, so the mesh produces no edge no
+            // matter how well the receive side works. The SDK cannot prompt (no activity),
+            // so the host app must ask for it — see README, "Encounter layer".
+            Log.w(TAG, "BLUETOOTH_ADVERTISE not granted — this device is INVISIBLE to the " +
+                "mesh (receive-only). The host app must request it at runtime on Android 12+.")
         } else {
             startAdvertising(adapter)
         }
@@ -155,7 +219,9 @@ internal class EncounterMeshManager(private val context: Context) {
             if (!started) return
             started = false
             peers.clear()
+            virtualPeers.clear()
         }
+        advertising = false
         runCatching { advertiser?.stopAdvertising(advertiseCallback) }
         runCatching { advertiser?.stopAdvertising(virtualBeaconCallback) }
         advertiser = null
@@ -164,10 +230,38 @@ internal class EncounterMeshManager(private val context: Context) {
         Log.i(TAG, "Encounter mesh stopped")
     }
 
+    /** Radio off: the controller dropped both advertising sets. Only the flag needs to
+     * follow — [onBluetoothRestored] re-arms them. */
+    fun onBluetoothPoweredOff() {
+        advertising = false
+    }
+
+    /**
+     * Radio back on: re-arm the advertisements.
+     *
+     * [start] cannot do this — it is idempotent and early-returns while `started` is true,
+     * which is exactly the state a host is in after a Bluetooth toggle. Without this the
+     * device kept scanning and went permanently invisible to the mesh, and the only symptom
+     * was an absence of pairs.
+     */
+    @SuppressLint("MissingPermission")
+    fun onBluetoothRestored() {
+        if (!synchronized(lock) { started }) return
+        advertising = false
+        advertiser = null
+        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE)
+            as? android.bluetooth.BluetoothManager)?.adapter ?: return
+        if (!adapter.isEnabled) return
+        if (!hasPermission(android.Manifest.permission.BLUETOOTH_ADVERTISE)) return
+        Log.i(TAG, "Bluetooth back ON — re-advertising the mesh identity")
+        startAdvertising(adapter)
+    }
+
     // ── TX ───────────────────────────────────────────────────────────────────
 
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+            advertising = true
             Log.i(TAG, "Advertising encounter service (identity in scan response)")
         }
         override fun onStartFailure(errorCode: Int) {
@@ -177,7 +271,9 @@ internal class EncounterMeshManager(private val context: Context) {
 
     private val virtualBeaconCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
-            Log.i(TAG, "Advertising virtual beacon (iBeacon frame, reserved major)")
+            advertising = true
+            Log.i(TAG, "Advertising virtual beacon (iBeacon frame, reserved major " +
+                "0x%04X, minor $virtualBeaconMinor)".format(VIRTUAL_BEACON_MAJOR))
         }
         override fun onStartFailure(errorCode: Int) {
             // Some chips cap concurrent advertisements — the mesh service UUID
@@ -231,7 +327,7 @@ internal class EncounterMeshManager(private val context: Context) {
             out[base + 1] = (VIRTUAL_BEACON_MAJOR and 0xFF).toByte()
             out[base + 2] = ((minor shr 8) and 0xFF).toByte()
             out[base + 3] = (minor and 0xFF).toByte()
-            out[base + 4] = (-59).toByte() // calibrated RSSI @ 1 m, same as our beacons
+            out[base + 4] = VIRTUAL_BEACON_CALIBRATED_TX_POWER.toByte() // calibrated RSSI @ 1 m
         }
     }
 
@@ -317,16 +413,58 @@ internal class EncounterMeshManager(private val context: Context) {
         }
     }
 
-    // ── Reporting ────────────────────────────────────────────────────────────
-
-    /** Any identified peer seen after [sinceMs]? Cheap gate for encounters-only syncs. */
-    fun hasFreshEncounters(sinceMs: Long): Boolean = synchronized(lock) {
-        peers.values.any { it.rpi != null && it.lastSeen > sinceMs }
+    /**
+     * A peer seen pulsing as a virtual beacon (iBeacon frame, reserved major).
+     *
+     * This is the path that demonstrably worked in the field: it rides the beacon scan
+     * filters that already run in background, including the PendingIntent broadcast that
+     * is the only delivery path left on AOSP-like Android 14 under `neverForLocation`.
+     */
+    fun handleVirtualBeacon(minor: Int, rssi: Int) {
+        if (!synchronized(lock) { started }) return
+        if (rssi >= 0 || rssi == 127) return
+        // Some chipsets hand the host its OWN advertisement back. Not an encounter.
+        if (minor == virtualBeaconMinor) return
+        val now = System.currentTimeMillis()
+        synchronized(lock) {
+            var peer = virtualPeers[minor]
+            if (peer == null) {
+                if (virtualPeers.size >= MAX_TRACKED_PEERS) {
+                    virtualPeers.entries.removeAll { now - it.value.lastSeen > PEER_STALE_EVICTION_MS }
+                    if (virtualPeers.size >= MAX_TRACKED_PEERS) return
+                }
+                peer = PeerAggregate()
+                virtualPeers[minor] = peer
+            }
+            peer.addSample(rssi, now)
+        }
     }
 
-    /** Non-destructive snapshot of every identified peer, for the sync payload. */
-    fun snapshotEncounters(): List<EncounterObservation> = synchronized(lock) {
-        peers.values.mapNotNull { peer ->
+    // ── Reporting ────────────────────────────────────────────────────────────
+
+    /** Any peer seen after [sinceMs], through EITHER port? Cheap gate for the
+     * encounters-only sync — a device that only ever sees virtual beacons (the common
+     * case in background) must be able to open it too. */
+    fun hasFreshEncounters(sinceMs: Long): Boolean = synchronized(lock) {
+        // `sampleCount > 0` matters since [drainEncounters] keeps drained peers around:
+        // an emptied entry still carries its old `lastSeen`, and without this it would
+        // keep opening the encounters-only sync for a window that has nothing in it.
+        peers.values.any { it.rpi != null && it.sampleCount > 0 && it.lastSeen > sinceMs } ||
+            virtualPeers.values.any { it.sampleCount > 0 && it.lastSeen > sinceMs }
+    }
+
+    /**
+     * Identified peers seen since the last call, and CLOSES their window. Destructive —
+     * call it exactly once per payload, like [drainVirtualBeacons].
+     *
+     * Resets the window of every reported peer but keeps the entry, so [PeerAggregate.rpi]
+     * survives to detect rotation; entries stale for [PEER_STALE_EVICTION_MS] are dropped.
+     *
+     * @param now injectable clock — production takes the default; tests use it to step
+     *   past [PEER_STALE_EVICTION_MS] without sleeping.
+     */
+    fun drainEncounters(now: Long = System.currentTimeMillis()): List<EncounterObservation> = synchronized(lock) {
+        val out = peers.values.mapNotNull { peer ->
             val rpi = peer.rpi ?: return@mapNotNull null
             if (peer.sampleCount == 0) return@mapNotNull null
             EncounterObservation(
@@ -340,5 +478,36 @@ internal class EncounterMeshManager(private val context: Context) {
                 lastSeen = peer.lastSeen,
             )
         }
+        peers.values.forEach { it.resetWindow() }
+        peers.entries.removeAll { now - it.value.lastSeen > PEER_STALE_EVICTION_MS }
+        return out
+    }
+
+    /**
+     * Virtual-beacon sightings accumulated since the last call, and RESETS them.
+     *
+     * Draining keeps a phone that sat next to another phone for an hour from re-uploading
+     * the same aggregate every sync — each payload carries exactly one window, like the
+     * hardware-beacon stats do. [drainEncounters] applies the same rule to the other port;
+     * it clears the window rather than the whole entry, because that port has a per-peer
+     * identity worth keeping across windows (see its documentation).
+     */
+    fun drainVirtualBeacons(): List<VirtualBeaconSighting> = synchronized(lock) {
+        if (virtualPeers.isEmpty()) return emptyList()
+        val out = virtualPeers.entries.mapNotNull { (minor, peer) ->
+            if (peer.sampleCount == 0) return@mapNotNull null
+            VirtualBeaconSighting(
+                minor = minor,
+                rssi = peer.lastRssi,
+                sampleCount = peer.sampleCount,
+                rssiMin = peer.rssiMin,
+                rssiMax = peer.rssiMax,
+                rssiAvg = peer.rssiAvg,
+                firstSeen = peer.firstSeen,
+                lastSeen = peer.lastSeen,
+            )
+        }
+        virtualPeers.clear()
+        return out
     }
 }
