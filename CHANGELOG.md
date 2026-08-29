@@ -5,6 +5,44 @@ All notable changes to the BeAround Android SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.1] - 2026-08-28
+
+### Fixed
+- **A janela de encontros não era reiniciada após o envio.** `snapshotEncounters()` não era
+  destrutivo e a remoção de peers ociosos só rodava dentro do desvio de capacidade
+  (`peers.size >= MAX_TRACKED_PEERS`, 64) — um aparelho que vê um ou dois peers nunca chega
+  lá. O agregado vivia enquanto o processo vivesse: cada payload repetia as leituras
+  anteriores e `firstSeen` nunca avançava. Como um RPI rotaciona a cada 15 minutos, uma
+  leitura repetida é irresolvível por construção.
+
+  O método passa a se chamar `drainEncounters()` — emite uma janela por peer identificado,
+  reinicia o acumulador e remove os peers ociosos incondicionalmente, fora do desvio de
+  capacidade. `MAX_TRACKED_PEERS` e `PEER_STALE_EVICTION_MS` não mudaram; o defeito era
+  **onde** a remoção rodava. Um encontro que atravessa N sincronizações agora chega como N
+  janelas adjacentes, o mesmo contrato que as estatísticas de beacon físico já têm.
+
+  `hasFreshEncounters` passa a exigir `sampleCount > 0`: um peer já drenado ainda carrega o
+  `lastSeen` antigo e abriria sincronizações de encontro vazias.
+
+- **O anúncio de pseudo-beacon estava desligado desde a 3.8.0.** O parser recusava toda a
+  banda de major reservada, incluindo o frame do próprio pseudo-beacon, e `encounterIds` só
+  era declarado quando havia avistamentos — as duas metades de um par nunca podiam
+  coexistir. O parser agora separa layout de política: a detecção de beacon físico continua
+  recusando a banda reservada, e o frame de encontro é aceito no valor exato de major.
+  `encounterIds` passa a ser declarado sempre que a malha está ativa, independente do que
+  foi visto.
+
+- **Um processo revivido pelo broadcast de scan ficava fora da malha.** Nem
+  `processBroadcastResults` nem `attemptConfigRestore` chamavam `EncounterMeshManager.start()`,
+  então `handleScanResult` e `handleVirtualBeacon` retornavam cedo em `started == false` — sem
+  contar encontro e sem anunciar — até o watchdog de 15 minutos rodar. `processBroadcastResults`
+  agora reingressa antes de rotear os frames, sob o mesmo portão do caminho do watchdog
+  (configurado, e scan ainda desejado). `start()` é idempotente, então o custo em regime é
+  uma checagem de lock.
+
+- **O app de exemplo pedia `BLUETOOTH_ADVERTISE` em runtime**, necessário para o anúncio na
+  API 31+, e deixou de abrir a tela de configurações do sistema por conta própria.
+
 ## [3.9.0] - 2026-08-19
 
 ### Added
