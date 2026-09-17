@@ -44,12 +44,25 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
     // same call as foreground location makes the system deny the whole thing without a
     // dialog. On 11+ the system dialog also routes through app settings ("Allow all the
     // time") rather than granting inline.
+    //
+    // Restored after #86: that PR reworked the permission launcher for BLUETOOTH_ADVERTISE
+    // and dropped this wiring. Without it, Wi-Fi neighbours go empty whenever the app is
+    // backgrounded (SDK README: empty scan list, no error). ViewModel helper still existed.
+    val backgroundLocationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        viewModel.updatePermissionStatus()
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { granted ->
         viewModel.updatePermissionStatus()
         viewModel.checkBluetoothStatus()
         viewModel.checkNotificationStatus()
+        if (granted[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
+            viewModel.requestBackgroundLocationOnce(backgroundLocationLauncher::launch)
+        }
         // Start scanning once the technical gate is satisfied: BLUETOOTH_SCAN on Android 12+
         // (neverForLocation in the SDK manifest makes Bluetooth-only delivery work, so the
         // scan runs even if location was denied), FINE/COARSE location on Android <= 11.
@@ -61,6 +74,11 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
     }
 
     LaunchedEffect(Unit) {
+        // Upgrade path: base permissions already granted → the callback above never runs,
+        // so ask for background location here too (same as pre-#86).
+        if (viewModel.hasRequiredPermissions()) {
+            viewModel.requestBackgroundLocationOnce(backgroundLocationLauncher::launch)
+        }
         val permissions = buildList {
             if (!viewModel.hasRequiredPermissions()) {
                 add(Manifest.permission.ACCESS_FINE_LOCATION)
