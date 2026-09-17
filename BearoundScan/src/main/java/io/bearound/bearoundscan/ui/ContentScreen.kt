@@ -72,6 +72,19 @@ fun ContentScreen(viewModel: BeaconViewModel = viewModel(), paddingValues: Paddi
                     add(Manifest.permission.POST_NOTIFICATIONS)
                 }
             }
+            // Wi-Fi mesh: BLE can already be green via BLUETOOTH_SCAN alone
+            // (neverForLocation), and then this block never asked for location —
+            // payloads left with wifis=[] while beacons were full. Always request
+            // the Wi-Fi gates, including on the upgrade path.
+            if (!viewModel.hasFineLocationPermission()) {
+                add(Manifest.permission.ACCESS_FINE_LOCATION)
+                add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                !viewModel.hasNearbyWifiDevicesPermission()
+            ) {
+                add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            }
             // Encounter layer: without BLUETOOTH_ADVERTISE this device is INVISIBLE to
             // every other device — it can only watch the mesh, never appear in it.
             // Requested separately from the block above because an install that already

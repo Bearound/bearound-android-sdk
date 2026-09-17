@@ -28,7 +28,15 @@
     <!-- Network -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Wi-Fi: ACCESS_WIFI_STATE alone is not enough — CHANGE_WIFI_STATE nudges
+         the system scan cache; NEARBY_WIFI_DEVICES is the Android 13+ alternative
+         to location for reading neighbours. Declared here explicitly so a host
+         merge cannot strip what the SDK ships. -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="tiramisu" />
 
     <!-- Background execution -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

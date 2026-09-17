@@ -687,6 +687,24 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
                 Manifest.permission.BLUETOOTH_ADVERTISE
             ) == PackageManager.PERMISSION_GRANTED
 
+    /** Wi-Fi neighbours: fine location unlocks `WifiManager.scanResults` on every API. */
+    fun hasFineLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(
+            getApplication<Application>(),
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Android 13+ alternative to location for reading neighbouring APs.
+     * Always true below 13 (permission does not exist).
+     */
+    fun hasNearbyWifiDevicesPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(
+                getApplication<Application>(),
+                Manifest.permission.NEARBY_WIFI_DEVICES
+            ) == PackageManager.PERMISSION_GRANTED
+
     fun hasRequiredPermissions(): Boolean {
         val context = getApplication<Application>()
 
