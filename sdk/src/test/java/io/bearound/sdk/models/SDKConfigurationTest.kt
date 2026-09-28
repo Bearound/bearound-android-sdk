@@ -12,9 +12,12 @@ class SDKConfigurationTest {
 
     @Test
     fun `apiBaseURL is the only host in the configuration`() {
-        val urlFields = SDKConfiguration::class.java.declaredFields.map { it.name }
-            .filter { it.contains("url", ignoreCase = true) }
-        assertEquals(listOf("apiBaseURL"), urlFields)
+        // Compare values, not field names: the release variant is minified.
+        val urls = SDKConfiguration::class.java.declaredFields
+            .filter { it.type == String::class.java }
+            .mapNotNull { field -> field.isAccessible = true; field.get(config) as String? }
+            .filter { it.startsWith("http://") || it.startsWith("https://") }
+        assertEquals(listOf(config.apiBaseURL), urls)
     }
 
     @Test
