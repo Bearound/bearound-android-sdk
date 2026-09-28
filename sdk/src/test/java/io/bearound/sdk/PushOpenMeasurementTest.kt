@@ -26,7 +26,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Push receipt + open (tap) measurement through the ads--tracker (REQ-022, REQ-023, REQ-024).
+ * Push receipt + open (tap) measurement through the Bearound tracker.
  */
 @RunWith(RobolectricTestRunner::class)
 class PushOpenMeasurementTest {

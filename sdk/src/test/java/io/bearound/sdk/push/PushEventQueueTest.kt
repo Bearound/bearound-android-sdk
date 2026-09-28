@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Tests for [PushMarker] parsing and [PushEventQueue] (REQ-022, REQ-025, REQ-026).
+ * Tests for [PushMarker] parsing and [PushEventQueue].
  */
 @RunWith(RobolectricTestRunner::class)
 class PushEventQueueTest {

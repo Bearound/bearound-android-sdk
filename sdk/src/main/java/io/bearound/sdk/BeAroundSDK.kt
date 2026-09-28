@@ -755,7 +755,7 @@ class BeAroundSDK private constructor() {
         }
     }
 
-    // region Push open (tap) measurement (REQ-023, REQ-024)
+    // region Push open (tap) measurement
 
     /**
      * The [Application] the lifecycle callbacks are currently registered on, or null if not
