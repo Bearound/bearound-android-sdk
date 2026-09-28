@@ -179,7 +179,7 @@ class APIClient(private val configuration: SDKConfiguration) {
         }
     }
 
-    private fun buildPayload(
+    internal fun buildPayload(
         beacons: List<Beacon>,
         sdkInfo: SDKInfo,
         userDevice: UserDevice,

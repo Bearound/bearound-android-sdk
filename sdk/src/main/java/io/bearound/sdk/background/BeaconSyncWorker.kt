@@ -8,6 +8,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import io.bearound.sdk.BeAroundSDK
 import io.bearound.sdk.utilities.SDKConfigStorage
+import io.bearound.sdk.visit.VisitController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -42,6 +43,9 @@ class BeaconSyncWorker(
 
         /** Poll cadence of the collection window (the batch scan flushes every ~2s). */
         private const val COLLECTION_POLL_MS = 500L
+
+        /** Ceiling for the visit tick, which runs after the beacon sync inside this window. */
+        internal const val VISIT_TICK_TIMEOUT_MS = 20_000L
     }
 
     private enum class SkipReason {
@@ -128,11 +132,22 @@ class BeaconSyncWorker(
                 val ok = sdk.performBackgroundSyncAwait()
                 Log.i(TAG, "periodic_sync_completed success=$ok")
                 if (!ok) {
+                    // No visit tick either: /ingest just failed, and pending visit events
+                    // wait in the stored queue for the next wakeup.
                     BackgroundScheduler.getInstance(applicationContext).scheduleWatchdogAlarm()
                     return@withContext if (runAttemptCount < 3) Result.retry() else Result.failure()
                 }
             } else {
                 Log.i(TAG, "periodic_worker_completed result=NOTHING_TO_DO")
+            }
+
+            // Visit tick AFTER the beacon sync, so visit code can never cost the beacons
+            // their upload: bounded, and a failure is logged, never thrown into this worker.
+            // Same battery policy as the collection window (Battery Saver / thermal skip).
+            if (mayCollect) {
+                VisitController.runGuarded("worker", VISIT_TICK_TIMEOUT_MS) {
+                    sdk.tickVisitDetectionAwait("worker")
+                }
             }
 
             // Reschedule watchdog alarm

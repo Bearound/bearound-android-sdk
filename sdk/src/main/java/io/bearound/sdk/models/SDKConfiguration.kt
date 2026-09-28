@@ -193,6 +193,11 @@ data class SDKConfiguration(
             wifi = collectWifi
         )
 
+    /**
+     * The SDK's only host: `/ingest`, `/sdk-errors` and the visit-detection config
+     * (`GET /sdk/places/nearby`, routed by path at the ingest's load balancer to the places
+     * service). One host means one domain for the client app to allow.
+     */
     val apiBaseURL: String = "https://ingest.bearound.io"
 
     // NOTE: the old precisionScanDuration/PauseDuration/CycleCount/CycleInterval props

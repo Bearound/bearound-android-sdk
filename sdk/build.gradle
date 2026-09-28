@@ -140,6 +140,13 @@ dependencies {
     // Gson for JSON serialization (offline batch storage)
     implementation 'com.google.code.gson:gson:2.13.2'
 
+    // GPS visit detection: GeofencingClient DWELL/EXIT (NativeGeofenceVisitDetector). Runtime
+    // dependency, but only exercised when the host declares and the user grants
+    // ACCESS_BACKGROUND_LOCATION; without Play Services the SDK falls back to the soft fence.
+    // 21.3.0 pulls exactly the play-services-base/basement/tasks versions already resolved
+    // by the compileOnly ads-identifier dependency below.
+    implementation 'com.google.android.gms:play-services-location:21.3.0'
+
     // Firebase Cloud Messaging — soft dependency (compileOnly, not bundled). See tryAutoCollectFcmToken.
     compileOnly 'com.google.firebase:firebase-messaging:24.0.0'
     compileOnly 'com.google.firebase:firebase-common:21.0.0'
