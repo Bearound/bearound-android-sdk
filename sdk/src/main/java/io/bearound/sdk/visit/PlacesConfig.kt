@@ -1,6 +1,7 @@
 package io.bearound.sdk.visit
 
 import android.util.Log
+import io.bearound.sdk.models.SDKConfiguration
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -99,17 +100,22 @@ internal fun interface PlacesConfigFetching {
 }
 
 /**
- * `GET {controlHubBaseURL}/sdk/places/nearby?lat=&lng=`, authenticated with the raw business
- * token exactly like `/ingest` (`Authorization: <businessToken>`).
+ * `GET {apiBaseURL}/sdk/places/nearby?lat=&lng=`, authenticated with the raw business
+ * token exactly like `/ingest` (`Authorization: <businessToken>`). Same host as `/ingest`:
+ * the ingest's load balancer routes the `/sdk/places` paths to the places service (C-03).
  */
 internal class PlacesConfigClient(
-    private val baseURL: String,
+    internal val baseURL: String,
     private val businessToken: String
 ) : PlacesConfigFetching {
 
     companion object {
         private const val TAG = "BeAroundSDK-Visit"
         private const val CONNECT_TIMEOUT_MS = 8_000
+
+        /** The client for [configuration]: its [SDKConfiguration.apiBaseURL] and business token. */
+        fun forConfiguration(configuration: SDKConfiguration) =
+            PlacesConfigClient(configuration.apiBaseURL, configuration.businessToken)
         private const val READ_TIMEOUT_MS = 15_000
 
         /**

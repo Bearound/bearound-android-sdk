@@ -4,17 +4,18 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
-import org.json.JSONArray
 import org.json.JSONObject
 
 /**
  * Persisted visit state: the last good places config (D-22: a failed fetch keeps the last
  * list and the last `visit_detection_enabled`), the open stop (REQ-023: a departure seen by
- * the next process still pairs with the arrival of the previous one) and the outbox of
- * events not yet delivered.
+ * the next process still pairs with the arrival of the previous one) and the native
+ * registration. Undelivered visit events are NOT kept here: they live in the SDK's single
+ * queue, `OfflineBatchStorage` (sdk-visit-cohesion REQ-011); [OutboxMigration] moves what an
+ * older version left under the retired outbox key.
  *
- * Writes use `commit()`: every value here is small, and an event must be on disk before the
- * request that carries it leaves.
+ * Writes use `commit()`: every value here is small, and state must be on disk before the
+ * request that depends on it leaves.
  */
 @SuppressLint("ApplySharedPref") // commit() on purpose, see above
 internal class VisitStateStore(context: Context) {
@@ -31,12 +32,8 @@ internal class VisitStateStore(context: Context) {
         private const val KEY_LAST_DEPARTURE_AT = "last_departure_at"
         private const val KEY_SOFT_CANDIDATE = "soft_candidate"
         private const val KEY_SOFT_LAST_FIX_AT = "soft_last_fix_at"
-        private const val KEY_OUTBOX = "outbox"
         private const val KEY_NATIVE_FAILED_AT = "native_failed_at"
         private const val KEY_NATIVE_REGISTRATION = "native_registration"
-
-        /** Undelivered events beyond this are dropped oldest first. */
-        const val OUTBOX_MAX = 20
     }
 
     private val prefs: SharedPreferences =
@@ -152,55 +149,6 @@ internal class VisitStateStore(context: Context) {
                 put("boot", it.bootAt)
             }
         })
-
-    // endregion
-
-    // region Outbox
-
-    @Synchronized
-    fun enqueue(event: VisitEvent) {
-        val events = outbox().toMutableList()
-        events.add(event)
-        writeOutbox(events.takeLast(OUTBOX_MAX))
-    }
-
-    @Synchronized
-    fun outbox(): List<VisitEvent> {
-        val raw = prefs.getString(KEY_OUTBOX, null) ?: return emptyList()
-        return try {
-            val array = JSONArray(raw)
-            (0 until array.length()).mapNotNull { index ->
-                try {
-                    VisitEvent.fromJson(array.getJSONObject(index))
-                } catch (e: Exception) {
-                    null
-                }
-            }
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
-
-    @Synchronized
-    fun remove(event: VisitEvent) {
-        val events = outbox().toMutableList()
-        if (events.remove(event)) writeOutbox(events)
-    }
-
-    @Synchronized
-    fun clearOutbox() {
-        prefs.edit().remove(KEY_OUTBOX).commit()
-    }
-
-    private fun writeOutbox(events: List<VisitEvent>) {
-        if (events.isEmpty()) {
-            prefs.edit().remove(KEY_OUTBOX).commit()
-            return
-        }
-        val array = JSONArray()
-        events.forEach { array.put(it.toJson()) }
-        prefs.edit().putString(KEY_OUTBOX, array.toString()).commit()
-    }
 
     // endregion
 

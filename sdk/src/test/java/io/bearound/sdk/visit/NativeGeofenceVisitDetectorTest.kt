@@ -39,7 +39,8 @@ class NativeGeofenceVisitDetectorTest {
 
     private lateinit var store: VisitStateStore
     private var now = 1_800_000_000_000L
-    private val sent = mutableListOf<VisitEvent>()
+    private val queue = RecordingVisitEventQueue()
+    private val sent get() = queue.persisted
 
     @Before
     fun setUp() {
@@ -76,7 +77,7 @@ class NativeGeofenceVisitDetectorTest {
     ) = VisitController(
         store = store,
         fetcher = PlacesConfigFetching { _, _, _ -> PlacesFetchResult.NotModified },
-        sink = VisitEventSink { event -> sent += event; VisitSendOutcome.DELIVERED },
+        queue = queue,
         permissions = { VisitPermissions(34, true, true, true, true) },
         locationAllowedByHost = { true },
         lastKnownFix = { null },
@@ -155,7 +156,7 @@ class NativeGeofenceVisitDetectorTest {
     @Test
     fun `too many geofences halves the set and retries once`() {
         val registrar = ScriptedRegistrar(listOf(tooMany(), null))
-        NativeGeofenceVisitDetector(registrar, store, VisitStopTracker(store) { now }, clock = { now }, elapsedRealtime = { 5_000L })
+        NativeGeofenceVisitDetector(registrar, store, VisitStopTracker(store, RecordingVisitEventQueue()) { now }, clock = { now }, elapsedRealtime = { 5_000L })
             .apply(bigConfig(), now)
 
         assertEquals(listOf(20, 10), registrar.registrations.map { it.size })
@@ -185,7 +186,7 @@ class NativeGeofenceVisitDetectorTest {
     @Test
     fun `any other registration error does not retry`() {
         val registrar = ScriptedRegistrar(listOf(IllegalStateException("1000"), null))
-        NativeGeofenceVisitDetector(registrar, store, VisitStopTracker(store) { now }, clock = { now })
+        NativeGeofenceVisitDetector(registrar, store, VisitStopTracker(store, RecordingVisitEventQueue()) { now }, clock = { now })
             .apply(bigConfig(), now)
 
         assertEquals(1, registrar.registrations.size)

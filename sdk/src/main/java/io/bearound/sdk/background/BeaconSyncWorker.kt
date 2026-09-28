@@ -132,8 +132,8 @@ class BeaconSyncWorker(
                 val ok = sdk.performBackgroundSyncAwait()
                 Log.i(TAG, "periodic_sync_completed success=$ok")
                 if (!ok) {
-                    // No visit tick either: /ingest just failed, and the visit outbox
-                    // waits for the next wakeup.
+                    // No visit tick either: /ingest just failed, and pending visit events
+                    // wait in the stored queue for the next wakeup.
                     BackgroundScheduler.getInstance(applicationContext).scheduleWatchdogAlarm()
                     return@withContext if (runAttemptCount < 3) Result.retry() else Result.failure()
                 }

@@ -2,6 +2,14 @@ package io.bearound.sdk.visit
 
 import io.bearound.sdk.models.UserDevice
 
+/** Records what the tracker persists; nothing is ever sent. */
+internal class RecordingVisitEventQueue : VisitEventQueue {
+    val persisted = mutableListOf<VisitEvent>()
+    override fun persist(event: VisitEvent): Boolean = persisted.add(event)
+    override suspend fun flush() {}
+    override fun discardPending() { persisted.clear() }
+}
+
 internal object VisitTestFixtures {
     const val ORIGIN_LAT = -23.561
     const val ORIGIN_LNG = -46.656

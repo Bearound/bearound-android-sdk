@@ -1,6 +1,8 @@
 package io.bearound.sdk.visit
 
+import android.util.Log
 import io.bearound.sdk.models.DeviceLocation
+import io.bearound.sdk.utilities.OfflineBatchStorage
 import org.json.JSONObject
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -103,7 +105,7 @@ internal data class VisitEvent(
     }
 
     companion object {
-        const val SYNC_TRIGGER = "visit"
+        const val SYNC_TRIGGER = OfflineBatchStorage.VISIT_SYNC_TRIGGER
         const val LOCATION_SOURCE = "gnss"
 
         fun fromJson(json: JSONObject) = VisitEvent(
@@ -114,24 +116,44 @@ internal data class VisitEvent(
     }
 }
 
-internal enum class VisitSendOutcome { DELIVERED, PERMANENT_FAILURE, RETRY }
+/**
+ * Where visit events wait for `/ingest`: the SDK's single queue (`OfflineBatchStorage`,
+ * sdk-visit-cohesion REQ-011), never a queue of its own.
+ */
+internal interface VisitEventQueue {
+    /** Writes [event] to disk before anything tries to send it (persist-before-send). */
+    fun persist(event: VisitEvent): Boolean
 
-/** Delivers one visit event to `/ingest`. The event's own fix is the payload location. */
-internal fun interface VisitEventSink {
-    suspend fun send(event: VisitEvent): VisitSendOutcome
+    /** Sends what is pending, in order; a transient failure leaves the rest queued. */
+    suspend fun flush()
+
+    /** Drops every pending visit event (the host no longer allows location). */
+    fun discardPending()
 }
+
+/** A visit event as a stored batch: no beacons, `syncTrigger = "visit"`, its own fix as location. */
+internal fun OfflineBatchStorage.saveVisitEvent(event: VisitEvent): String? =
+    saveBatchReturningId(
+        beacons = emptyList(),
+        syncTrigger = VisitEvent.SYNC_TRIGGER,
+        // Wi-Fi is not captured with a visit: the send-time list rides along, as before.
+        context = OfflineBatchStorage.CapturedContext(location = event.toDeviceLocation(), wifis = null)
+    )
 
 /**
  * One arrival and one departure per stop, whatever the detector. State lives in
  * [VisitStateStore] so a departure seen by the next process still pairs with the arrival
- * sent by the previous one. Events go to the persisted outbox first (persist-before-send);
- * [VisitController] drains it.
+ * sent by the previous one. Events go to [queue] first (persist-before-send);
+ * [VisitController] flushes it.
  */
 internal class VisitStopTracker(
     private val store: VisitStateStore,
+    private val queue: VisitEventQueue,
     private val clock: () -> Long
 ) {
     companion object {
+        private const val TAG = "BeAroundSDK-Visit"
+
         /** The ingest only honours capture times within the last 24 h. */
         const val OPEN_STOP_MAX_AGE_MS = 24L * 60 * 60 * 1000
     }
@@ -152,7 +174,7 @@ internal class VisitStopTracker(
         val lastDeparture = store.lastDepartureAt
         if (lastDeparture != null && fix.timestamp <= lastDeparture) return false
         store.openStop = VisitStateStore.OpenStop(environmentId, arrival = fix, lastInside = fix)
-        store.enqueue(VisitEvent(VisitEventKind.ARRIVAL, fix, environmentId))
+        persist(VisitEvent(VisitEventKind.ARRIVAL, fix, environmentId))
         return true
     }
 
@@ -173,8 +195,12 @@ internal class VisitStopTracker(
         if (fix.timestamp <= open.arrival.timestamp) return false
         store.openStop = null
         store.lastDepartureAt = fix.timestamp
-        store.enqueue(VisitEvent(VisitEventKind.DEPARTURE, fix, open.environmentId))
+        persist(VisitEvent(VisitEventKind.DEPARTURE, fix, open.environmentId))
         return true
+    }
+
+    private fun persist(event: VisitEvent) {
+        if (!queue.persist(event)) Log.e(TAG, "Could not persist visit ${event.kind.wire} (fix at ${event.fix.timestamp})")
     }
 }
 

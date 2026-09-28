@@ -61,7 +61,7 @@ class VisitStateStoreCorruptionTest {
     @Test
     fun `the tracker survives a corrupt open stop and opens a new one`() {
         prefs.edit().putString("open_stop", """{"arrival":{"lat":"x"}}""").commit()
-        val tracker = VisitStopTracker(store) { 1_800_000_000_000L }
+        val tracker = VisitStopTracker(store, RecordingVisitEventQueue()) { 1_800_000_000_000L }
         val fix = VisitFix(-23.561, -46.656, accuracy = 10f, timestamp = 1_800_000_000_000L)
 
         assertNull(tracker.openStop())

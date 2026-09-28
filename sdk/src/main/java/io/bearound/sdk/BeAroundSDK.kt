@@ -44,13 +44,15 @@ import io.bearound.sdk.utilities.DetectionLogStore
 import io.bearound.sdk.utilities.DeviceInfoCollector
 import io.bearound.sdk.utilities.DiagnosticsStore
 import io.bearound.sdk.utilities.OfflineBatchStorage
+import io.bearound.sdk.utilities.StoredBatchDrain
 import io.bearound.sdk.utilities.PushTokenStore
 import io.bearound.sdk.utilities.RegisterStore
 import io.bearound.sdk.utilities.SDKConfigStorage
 import io.bearound.sdk.utilities.SecureStorage
 import io.bearound.sdk.utilities.LocationCollector
 import io.bearound.sdk.visit.GeofenceSignal
-import io.bearound.sdk.visit.IngestVisitEventSink
+import io.bearound.sdk.visit.OfflineBatchVisitEventQueue
+import io.bearound.sdk.visit.VisitEvent
 import io.bearound.sdk.visit.NativeGeofenceVisitDetector
 import io.bearound.sdk.visit.PlacesConfigClient
 import io.bearound.sdk.visit.PlayServicesGeofenceRegistrar
@@ -93,7 +95,7 @@ class BeAroundSDK private constructor() {
         /**
          * Budget for visit work inside a receiver's `goAsync()` window (geofence broadcast,
          * watchdog). Under the 10 s a receiver may hold before the system treats it as hung;
-         * an event not delivered in time stays in the outbox for the next wakeup.
+         * an event not delivered in time stays in the stored queue for the next wakeup.
          */
         internal const val VISIT_RECEIVER_WINDOW_MS = 9_000L
 
@@ -1518,10 +1520,7 @@ class BeAroundSDK private constructor() {
 
             // Check if we should retry failed batches
             if (shouldRetryFailed) {
-                val allRecords = offlineBatchStorage.loadAllRecords()
-                if (allRecords.isNotEmpty()) {
-                    return syncRetryBatchesInChunks(allRecords, client, info, forceBackground)
-                }
+                drainStoredBatches(forceBackground)?.let { return it }
             }
 
             // Regular sync: get collected beacons (skip already synced)
@@ -1564,10 +1563,35 @@ class BeAroundSDK private constructor() {
             // gone). On success the exact id is removed; on failure the batch is already
             // on disk for the retry drain. A lost 2xx response re-sends the batch — the
             // known at-least-once trade-off until the backend dedupe lands.
-            val persistedBatchId = offlineBatchStorage.saveBatchReturningId(beaconsToSend)
-            if (persistedBatchId == null) {
-                Log.e(TAG, "Persist-before-send failed — batch has no durable copy (upload proceeds)")
-                DiagnosticsStore.recordError("persist-before-send: saveBatch returned null")
+            //
+            // The device context is collected BEFORE the save and persisted with the batch:
+            // a retry replays where the beacons were seen, not where the device is at retry
+            // time (sdk-visit-cohesion REQ-018). An encounter/heartbeat report carries no
+            // beacon and is not persisted, as before.
+            val locationPermission = getLocationPermissionStatus()
+            val bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off"
+
+            val isAppInBackground = if (forceBackground) true else isInBackground
+
+            val userDevice = deviceInfoCollector.collectDeviceInfo(
+                locationPermission = locationPermission,
+                bluetoothState = bluetoothState,
+                appInForeground = !isAppInBackground
+            ).withEncounterData()
+            val capturedContext = OfflineBatchStorage.CapturedContext(
+                location = userDevice.location,
+                wifis = userDevice.wifis
+            )
+
+            val persistedBatchId = if (beaconsToSend.isEmpty()) {
+                null
+            } else {
+                offlineBatchStorage.saveBatchReturningId(beaconsToSend, syncTrigger, capturedContext).also {
+                    if (it == null) {
+                        Log.e(TAG, "Persist-before-send failed: batch has no durable copy (upload proceeds)")
+                        DiagnosticsStore.recordError("persist-before-send: saveBatch returned null")
+                    }
+                }
             }
 
             // Peers pulsing as VIRTUAL BEACONS ride inside `beacons[]` with the reserved
@@ -1581,17 +1605,6 @@ class BeAroundSDK private constructor() {
 
             // Notify listener that sync is starting
             dispatchToListener { it.onSyncStarted(beaconsToSend.size) }
-
-            val locationPermission = getLocationPermissionStatus()
-            val bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off"
-
-            val isAppInBackground = if (forceBackground) true else isInBackground
-
-            val userDevice = deviceInfoCollector.collectDeviceInfo(
-                locationPermission = locationPermission,
-                bluetoothState = bluetoothState,
-                appInForeground = !isAppInBackground
-            ).withEncounterData()
 
             // sendBeacons is suspend and invokes the callback before returning,
             // so syncOk is settled by the time we return it.
@@ -1665,7 +1678,12 @@ class BeAroundSDK private constructor() {
                         Log.e(TAG, "Sync failed: ${error.message}")
                         // alreadyPersisted: persist-before-send wrote the durable copy up
                         // front — only fall back to saving here when THAT write failed.
-                        handleSyncFailure(beaconsToSend, error, alreadyPersisted = persistedBatchId != null)
+                        handleSyncFailure(
+                            beaconsToSend, error,
+                            alreadyPersisted = persistedBatchId != null,
+                            syncTrigger = syncTrigger,
+                            context = capturedContext
+                        )
 
                         DiagnosticsStore.recordSync(success = false, beaconCount = beaconsToSend.size)
                         DetectionLogStore.append(
@@ -1688,145 +1706,124 @@ class BeAroundSDK private constructor() {
             return syncOk
     }
 
+    /** Serializes the drains (sync retry and visit flush) so no batch is sent twice at once. */
+    private val drainMutex = Mutex()
+
     /**
-     * Sends all retry batches in chunks of 5, sequentially.
-     * Stops on the first chunk failure; successfully sent batches are removed from storage.
-     * Returns false when a chunk failed (callers with an execution window can retry).
+     * Sends the persisted batches (all of them, or only those with [onlyTrigger]) through
+     * [StoredBatchDrain]: one request per batch, each with the `syncTrigger` and the device
+     * context persisted with it (REQ-018).
+     * @return null when there was nothing to send (or the SDK is not configured); otherwise
+     *         false when a transient failure stopped the drain.
      */
-    private suspend fun syncRetryBatchesInChunks(
-        allRecords: List<OfflineBatchStorage.StoredBatchRecord>,
+    private suspend fun drainStoredBatches(forceBackground: Boolean, onlyTrigger: String? = null): Boolean? {
+        val client = apiClient ?: return null
+        val info = sdkInfo ?: return null
+        return drainMutex.withMutex {
+            val records = offlineBatchStorage.loadAllRecords()
+                .let { all -> if (onlyTrigger == null) all else all.filter { it.syncTrigger == onlyTrigger } }
+            if (records.isEmpty()) return@withMutex null
+
+            val isAppInBackground = if (forceBackground) true else isInBackground
+            // The send-time snapshot: the whole device block of a legacy batch, and every
+            // field a batch did not capture.
+            val fresh = deviceInfoCollector.collectDeviceInfo(
+                locationPermission = getLocationPermissionStatus(),
+                bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off",
+                appInForeground = !isAppInBackground
+            )
+            Log.d(TAG, "Draining ${records.size} stored batch(es)")
+            val drain = StoredBatchDrain(
+                storage = offlineBatchStorage,
+                permanentHttpCodes = PERMANENT_HTTP_CODES,
+                send = { beacons, device, syncTrigger -> postStoredBatch(client, info, beacons, device, syncTrigger) },
+                observer = drainObserver(fresh)
+            )
+            drain.drain(records, fresh, DataCollectionPolicyStore.current).also {
+                Log.d(TAG, "Drain finished (ok=$it), storage now has ${offlineBatchStorage.getBatchCount()} batch(es)")
+            }
+        }
+    }
+
+    /** Pending visit events go up as soon as a visit tick asks, without the beacon backoff. */
+    private suspend fun flushVisitBatches() {
+        drainStoredBatches(forceBackground = isInBackground, onlyTrigger = VisitEvent.SYNC_TRIGGER)
+    }
+
+    private suspend fun postStoredBatch(
         client: APIClient,
         info: SDKInfo,
-        forceBackground: Boolean
-    ): Boolean {
-        val locationPermission = getLocationPermissionStatus()
-        val bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off"
-        val isAppInBackground = if (forceBackground) true else isInBackground
+        beacons: List<Beacon>,
+        device: io.bearound.sdk.models.UserDevice,
+        syncTrigger: String?
+    ): Result<Unit> {
+        if (syncTrigger == VisitEvent.SYNC_TRIGGER) return postVisitPayload(device, syncTrigger)
+        var outcome: Result<Unit> = Result.failure(IllegalStateException("no response"))
+        client.sendBeacons(beacons, info, device, userProperties, syncTrigger) { outcome = it }
+        return outcome
+    }
 
-        val userDevice = deviceInfoCollector.collectDeviceInfo(
-            locationPermission = locationPermission,
-            bluetoothState = bluetoothState,
-            appInForeground = !isAppInBackground
-        )
+    /**
+     * The drain's side effects: listener, diagnostics, detection log and backoff. A request
+     * without beacons (a visit) touches none of them, as when visits had their own outbox.
+     */
+    private fun drainObserver(fresh: io.bearound.sdk.models.UserDevice) = object : StoredBatchDrain.Observer {
+        override fun onRequestStarted(beaconCount: Int) {
+            if (beaconCount == 0) return
+            dispatchToListener { it.onSyncStarted(beaconCount) }
+        }
 
-        val chunks = allRecords.chunked(5)
-        Log.d(TAG, "Retrying ${allRecords.size} batches in ${chunks.size} chunk(s) of up to 5")
-
-        for ((chunkIndex, chunk) in chunks.withIndex()) {
-            val beaconsInChunk = chunk.flatMap { it.beacons }
-            if (beaconsInChunk.isEmpty()) continue
-
-            Log.d(TAG, "Sending retry chunk ${chunkIndex + 1}/${chunks.size} — ${beaconsInChunk.size} beacons from ${chunk.size} batch(es)")
-
-            dispatchToListener { it.onSyncStarted(beaconsInChunk.size) }
-
-            var chunkResult: Result<Unit>? = null
-            client.sendBeacons(beaconsInChunk, info, userDevice, userProperties) { result ->
-                chunkResult = result
+        override fun onRequestDelivered(beaconCount: Int, afterBisect: Boolean) {
+            if (beaconCount == 0) return
+            if (!afterBisect) {
+                consecutiveFailures = 0
+                lastFailureTime = null
             }
-
-            if (chunkResult?.isFailure == true) {
-                val error = chunkResult!!.exceptionOrNull()!!
-                val status = (error as? HttpException)?.statusCode
-                val isPermanent = status != null && status in PERMANENT_HTTP_CODES
-
-                if (!isPermanent) {
-                    // Transient (network, timeout, 408/429/5xx): stop and let the caller's
-                    // backoff retry the WHOLE queue later — nothing is lost.
-                    Log.e(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} failed: ${error.message}")
-
-                    consecutiveFailures++
-                    lastFailureTime = System.currentTimeMillis()
-
-                    DiagnosticsStore.recordSync(success = false, beaconCount = beaconsInChunk.size)
-                    DiagnosticsStore.recordError("Retry chunk failed: ${error.message}")
-                    DetectionLogStore.append(
-                        context,
-                        type = "Sync falhou",
-                        detail = "${beaconsInChunk.size} beacon(s) · ${error.message ?: "erro desconhecido"}"
-                    )
-
-                    dispatchToListener {
-                        it.onSyncCompleted(
-                            beaconsInChunk.size,
-                            success = false,
-                            error = error as? Exception ?: Exception(error.message)
-                        )
-                        it.onError(error as? Exception ?: Exception(error.message))
-                    }
-
-                    return false
-                }
-
-                // Permanent rejection (400/401/403/404/413/422): the backend is healthy but
-                // SOME batch in this chunk is poison — an identical retry fails identically,
-                // and stopping here let one bad batch block the whole queue for 7 days
-                // (head-of-line blocking; field case: the 3.4.5 422-rejected payloads).
-                // Bisect: send each batch alone, quarantine the rejected one(s), keep going.
-                // NOT counted as consecutiveFailures — the API is reachable.
-                Log.w(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} rejected permanently (HTTP $status) — bisecting ${chunk.size} batch(es)")
-                var delivered = 0
-                for (record in chunk) {
-                    var singleResult: Result<Unit>? = null
-                    client.sendBeacons(record.beacons, info, userDevice, userProperties) { r ->
-                        singleResult = r
-                    }
-                    val singleStatus = (singleResult?.exceptionOrNull() as? HttpException)?.statusCode
-                    when {
-                        singleResult?.isSuccess == true -> {
-                            offlineBatchStorage.removeBatch(record.id)
-                            delivered += record.beacons.size
-                        }
-                        singleStatus != null && singleStatus in PERMANENT_HTTP_CODES -> {
-                            DiagnosticsStore.recordError("Batch quarantined (HTTP $singleStatus): ${record.id}")
-                            DetectionLogStore.append(
-                                context,
-                                type = "Sync falhou",
-                                detail = "batch rejeitado pelo backend (HTTP $singleStatus) — quarentenado"
-                            )
-                            offlineBatchStorage.quarantineBatch(record.id)
-                        }
-                        else -> {
-                            // Network blinked mid-bisect: stop; everything left stays queued.
-                            return false
-                        }
-                    }
-                }
-                if (delivered > 0) {
-                    PushTokenStore.markSent(userDevice.pushToken)
-                    DiagnosticsStore.recordSync(success = true, beaconCount = delivered)
-                    DetectionLogStore.append(
-                        context,
-                        type = "Sync OK",
-                        detail = "$delivered beacon(s) enviados ao ingester (após bisect)"
-                    )
-                    dispatchToListener { it.onSyncCompleted(delivered, success = true, error = null) }
-                }
-                continue
-            }
-
-            // Chunk succeeded — remove EXACTLY the batches this chunk carried, by id.
-            // The old positional removal (`repeat(chunk.size) { removeOldestBatch() }`)
-            // deleted whatever happened to be oldest at removal time — a save/expiry
-            // between load and remove could delete an UNSENT batch instead.
-            consecutiveFailures = 0
-            lastFailureTime = null
-            val removed = offlineBatchStorage.removeBatches(chunk.map { it.id })
-
-            Log.d(TAG, "Retry chunk ${chunkIndex + 1}/${chunks.size} succeeded — removed $removed batch(es)")
-
-            PushTokenStore.markSent(userDevice.pushToken)
-            DiagnosticsStore.recordSync(success = true, beaconCount = beaconsInChunk.size)
+            PushTokenStore.markSent(fresh.pushToken)
+            DiagnosticsStore.recordSync(success = true, beaconCount = beaconCount)
             DetectionLogStore.append(
                 context,
                 type = "Sync OK",
-                detail = "${beaconsInChunk.size} beacon(s) enviados ao ingester"
+                detail = if (afterBisect) {
+                    "$beaconCount beacon(s) enviados ao ingester (após bisect)"
+                } else {
+                    "$beaconCount beacon(s) enviados ao ingester"
+                }
             )
-            dispatchToListener { it.onSyncCompleted(beaconsInChunk.size, success = true, error = null) }
+            dispatchToListener { it.onSyncCompleted(beaconCount, success = true, error = null) }
         }
 
-        Log.d(TAG, "All retry chunks completed — storage now has ${offlineBatchStorage.getBatchCount()} batch(es)")
-        return true
+        override fun onTransientFailure(beaconCount: Int, error: Throwable) {
+            if (beaconCount == 0) return
+            Log.e(TAG, "Stored batch send failed: ${error.message}")
+            consecutiveFailures++
+            lastFailureTime = System.currentTimeMillis()
+
+            DiagnosticsStore.recordSync(success = false, beaconCount = beaconCount)
+            DiagnosticsStore.recordError("Retry chunk failed: ${error.message}")
+            DetectionLogStore.append(
+                context,
+                type = "Sync falhou",
+                detail = "$beaconCount beacon(s) · ${error.message ?: "erro desconhecido"}"
+            )
+            dispatchToListener {
+                it.onSyncCompleted(
+                    beaconCount,
+                    success = false,
+                    error = error as? Exception ?: Exception(error.message)
+                )
+                it.onError(error as? Exception ?: Exception(error.message))
+            }
+        }
+
+        override fun onQuarantined(batchId: String, statusCode: Int) {
+            DiagnosticsStore.recordError("Batch quarantined (HTTP $statusCode): $batchId")
+            DetectionLogStore.append(
+                context,
+                type = "Sync falhou",
+                detail = "batch rejeitado pelo backend (HTTP $statusCode), quarentenado"
+            )
+        }
     }
 
     /** SHA-256 of the business token, truncated — batch files record it, never the raw token. */
@@ -1836,7 +1833,13 @@ class BeAroundSDK private constructor() {
             .joinToString("") { "%02x".format(it) }
             .take(16)
 
-    private fun handleSyncFailure(beacons: List<Beacon>, error: Throwable, alreadyPersisted: Boolean) {
+    private fun handleSyncFailure(
+        beacons: List<Beacon>,
+        error: Throwable,
+        alreadyPersisted: Boolean,
+        syncTrigger: String?,
+        context: OfflineBatchStorage.CapturedContext
+    ) {
         consecutiveFailures++
         lastFailureTime = System.currentTimeMillis()
 
@@ -1845,7 +1848,7 @@ class BeAroundSDK private constructor() {
         // Persist-before-send already wrote the durable copy for the regular path; this
         // save is only the fallback for the rare case that write itself failed.
         if (!alreadyPersisted) {
-            val saved = offlineBatchStorage.saveBatch(beacons)
+            val saved = offlineBatchStorage.saveBatchReturningId(beacons, syncTrigger, context) != null
             if (saved) {
                 Log.d(TAG, "Saved failed batch to persistent storage (total: ${offlineBatchStorage.getBatchCount()})")
             } else {
@@ -2073,22 +2076,18 @@ class BeAroundSDK private constructor() {
      */
     private fun visitController(): VisitController? {
         val config = configuration ?: return null
-        val fetcher = PlacesConfigClient(config.controlHubBaseURL, config.businessToken)
+        val fetcher = PlacesConfigClient.forConfiguration(config)
         synchronized(visitLock) {
             visitController?.let {
                 it.fetcher = fetcher
                 return it
             }
             val store = VisitStateStore(context)
-            val sink = IngestVisitEventSink(
-                deviceSnapshot = ::visitDeviceSnapshot,
-                post = ::postVisitPayload,
-                permanentHttpCodes = PERMANENT_HTTP_CODES
-            )
+            val queue = OfflineBatchVisitEventQueue(context, offlineBatchStorage, ::flushVisitBatches)
             return VisitController(
                 store = store,
                 fetcher = fetcher,
-                sink = sink,
+                queue = queue,
                 permissions = { VisitDetectorFactory.readPermissions(context) },
                 locationAllowedByHost = { DataCollectionPolicyStore.current.location },
                 lastKnownFix = { visitLocationCollector.lastKnown()?.let(VisitFix::fromDeviceLocation) },
@@ -2151,7 +2150,7 @@ class BeAroundSDK private constructor() {
      * revived the process: restore the configuration, then handle the transition. [onDone]
      * runs when handling finished or [VISIT_RECEIVER_WINDOW_MS] passed, whichever comes first,
      * so the receiver's `goAsync()` window is always released; an event not delivered by then
-     * stays in the outbox for the next tick.
+     * stays in the stored queue for the next tick.
      */
     internal fun handleVisitGeofenceSignal(signal: GeofenceSignal, onDone: () -> Unit) {
         val work = scope.launch {
@@ -2174,16 +2173,7 @@ class BeAroundSDK private constructor() {
         }
     }
 
-    private fun visitDeviceSnapshot(): io.bearound.sdk.models.UserDevice? {
-        if (!isConfigured) return null
-        return deviceInfoCollector.collectDeviceInfo(
-            locationPermission = getLocationPermissionStatus(),
-            bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off",
-            appInForeground = !isInBackground
-        )
-    }
-
-    /** One visit payload, straight to `/ingest`: never through the beacon retry drain. */
+    /** One stored visit batch to `/ingest`, called by the drain; logged in the detection log. */
     private suspend fun postVisitPayload(
         userDevice: io.bearound.sdk.models.UserDevice,
         syncTrigger: String

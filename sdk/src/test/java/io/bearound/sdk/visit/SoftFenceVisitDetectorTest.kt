@@ -3,9 +3,12 @@ package io.bearound.sdk.visit
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import io.bearound.sdk.BeAroundSDK
+import io.bearound.sdk.models.DataCollectionPolicy
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.network.APIClient
+import io.bearound.sdk.utilities.OfflineBatchStorage
+import io.bearound.sdk.utilities.StoredBatchDrain
 import io.bearound.sdk.visit.VisitTestFixtures.ORIGIN_LAT
 import io.bearound.sdk.visit.VisitTestFixtures.ORIGIN_LNG
 import kotlinx.coroutines.runBlocking
@@ -29,26 +32,36 @@ class SoftFenceVisitDetectorTest {
     private val apiClient = APIClient(SDKConfiguration(businessToken = "token", appId = "app"))
     private val sdkInfo = SDKInfo(appId = "app", build = 1)
 
+    private lateinit var context: Context
+    private lateinit var storage: OfflineBatchStorage
+
     @Before
     fun setUp() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
+        context = ApplicationProvider.getApplicationContext()
         store = VisitStateStore(context)
         store.clear()
+        storage = OfflineBatchStorage(context)
+        storage.clearAllBatches()
     }
 
+    /** The production queue: visit events persisted in OfflineBatchStorage and sent by its drain. */
     private fun controller(): VisitController {
-        val sink = IngestVisitEventSink(
-            deviceSnapshot = { VisitTestFixtures.device() },
-            post = { device, trigger ->
-                payloads += apiClient.buildPayload(emptyList(), sdkInfo, device, null, trigger)
+        val drain = StoredBatchDrain(
+            storage = storage,
+            permanentHttpCodes = BeAroundSDK.PERMANENT_HTTP_CODES,
+            send = { beacons, device, trigger ->
+                payloads += apiClient.buildPayload(beacons, sdkInfo, device, null, trigger)
                 Result.success(Unit)
             },
-            permanentHttpCodes = BeAroundSDK.PERMANENT_HTTP_CODES
+            clock = { now }
         )
+        val queue = OfflineBatchVisitEventQueue(context, storage) {
+            drain.drain(storage.loadAllRecords(), VisitTestFixtures.device(), DataCollectionPolicy.ALL_ENABLED)
+        }
         return VisitController(
             store = store,
             fetcher = PlacesConfigFetching { _, _, _ -> fetches++; PlacesFetchResult.NotModified },
-            sink = sink,
+            queue = queue,
             permissions = { VisitPermissions(34, true, true, false, true) },
             locationAllowedByHost = { true },
             lastKnownFix = { currentFix },
@@ -102,7 +115,7 @@ class SoftFenceVisitDetectorTest {
         // Real fix times, not the send time.
         assertNotEquals(1_800_000_000_000L + 6 * 60_000L, arrival.getLong("timestamp"))
         assertNotEquals(1_800_000_000_000L + 12 * 60_000L, departure.getLong("timestamp"))
-        assertEquals(0, store.outbox().size)
+        assertEquals(0, storage.getBatchCount())
         assertEquals(0, fetches)
     }
 

@@ -7,8 +7,10 @@ import com.google.gson.GsonBuilder
 import com.google.gson.annotations.SerializedName
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.BeaconMetadata
+import io.bearound.sdk.models.DeviceLocation
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.RssiStats
+import io.bearound.sdk.models.WifiObservation
 import java.io.File
 import java.util.Date
 import java.util.UUID
@@ -36,6 +38,16 @@ class OfflineBatchStorage(private val context: Context) {
         
         /** Directory name for batch storage */
         private const val DIRECTORY_NAME = "com.bearound.sdk.batches"
+
+        /** `syncTrigger` of a visit event (same value as `VisitEvent.SYNC_TRIGGER`). */
+        internal const val VISIT_SYNC_TRIGGER = "visit"
+
+        /**
+         * Filename marker of a batch persisted with `syncTrigger = "visit"`, written at save
+         * time from that trigger: [enforceMaxBatchCount] skips these files without reading
+         * them. Format: `timestamp_visit_uuid.json` (timestamp still first, id still last).
+         */
+        private const val VISIT_FILE_MARKER = "_visit_"
     }
     
     // region Codable Types for JSON Serialization
@@ -47,18 +59,129 @@ class OfflineBatchStorage(private val context: Context) {
         // a DIFFERENT tenant are never sent with the current credential (multi-tenant
         // isolation); null = written before this field existed → treated as current.
         @SerializedName("tenantId") val tenantId: String? = null,
-        @SerializedName("beacons") val beacons: List<StoredBeacon>
+        // Nullable: Gson leaves a missing field null even in a non-null Kotlin field. Only a
+        // batch with a syncTrigger (a visit) may carry no beacons.
+        @SerializedName("beacons") val beacons: List<StoredBeacon>?,
+        // Added by sdk-visit-cohesion (REQ-018). Both OPTIONAL: a batch written before them
+        // decodes with null here and is sent with the device context collected at send time.
+        @SerializedName("syncTrigger") val syncTrigger: String? = null,
+        @SerializedName("context") val context: StoredContext? = null
+    )
+
+    /**
+     * What the device reported when the batch was captured. Replayed as-is by the retry
+     * drain instead of a snapshot taken at retry time (which placed old beacons at the
+     * device's CURRENT location).
+     *
+     * @property location the fix captured with the batch; null means "there was none".
+     * @property wifis    the access points captured with the batch; null means "not
+     *                    captured" and the send-time list is used (visit events).
+     */
+    data class CapturedContext(
+        val location: DeviceLocation?,
+        val wifis: List<WifiObservation>?
     )
 
     /**
      * Public read model: the batch id travels with the beacons so callers remove EXACTLY
      * the batches a successful upload represents — never "the N oldest at removal time",
      * which drifts when saves/cleanup run between load and remove.
+     *
+     * [syncTrigger] and [context] are what was persisted with the batch; both null on a
+     * batch written before they existed (legacy).
      */
     data class StoredBatchRecord(
         val id: String,
-        val beacons: List<Beacon>
-    )
+        val beacons: List<Beacon>,
+        val syncTrigger: String? = null,
+        val context: CapturedContext? = null
+    ) {
+        /** Written before the batch carried its own context: sent with a fresh snapshot. */
+        val isLegacy: Boolean get() = context == null && syncTrigger == null
+    }
+
+    // Every field nullable: an entry missing a field reads as absent, never as a crash.
+    private data class StoredContext(
+        @SerializedName("location") val location: StoredLocation? = null,
+        @SerializedName("wifis") val wifis: List<StoredWifi>? = null
+    ) {
+        companion object {
+            fun from(context: CapturedContext) = StoredContext(
+                location = context.location?.let { StoredLocation.from(it) },
+                wifis = context.wifis?.map { StoredWifi.from(it) }
+            )
+        }
+
+        fun toCapturedContext() = CapturedContext(
+            location = location?.toDeviceLocation(),
+            wifis = wifis?.mapNotNull { it.toWifiObservation() }
+        )
+    }
+
+    private data class StoredLocation(
+        @SerializedName("latitude") val latitude: Double? = null,
+        @SerializedName("longitude") val longitude: Double? = null,
+        @SerializedName("accuracy") val accuracy: Float? = null,
+        @SerializedName("altitude") val altitude: Double? = null,
+        @SerializedName("timestamp") val timestamp: Long? = null,
+        @SerializedName("source") val source: String? = null,
+        @SerializedName("isMocked") val isMocked: Boolean? = null
+    ) {
+        companion object {
+            fun from(location: DeviceLocation) = StoredLocation(
+                latitude = location.latitude,
+                longitude = location.longitude,
+                accuracy = location.accuracy,
+                altitude = location.altitude,
+                timestamp = location.timestamp,
+                source = location.source,
+                isMocked = location.isMocked
+            )
+        }
+
+        fun toDeviceLocation(): DeviceLocation? {
+            return DeviceLocation(
+                latitude = latitude ?: return null,
+                longitude = longitude ?: return null,
+                accuracy = accuracy,
+                altitude = altitude,
+                timestamp = timestamp ?: return null,
+                source = source ?: return null,
+                isMocked = isMocked
+            )
+        }
+    }
+
+    private data class StoredWifi(
+        @SerializedName("apId") val apId: String? = null,
+        @SerializedName("ssid") val ssid: String? = null,
+        @SerializedName("rssi") val rssi: Int? = null,
+        @SerializedName("connected") val connected: Boolean? = null,
+        @SerializedName("frequencyMhz") val frequencyMhz: Int? = null,
+        @SerializedName("timestamp") val timestamp: Long? = null
+    ) {
+        companion object {
+            fun from(wifi: WifiObservation) = StoredWifi(
+                apId = wifi.apId,
+                ssid = wifi.ssid,
+                rssi = wifi.rssi,
+                connected = wifi.connected,
+                frequencyMhz = wifi.frequencyMhz,
+                timestamp = wifi.timestamp
+            )
+        }
+
+        fun toWifiObservation(): WifiObservation? {
+            return WifiObservation(
+                apId = apId ?: return null,
+                ssid = ssid,
+                rssi = rssi,
+                connected = connected ?: false,
+                frequencyMhz = frequencyMhz,
+                timestamp = timestamp ?: return null
+            )
+        }
+    }
     
     private data class StoredBeacon(
         @SerializedName("uuid") val uuid: String,
@@ -92,9 +215,11 @@ class OfflineBatchStorage(private val context: Context) {
         }
 
         fun toBeacon(): Beacon {
+            // Exception, not only IllegalArgumentException: an old file without the field
+            // hands Gson's null to valueOf (NPE), and that must not quarantine the batch.
             val beaconProximity = try {
                 Beacon.Proximity.valueOf(proximity)
-            } catch (e: IllegalArgumentException) {
+            } catch (e: Exception) {
                 Beacon.Proximity.UNKNOWN
             }
 
@@ -106,7 +231,8 @@ class OfflineBatchStorage(private val context: Context) {
                 proximity = beaconProximity,
                 accuracy = accuracy,
                 timestamp = Date(timestamp),
-                metadata = metadata?.toBeaconMetadata(),
+                // Metadata with a missing field loses only the metadata, never the beacon.
+                metadata = metadata?.let { runCatching { it.toBeaconMetadata() }.getOrNull() },
                 txPower = txPower,
                 rssiRaw = rssiRaw,
                 rssiSamples = rssiSamples?.toRssiStats()
@@ -251,8 +377,20 @@ class OfflineBatchStorage(private val context: Context) {
      * Saves a batch and returns its id (persist-before-send: the caller uploads the
      * payload AND, on success, removes exactly this id). Null when the write failed.
      */
-    fun saveBatchReturningId(beacons: List<Beacon>): String? {
-        if (beacons.isEmpty()) {
+    fun saveBatchReturningId(beacons: List<Beacon>): String? = saveBatchReturningId(beacons, null, null)
+
+    /**
+     * Saves a batch together with WHY it is sent ([syncTrigger]) and what the device
+     * reported when it was captured ([context]); the retry drain replays both instead of
+     * recomputing them. A batch without beacons is accepted only with a [syncTrigger]
+     * (a visit event carries no beacon: its location IS the payload).
+     */
+    fun saveBatchReturningId(
+        beacons: List<Beacon>,
+        syncTrigger: String?,
+        context: CapturedContext?
+    ): String? {
+        if (beacons.isEmpty() && syncTrigger == null) {
             Log.w(TAG, "Cannot save empty batch")
             return null
         }
@@ -267,11 +405,15 @@ class OfflineBatchStorage(private val context: Context) {
                     id = batchId,
                     timestamp = timestamp,
                     tenantId = currentTenantId,
-                    beacons = storedBeacons
+                    beacons = storedBeacons,
+                    syncTrigger = syncTrigger,
+                    context = context?.let { StoredContext.from(it) }
                 )
 
-                // Filename format: timestamp_uuid.json for sorting
-                val filename = "${timestamp}_${batchId}.json"
+                // Filename format: timestamp_uuid.json for sorting (timestamp_visit_uuid.json
+                // for a visit, so eviction can tell it apart without reading it)
+                val marker = if (syncTrigger == VISIT_SYNC_TRIGGER) VISIT_FILE_MARKER else "_"
+                val filename = "${timestamp}${marker}${batchId}.json"
                 val json = gson.toJson(batch)
 
                 // Atomic write: tmp + fsync + rename (same directory = same filesystem).
@@ -329,10 +471,14 @@ class OfflineBatchStorage(private val context: Context) {
                         ) {
                             continue
                         }
+                        val storedBeacons = batch.beacons
+                            ?: if (batch.syncTrigger != null) emptyList() else error("batch has no beacons")
                         records.add(
                             StoredBatchRecord(
                                 id = batch.id,
-                                beacons = batch.beacons.map { it.toBeacon() }
+                                beacons = storedBeacons.map { it.toBeacon() },
+                                syncTrigger = batch.syncTrigger,
+                                context = batch.context?.toCapturedContext()
                             )
                         )
                     } catch (e: Exception) {
@@ -368,6 +514,22 @@ class OfflineBatchStorage(private val context: Context) {
 
     /** Removes exactly these batch ids; returns how many were deleted. */
     fun removeBatches(ids: List<String>): Int = ids.count { removeBatch(it) }
+
+    /**
+     * Drops every pending visit batch (the host turned location off: a visit is a location).
+     * @return how many were deleted.
+     */
+    internal fun removeVisitBatches(): Int = lock.withLock {
+        try {
+            storageDirectory.listFiles()
+                ?.filter { it.extension == "json" && it.isVisitBatch() }
+                ?.count { it.delete() }
+                ?: 0
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to remove visit batches: ${e.message}", e)
+            0
+        }
+    }
 
     /**
      * Takes a backend-REJECTED batch out of the send queue (renamed to .rejected — kept
@@ -455,10 +617,18 @@ class OfflineBatchStorage(private val context: Context) {
         }
     }
     
+    private fun File.isVisitBatch(): Boolean = name.contains(VISIT_FILE_MARKER)
+
+    /**
+     * Evicts the oldest beacon batches beyond [maxBatchCount]. A visit batch is exempt and
+     * does not count toward the cap (REQ-018): a stop yields two events a day at most, and
+     * losing one loses the whole visit. The 7-day expiry and the drain's 24 h capture window
+     * still bound them.
+     */
     private fun enforceMaxBatchCount() {
         try {
             val files = storageDirectory.listFiles()
-                ?.filter { it.extension == "json" }
+                ?.filter { it.extension == "json" && !it.isVisitBatch() }
                 ?.sortedBy { it.name }
                 ?.toMutableList()
                 ?: return

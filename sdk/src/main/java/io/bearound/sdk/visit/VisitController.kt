@@ -1,8 +1,8 @@
 package io.bearound.sdk.visit
 
+import android.content.Context
 import android.util.Log
-import io.bearound.sdk.models.UserDevice
-import io.bearound.sdk.network.HttpException
+import io.bearound.sdk.utilities.OfflineBatchStorage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -19,7 +19,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 internal class VisitController(
     private val store: VisitStateStore,
     @Volatile var fetcher: PlacesConfigFetching,
-    private val sink: VisitEventSink,
+    /** Where the tracker persists events and [flushQueue] sends them from. */
+    private val queue: VisitEventQueue,
     private val permissions: () -> VisitPermissions,
     /** `DataCollectionPolicy.location`: off means no fetch (it sends coordinates) and no event. */
     private val locationAllowedByHost: () -> Boolean,
@@ -82,7 +83,7 @@ internal class VisitController(
         }
     }
 
-    val tracker = VisitStopTracker(store, clock)
+    val tracker = VisitStopTracker(store, queue, clock)
 
     private val mutex = Mutex()
 
@@ -128,7 +129,7 @@ internal class VisitController(
 
         if (!isEligible()) {
             disarm()
-            flushOutbox()
+            flushQueue()
             return@withLock
         }
 
@@ -137,7 +138,7 @@ internal class VisitController(
         refreshIfNeeded(fix, forced = false, now = now)
         applyConfig(active, now)
         active.onTick(fix, now)
-        flushOutbox()
+        flushQueue()
         Log.d(TAG, "Visit tick ($trigger): mode=${active.mode} fix=${fix != null}")
     }
 
@@ -168,7 +169,7 @@ internal class VisitController(
             refreshIfNeeded(fix, forced = true, now = now)
             applyConfig(native, now)
         }
-        flushOutbox()
+        flushQueue()
     }
 
     private fun isEligible(): Boolean = locationAllowedByHost() && permissions().anyLocation
@@ -249,52 +250,43 @@ internal class VisitController(
     }
 
     /**
-     * Delivers the outbox in order. Each event carries its own fix, so a retry never rebuilds
-     * the location at send time. Events past the ingest's 24 h capture window are dropped.
+     * Delivers pending visit events in order. Each event carries its own fix, so a retry never
+     * rebuilds the location at send time; the drain drops events past the ingest's 24 h
+     * capture window.
      */
-    private suspend fun flushOutbox() {
+    private suspend fun flushQueue() {
         if (!locationAllowedByHost()) {
-            store.clearOutbox()
+            queue.discardPending()
             return
         }
-        val now = clock()
-        for (event in store.outbox()) {
-            if (now - event.fix.timestamp > VisitStopTracker.OPEN_STOP_MAX_AGE_MS) {
-                store.remove(event)
-                continue
-            }
-            when (sink.send(event)) {
-                VisitSendOutcome.DELIVERED, VisitSendOutcome.PERMANENT_FAILURE -> store.remove(event)
-                VisitSendOutcome.RETRY -> return
-            }
-        }
+        queue.flush()
     }
 }
 
 /**
- * Sends a visit event as an ordinary `/ingest` payload: no beacons, `syncTrigger: "visit"`,
- * and the event's own fix as `location` (real fix time, `source: "gnss"`, D-26). Everything
- * else in the device block is the current snapshot.
+ * The production [VisitEventQueue]: visit events are batches of the SDK's single queue,
+ * [OfflineBatchStorage] (sdk-visit-cohesion REQ-011), sent as ordinary `/ingest` payloads
+ * with no beacons, `syncTrigger: "visit"` and the event's own fix as `location` (real fix
+ * time, `source: "gnss"`, D-26). [drain] sends the pending visit batches.
+ *
+ * Each flush first moves what an older SDK left in the retired outbox ([OutboxMigration]),
+ * so the first flush after an upgrade delivers it.
  */
-internal class IngestVisitEventSink(
-    private val deviceSnapshot: () -> UserDevice?,
-    private val post: suspend (UserDevice, String) -> Result<Unit>,
-    private val permanentHttpCodes: Set<Int>
-) : VisitEventSink {
+internal class OfflineBatchVisitEventQueue(
+    private val context: Context,
+    private val storage: OfflineBatchStorage,
+    private val drain: suspend () -> Unit
+) : VisitEventQueue {
 
-    override suspend fun send(event: VisitEvent): VisitSendOutcome {
-        val device = deviceSnapshot() ?: return VisitSendOutcome.RETRY
-        val result = post(device.copy(location = event.toDeviceLocation()), VisitEvent.SYNC_TRIGGER)
-        return result.fold(
-            onSuccess = { VisitSendOutcome.DELIVERED },
-            onFailure = { error ->
-                val status = (error as? HttpException)?.statusCode
-                if (status != null && status in permanentHttpCodes) {
-                    VisitSendOutcome.PERMANENT_FAILURE
-                } else {
-                    VisitSendOutcome.RETRY
-                }
-            }
-        )
+    override fun persist(event: VisitEvent): Boolean = storage.saveVisitEvent(event) != null
+
+    override suspend fun flush() {
+        OutboxMigration.migrate(context, storage)
+        drain()
+    }
+
+    override fun discardPending() {
+        OutboxMigration.discard(context)
+        storage.removeVisitBatches()
     }
 }

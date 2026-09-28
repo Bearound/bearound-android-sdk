@@ -193,13 +193,12 @@ data class SDKConfiguration(
             wifi = collectWifi
         )
 
-    val apiBaseURL: String = "https://ingest.bearound.io"
-
     /**
-     * Control Hub API, which serves the visit-detection config (`GET /sdk/places/nearby`).
-     * [apiBaseURL] is the ingest host and does not serve it. Same value as the iOS SDK.
+     * The SDK's only host: `/ingest`, `/sdk-errors` and the visit-detection config
+     * (`GET /sdk/places/nearby`, routed by path at the ingest's load balancer to the places
+     * service). One host means one domain for the client app to allow.
      */
-    internal val controlHubBaseURL: String = "https://chapi.bearound.io"
+    val apiBaseURL: String = "https://ingest.bearound.io"
 
     // NOTE: the old precisionScanDuration/PauseDuration/CycleCount/CycleInterval props
     // described a manual scan/pause duty cycle the SDK no longer runs — scanning is

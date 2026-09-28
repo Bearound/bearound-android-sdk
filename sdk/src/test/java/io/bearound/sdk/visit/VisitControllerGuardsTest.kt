@@ -41,7 +41,7 @@ class VisitControllerGuardsTest {
         val controller = VisitController(
             store = store,
             fetcher = PlacesConfigFetching { _, _, _ -> fetches++; PlacesFetchResult.NotModified },
-            sink = VisitEventSink { VisitSendOutcome.DELIVERED },
+            queue = RecordingVisitEventQueue(),
             permissions = { VisitPermissions(34, true, true, false, true) },
             locationAllowedByHost = { true },
             // 300 m from the origin: beyond the server's 0 m, inside the 500 m floor.
