@@ -49,6 +49,7 @@ import io.bearound.sdk.utilities.RegisterStore
 import io.bearound.sdk.utilities.SDKConfigStorage
 import io.bearound.sdk.utilities.SecureStorage
 import io.bearound.sdk.utilities.LocationCollector
+import io.bearound.sdk.visit.GeofenceSignal
 import io.bearound.sdk.visit.IngestVisitEventSink
 import io.bearound.sdk.visit.PlacesConfigClient
 import io.bearound.sdk.visit.VisitController
@@ -86,6 +87,9 @@ class BeAroundSDK private constructor() {
          * 5xx, transport errors) is treated as transient and retried whole.
          */
         internal val PERMANENT_HTTP_CODES = setOf(400, 401, 403, 404, 413, 422)
+
+        /** Budget for a visit geofence broadcast, inside the receiver's `goAsync()` window. */
+        private const val VISIT_GEOFENCE_WINDOW_MS = 25_000L
 
         /**
          * Minimum gap between broadcast-triggered background flushes. Beacons
@@ -2109,6 +2113,30 @@ class BeAroundSDK private constructor() {
         if (!isConfigured || !wasScanningEnabled()) return
         val controller = visitController() ?: return
         if (!controller.isStarted) controller.start() else controller.tick(trigger, force)
+    }
+
+    /**
+     * Entry point of [io.bearound.sdk.visit.VisitGeofenceReceiver]. The broadcast may have just
+     * revived the process: restore the configuration, then handle the transition. [onDone]
+     * runs when handling finished or [VISIT_GEOFENCE_WINDOW_MS] passed, whichever comes first,
+     * so the receiver's `goAsync()` window is always released; an event not delivered by then
+     * stays in the outbox for the next tick.
+     */
+    internal fun handleVisitGeofenceSignal(signal: GeofenceSignal, onDone: () -> Unit) {
+        val work = scope.launch {
+            if (!isConfigured) attemptConfigRestore()
+            if (!isConfigured || !wasScanningEnabled()) return@launch
+            val controller = visitController() ?: return@launch
+            if (!controller.isStarted) controller.start()
+            controller.onGeofenceSignal(signal)
+        }
+        scope.launch {
+            try {
+                kotlinx.coroutines.withTimeoutOrNull(VISIT_GEOFENCE_WINDOW_MS) { work.join() }
+            } finally {
+                onDone()
+            }
+        }
     }
 
     private fun visitDeviceSnapshot(): io.bearound.sdk.models.UserDevice? {

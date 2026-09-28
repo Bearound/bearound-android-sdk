@@ -84,6 +84,27 @@ internal class VisitController(
         Log.d(TAG, "Visit tick ($trigger): mode=${active.mode} fix=${fix != null}")
     }
 
+    /**
+     * A geofence transition delivered to [VisitGeofenceReceiver], possibly into a process the
+     * broadcast just revived. Handled only while the native detector is the one chosen.
+     */
+    suspend fun onGeofenceSignal(signal: GeofenceSignal) = mutex.withLock {
+        if (!isStarted || !isEligible()) return@withLock
+        val now = clock()
+        val active = detectorFor(VisitDetectorFactory.choose(permissions(), store.nativeFailedAt, now))
+        applyConfig(active, now)
+        val native = active as? NativeGeofenceVisitDetector ?: return@withLock
+        if (store.loadConfig()?.config?.visitDetectionEnabled != true) return@withLock
+
+        val fix = signal.fix ?: lastKnownFix()
+        if (native.onTransition(signal.copy(fix = fix))) {
+            // Left the refresh fence (REQ-021): fetch around the exit fix and re-arm.
+            refreshIfNeeded(fix, forced = true, now = now)
+            applyConfig(native, now)
+        }
+        flushOutbox()
+    }
+
     private fun isEligible(): Boolean = locationAllowedByHost() && permissions().anyLocation
 
     private fun detectorFor(mode: VisitDetectionMode): VisitDetector {

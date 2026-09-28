@@ -118,6 +118,13 @@
             </intent-filter>
         </receiver>
 
+        <!-- GPS visit geofence transitions (GeofencingClient PendingIntent). Delivered with the
+             process dead too; only ever armed when the HOST declares and the user grants
+             ACCESS_BACKGROUND_LOCATION, which this manifest deliberately does not declare. -->
+        <receiver
+            android:name="io.bearound.sdk.visit.VisitGeofenceReceiver"
+            android:exported="false" />
+
         <!-- Foreground service to keep process alive for BLE scanning (opt-in) -->
         <service
             android:name="io.bearound.sdk.background.BeaconScanService"

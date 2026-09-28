@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
 
 /** What the host app was granted, read once per decision. */
 internal data class VisitPermissions(
@@ -57,9 +59,14 @@ internal object VisitDetectorFactory {
             coarseLocation = granted(Manifest.permission.ACCESS_COARSE_LOCATION),
             backgroundLocation = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
                 granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION),
-            // The native detector lands with the Play Services location dependency (AND3-01).
-            playServicesAvailable = false
+            playServicesAvailable = isPlayServicesAvailable(context)
         )
+    }
+
+    private fun isPlayServicesAvailable(context: Context): Boolean = try {
+        GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) == ConnectionResult.SUCCESS
+    } catch (e: Throwable) {
+        false
     }
 
     fun create(
@@ -68,7 +75,8 @@ internal object VisitDetectorFactory {
         store: VisitStateStore,
         tracker: VisitStopTracker
     ): VisitDetector = when (mode) {
-        VisitDetectionMode.NATIVE_GEOFENCE,
+        VisitDetectionMode.NATIVE_GEOFENCE ->
+            NativeGeofenceVisitDetector(PlayServicesGeofenceRegistrar(context), store, tracker)
         VisitDetectionMode.SOFT_FENCE -> SoftFenceVisitDetector(store, tracker)
     }
 }

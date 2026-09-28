@@ -1,5 +1,6 @@
 package io.bearound.sdk.visit
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import org.json.JSONArray
@@ -14,6 +15,7 @@ import org.json.JSONObject
  * Writes use `commit()`: every value here is small, and an event must be on disk before the
  * request that carries it leaves.
  */
+@SuppressLint("ApplySharedPref") // commit() on purpose, see above
 internal class VisitStateStore(context: Context) {
 
     companion object {
@@ -29,6 +31,7 @@ internal class VisitStateStore(context: Context) {
         private const val KEY_SOFT_LAST_FIX_AT = "soft_last_fix_at"
         private const val KEY_OUTBOX = "outbox"
         private const val KEY_NATIVE_FAILED_AT = "native_failed_at"
+        private const val KEY_NATIVE_REGISTRATION = "native_registration"
 
         /** Undelivered events beyond this are dropped oldest first. */
         const val OUTBOX_MAX = 20
@@ -129,6 +132,24 @@ internal class VisitStateStore(context: Context) {
     var nativeFailedAt: Long?
         get() = getLongOrNull(KEY_NATIVE_FAILED_AT)
         set(value) = putLongOrNull(KEY_NATIVE_FAILED_AT, value)
+
+    /**
+     * The geofence set Play Services currently holds for the SDK: what was registered
+     * ([signature]), when, and in which boot (geofences do not survive a reboot).
+     */
+    data class NativeRegistration(val signature: String, val registeredAt: Long, val bootAt: Long)
+
+    var nativeRegistration: NativeRegistration?
+        get() = readJson(KEY_NATIVE_REGISTRATION)?.let {
+            NativeRegistration(it.getString("sig"), it.getLong("at"), it.getLong("boot"))
+        }
+        set(value) = writeJson(KEY_NATIVE_REGISTRATION, value?.let {
+            JSONObject().apply {
+                put("sig", it.signature)
+                put("at", it.registeredAt)
+                put("boot", it.bootAt)
+            }
+        })
 
     // endregion
 
