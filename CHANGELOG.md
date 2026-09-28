@@ -5,6 +5,20 @@ All notable changes to the BeAround Android SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **O SDK deixa de declarar a permissão `com.google.android.gms.permission.AD_ID`.** Coletar o
+  Google Advertising ID (AAID) passa a ser decisão do app integrador: ele inclui
+  `play-services-ads-identifier` (a 18.x já declara `AD_ID` no próprio manifest) ou declara a
+  permissão no manifest dele. Sem `AD_ID`, a partir do `targetSdk` 33 a plataforma devolve um
+  id zerado e o payload segue sem AAID; o resto do SDK não muda. O Android nunca teve prompt
+  de rastreamento, e continua sem.
+
+  **Ação para quem dependia da declaração do SDK:** um app que só recebia o AAID porque o SDK
+  injetava `AD_ID` no manifest mesclado precisa adicionar a dependência ou a permissão.
+  Apps que já incluem `play-services-ads-identifier` 18.x não mudam de comportamento.
+
 ## [3.9.0] - 2026-08-19
 
 ### Added

@@ -26,8 +26,9 @@ below refine it).
 2. Permissions: the SDK's manifest merge already injects every permission it needs
    (BLUETOOTH_SCAN with neverForLocation, ACCESS_FINE_LOCATION + ACCESS_COARSE_LOCATION,
    FOREGROUND_SERVICE, FOREGROUND_SERVICE_CONNECTED_DEVICE, POST_NOTIFICATIONS, INTERNET,
-   RECEIVE_BOOT_COMPLETED, ACCESS_WIFI_STATE, NEARBY_WIFI_DEVICES,
-   com.google.android.gms.permission.AD_ID). Do NOT re-declare them.
+   RECEIVE_BOOT_COMPLETED, ACCESS_WIFI_STATE, NEARBY_WIFI_DEVICES). Do NOT re-declare them.
+   The SDK does NOT declare com.google.android.gms.permission.AD_ID: collecting the
+   advertising id is the app's decision (see ADVERTISING ID below).
    ACCESS_BACKGROUND_LOCATION: do NOT add it on your own — but do NOT silently skip it
    either. It is NOT needed for beacon detection (on Android 12+ that runs on
    BLUETOOTH_SCAN, no location at all), and it costs a Google Play policy review plus a
@@ -42,17 +43,18 @@ below refine it).
    (Android 11+ refuses to grant both in one dialog and sends the user to Settings). If I
    say no, or if this app only detects beacons, leave it out — that is a valid choice, just
    not a silent one.
-   ADVERTISING ID (AD_ID): the SDK reports the Google Advertising ID when the host app
-   bundles Play Services — add
+   ADVERTISING ID (AD_ID): the SDK does not declare AD_ID and never collects the Google
+   Advertising ID on its own. ASK ME whether this app should share it. If I say yes, add
    `implementation("com.google.android.gms:play-services-ads-identifier:18.2.0")` to the
-   app module if it is not already there (the SDK keeps it compileOnly, so without it the
-   id is simply absent and nothing else changes). There is NO runtime prompt on Android:
-   the user's choice lives in system settings and the platform enforces it. Declaring
-   AD_ID obliges the app to tick "Device or other IDs" in the Play Data Safety form — TELL
-   ME so I can update it. If this app targets children (Play Families policy forbids
-   AD_ID), strip it in the app manifest with
+   app module (18.x also declares AD_ID in its own manifest; if the app gets Play Services
+   another way, declare the AD_ID permission in MY manifest instead). There is NO runtime
+   prompt on Android: the user's choice lives in system settings and the platform enforces
+   it. Declaring AD_ID obliges the app to tick "Device or other IDs" in the Play Data
+   Safety form, so TELL ME so I can update it. If I say no, or this app targets children
+   (Play Families policy forbids AD_ID), add neither; if another library still brings the
+   permission, strip it with
    `<uses-permission android:name="com.google.android.gms.permission.AD_ID"
-   tools:node="remove" />` and skip the dependency.
+   tools:node="remove" />`.
    Data-collection switches — leave them OUT of configure(). The defaults collect
    everything (collectAdvertisingId, collectLocation and collectWifi are all true) and
    that is what you ship. Do NOT ask me what to collect and do NOT write these
