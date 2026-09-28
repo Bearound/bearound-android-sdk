@@ -5,6 +5,18 @@ All notable changes to the BeAround Android SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Nova dependência de runtime: `com.google.android.gms:play-services-location:21.3.0`.** A
+  detecção de visitas por geofence nativa (`GeofencingClient`) usa essa biblioteca, e ela chega
+  ao app integrador como dependência transitiva de `implementation`: a partir desta versão o
+  app passa a carregar em runtime `play-services-base`, `play-services-basement` e
+  `play-services-tasks` (nas versões que a 21.3.0 já resolve). Um app que fixa versões dessas
+  bibliotecas deve conferir o grafo resolvido (`./gradlew :app:dependencies`). O SDK usa no
+  máximo 20 geofences próprias (a cerca de atualização e os 19 alvos mais próximos) dentro do
+  teto de 100 por app que o Android impõe e que o app integrador compartilha.
+
 ## [3.10.0] - 2026-09-28
 
 ### Changed

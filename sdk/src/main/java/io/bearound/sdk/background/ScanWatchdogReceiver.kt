@@ -81,7 +81,13 @@ class ScanWatchdogReceiver : BroadcastReceiver() {
 
             // Visit tick (soft fence config refresh / native re-check). Cheap, and a no-op
             // without a fix, which is the norm here without background location (AND1-00).
-            if (shouldBeScanning) sdk.tickVisitDetection("watchdog")
+            // Same constraint as the sync above: nothing survives onReceive returning, so the
+            // tick holds a goAsync() window, bounded by VISIT_RECEIVER_WINDOW_MS and always
+            // released (finish() runs on completion, failure or timeout).
+            if (shouldBeScanning) {
+                val pending: PendingResult? = goAsync()
+                sdk.tickVisitDetectionBounded("watchdog") { pending?.finish() }
+            }
 
             // Reschedule ONLY while scanning is still wanted: after stopScanning() the
             // old unconditional reschedule kept the alarm waking the process forever.

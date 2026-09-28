@@ -3,8 +3,10 @@ package io.bearound.sdk.visit
 import android.util.Log
 import io.bearound.sdk.models.UserDevice
 import io.bearound.sdk.network.HttpException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Owns everything around the detectors: the places config and its refresh (REQ-021), the kill
@@ -24,7 +26,14 @@ internal class VisitController(
     /** The platform's last known fix. Never a request for a new one. */
     private val lastKnownFix: () -> VisitFix?,
     private val createDetector: (VisitDetectionMode, VisitStopTracker) -> VisitDetector,
-    private val clock: () -> Long = System::currentTimeMillis
+    private val clock: () -> Long = System::currentTimeMillis,
+    /**
+     * The host's persisted scanning intent, read again under the mutex: stopScanning() saves
+     * it before it stops visits, so a tick queued before the stop cannot re-arm after it.
+     */
+    private val hostWantsVisits: () -> Boolean = { true },
+    /** Removes geofences a previous process armed (see [NativeGeofenceVisitDetector.removeStaleRegistration]). */
+    private val staleGeofenceRegistrar: () -> GeofenceRegistrar? = { null }
 ) {
     companion object {
         private const val TAG = "BeAroundSDK-Visit"
@@ -34,6 +43,43 @@ internal class VisitController(
 
         /** The sync timer can fire every 15 s; a visit decision needs nothing that fine. */
         const val MIN_TICK_INTERVAL_MS = 30_000L
+
+        /** Floors for the server's refresh knobs, so a bad config cannot turn every tick into a fetch. */
+        const val MIN_MAX_AGE_SECONDS = 900.0
+        const val MIN_REFRESH_AFTER_METERS = 500.0
+
+        /** `maxAgeSeconds` in ms, floored at [MIN_MAX_AGE_SECONDS]; NaN, infinite or negative read as the floor. */
+        fun effectiveMaxAgeMs(maxAgeSeconds: Double): Long {
+            val seconds = if (maxAgeSeconds.isFinite() && maxAgeSeconds >= 0) maxAgeSeconds else MIN_MAX_AGE_SECONDS
+            return (seconds.coerceAtLeast(MIN_MAX_AGE_SECONDS) * 1000).toLong()
+        }
+
+        /** `refreshAfterMeters` floored at [MIN_REFRESH_AFTER_METERS]; NaN, infinite or negative read as the floor. */
+        fun effectiveRefreshAfterMeters(refreshAfterMeters: Double): Double {
+            val meters = if (refreshAfterMeters.isFinite() && refreshAfterMeters >= 0) refreshAfterMeters else MIN_REFRESH_AFTER_METERS
+            return meters.coerceAtLeast(MIN_REFRESH_AFTER_METERS)
+        }
+
+        /**
+         * Runs one visit step inside someone else's execution window (the sync worker, a
+         * receiver's `goAsync()`): bounded by [timeoutMs], and a failure is logged, never
+         * thrown, so visit code cannot take the caller's own work down with it. Cancellation
+         * of the caller still propagates.
+         * @return true when [block] finished in time without failing.
+         */
+        suspend fun runGuarded(trigger: String, timeoutMs: Long, block: suspend () -> Unit): Boolean {
+            val outcome = runCatching { withTimeoutOrNull(timeoutMs) { block() } }
+            outcome.exceptionOrNull()?.let { error ->
+                if (error is CancellationException) throw error
+                Log.w(TAG, "Visit step ($trigger) failed: ${error.message}")
+                return false
+            }
+            if (outcome.getOrNull() == null) {
+                Log.w(TAG, "Visit step ($trigger) timed out after ${timeoutMs}ms")
+                return false
+            }
+            return true
+        }
     }
 
     val tracker = VisitStopTracker(store, clock)
@@ -52,19 +98,30 @@ internal class VisitController(
     val currentMode: VisitDetectionMode? get() = detector?.mode
 
     suspend fun start() {
-        mutex.withLock { isStarted = true }
-        tick("start", force = true)
+        val started = mutex.withLock {
+            if (!hostWantsVisits()) return@withLock false
+            isStarted = true
+            true
+        }
+        if (started) tick("start", force = true)
     }
 
-    /** Stops visits and removes only what visit detection armed. */
+    /** Stops visits and removes only what visit detection armed, in this process or a previous one. */
     suspend fun stop() = mutex.withLock {
         isStarted = false
         disarm()
+        removeStaleGeofences()
     }
 
     /** One existing wakeup. Cheap when nothing changed: no fix means no evaluation. */
     suspend fun tick(trigger: String, force: Boolean = false) = mutex.withLock {
         if (!isStarted) return@withLock
+        if (!hostWantsVisits()) {
+            // stopScanning() already saved the flag; its stop() may still be queued.
+            isStarted = false
+            disarm()
+            return@withLock
+        }
         val now = clock()
         if (!force && now - lastTickAt < MIN_TICK_INTERVAL_MS) return@withLock
         lastTickAt = now
@@ -89,11 +146,20 @@ internal class VisitController(
      * broadcast just revived. Handled only while the native detector is the one chosen.
      */
     suspend fun onGeofenceSignal(signal: GeofenceSignal) = mutex.withLock {
-        if (!isStarted || !isEligible()) return@withLock
+        if (!isStarted || !hostWantsVisits() || !isEligible()) {
+            // A transition for geofences nobody should hold any more: remove them.
+            disarm()
+            removeStaleGeofences()
+            return@withLock
+        }
         val now = clock()
         val active = detectorFor(VisitDetectorFactory.choose(permissions(), store.nativeFailedAt, now))
         applyConfig(active, now)
-        val native = active as? NativeGeofenceVisitDetector ?: return@withLock
+        val native = active as? NativeGeofenceVisitDetector ?: run {
+            // The soft fence runs now; geofences left by an earlier native run must go.
+            removeStaleGeofences()
+            return@withLock
+        }
         if (store.loadConfig()?.config?.visitDetectionEnabled != true) return@withLock
 
         val fix = signal.fix ?: lastKnownFix()
@@ -127,6 +193,10 @@ internal class VisitController(
         appliedConfig = config
     }
 
+    private fun removeStaleGeofences() {
+        NativeGeofenceVisitDetector.removeStaleRegistration(store, staleGeofenceRegistrar)
+    }
+
     private fun disarm() {
         detector?.tearDown()
         detector = null
@@ -144,11 +214,11 @@ internal class VisitController(
         var due = forced || cached == null
         if (cached != null) {
             val config = cached.config
-            if (now - cached.fetchedAt >= (config.maxAgeSeconds * 1000).toLong()) {
+            if (now - cached.fetchedAt >= effectiveMaxAgeMs(config.maxAgeSeconds)) {
                 due = true
             } else if (fix != null &&
                 Geo.distanceMeters(fix.latitude, fix.longitude, config.origin.lat, config.origin.lng) >
-                config.refreshAfterMeters
+                effectiveRefreshAfterMeters(config.refreshAfterMeters)
             ) {
                 due = true
             }

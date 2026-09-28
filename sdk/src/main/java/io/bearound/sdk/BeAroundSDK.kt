@@ -51,7 +51,9 @@ import io.bearound.sdk.utilities.SecureStorage
 import io.bearound.sdk.utilities.LocationCollector
 import io.bearound.sdk.visit.GeofenceSignal
 import io.bearound.sdk.visit.IngestVisitEventSink
+import io.bearound.sdk.visit.NativeGeofenceVisitDetector
 import io.bearound.sdk.visit.PlacesConfigClient
+import io.bearound.sdk.visit.PlayServicesGeofenceRegistrar
 import io.bearound.sdk.visit.VisitController
 import io.bearound.sdk.visit.VisitDetectorFactory
 import io.bearound.sdk.visit.VisitFix
@@ -88,8 +90,12 @@ class BeAroundSDK private constructor() {
          */
         internal val PERMANENT_HTTP_CODES = setOf(400, 401, 403, 404, 413, 422)
 
-        /** Budget for a visit geofence broadcast, inside the receiver's `goAsync()` window. */
-        private const val VISIT_GEOFENCE_WINDOW_MS = 25_000L
+        /**
+         * Budget for visit work inside a receiver's `goAsync()` window (geofence broadcast,
+         * watchdog). Under the 10 s a receiver may hold before the system treats it as hung;
+         * an event not delivered in time stays in the outbox for the next wakeup.
+         */
+        internal const val VISIT_RECEIVER_WINDOW_MS = 9_000L
 
         /**
          * Minimum gap between broadcast-triggered background flushes. Beacons
@@ -1096,6 +1102,9 @@ class BeAroundSDK private constructor() {
     }
 
     fun stopScanning() {
+        // Saved first: visit work queued before this call re-checks the flag under the visit
+        // controller's mutex, so it cannot re-arm geofences after the stop below.
+        SDKConfigStorage.saveScanningEnabled(context, false)
         stopVisitDetection()
         wifiNudgeHandler.removeCallbacks(wifiNudgeRunnable)
         encounterMesh?.stop()
@@ -1109,9 +1118,6 @@ class BeAroundSDK private constructor() {
         if (BeaconScanService.isRunning) {
             BeaconScanService.stop(context)
         }
-        
-        // Persist scanning state
-        SDKConfigStorage.saveScanningEnabled(context, false)
 
         syncBeacons()
     }
@@ -2086,7 +2092,9 @@ class BeAroundSDK private constructor() {
                 permissions = { VisitDetectorFactory.readPermissions(context) },
                 locationAllowedByHost = { DataCollectionPolicyStore.current.location },
                 lastKnownFix = { visitLocationCollector.lastKnown()?.let(VisitFix::fromDeviceLocation) },
-                createDetector = { mode, tracker -> VisitDetectorFactory.create(mode, context, store, tracker) }
+                createDetector = { mode, tracker -> VisitDetectorFactory.create(mode, context, store, tracker) },
+                hostWantsVisits = ::wasScanningEnabled,
+                staleGeofenceRegistrar = { PlayServicesGeofenceRegistrar(context) }
             ).also { visitController = it }
         }
     }
@@ -2096,8 +2104,17 @@ class BeAroundSDK private constructor() {
     }
 
     private fun stopVisitDetection() {
-        val controller = synchronized(visitLock) { visitController } ?: return
-        scope.launch { controller.stop() }
+        val controller = synchronized(visitLock) { visitController }
+        scope.launch {
+            // No controller in this process: geofences a previous process armed still exist.
+            if (controller != null) controller.stop() else removeStaleVisitGeofences()
+        }
+    }
+
+    private fun removeStaleVisitGeofences() {
+        NativeGeofenceVisitDetector.removeStaleRegistration(VisitStateStore(context)) {
+            PlayServicesGeofenceRegistrar(context)
+        }
     }
 
     /**
@@ -2106,6 +2123,20 @@ class BeAroundSDK private constructor() {
      */
     internal fun tickVisitDetection(trigger: String, force: Boolean = false) {
         scope.launch { tickVisitDetectionAwait(trigger, force) }
+    }
+
+    /**
+     * A visit tick for a receiver that holds a `goAsync()` window: bounded by
+     * [VISIT_RECEIVER_WINDOW_MS], failures logged, and [onDone] always runs.
+     */
+    internal fun tickVisitDetectionBounded(trigger: String, onDone: () -> Unit) {
+        scope.launch {
+            try {
+                VisitController.runGuarded(trigger, VISIT_RECEIVER_WINDOW_MS) { tickVisitDetectionAwait(trigger) }
+            } finally {
+                onDone()
+            }
+        }
     }
 
     /** Awaitable form, for callers that own an execution window (workers). */
@@ -2118,21 +2149,25 @@ class BeAroundSDK private constructor() {
     /**
      * Entry point of [io.bearound.sdk.visit.VisitGeofenceReceiver]. The broadcast may have just
      * revived the process: restore the configuration, then handle the transition. [onDone]
-     * runs when handling finished or [VISIT_GEOFENCE_WINDOW_MS] passed, whichever comes first,
+     * runs when handling finished or [VISIT_RECEIVER_WINDOW_MS] passed, whichever comes first,
      * so the receiver's `goAsync()` window is always released; an event not delivered by then
      * stays in the outbox for the next tick.
      */
     internal fun handleVisitGeofenceSignal(signal: GeofenceSignal, onDone: () -> Unit) {
         val work = scope.launch {
             if (!isConfigured) attemptConfigRestore()
-            if (!isConfigured || !wasScanningEnabled()) return@launch
+            if (!isConfigured || !wasScanningEnabled()) {
+                // Nobody wants these geofences any more (stopped or never configured here).
+                removeStaleVisitGeofences()
+                return@launch
+            }
             val controller = visitController() ?: return@launch
             if (!controller.isStarted) controller.start()
             controller.onGeofenceSignal(signal)
         }
         scope.launch {
             try {
-                kotlinx.coroutines.withTimeoutOrNull(VISIT_GEOFENCE_WINDOW_MS) { work.join() }
+                kotlinx.coroutines.withTimeoutOrNull(VISIT_RECEIVER_WINDOW_MS) { work.join() }
             } finally {
                 onDone()
             }

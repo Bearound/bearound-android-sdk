@@ -3,6 +3,7 @@ package io.bearound.sdk.visit
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -20,6 +21,7 @@ internal class VisitStateStore(context: Context) {
 
     companion object {
         const val PREFS_NAME = "bearound_sdk_visit"
+        private const val TAG = "BeAroundSDK-Visit"
 
         private const val KEY_CONFIG_BODY = "places_config_body"
         private const val KEY_ETAG = "places_etag"
@@ -84,7 +86,7 @@ internal class VisitStateStore(context: Context) {
     data class OpenStop(val environmentId: String?, val arrival: VisitFix, val lastInside: VisitFix)
 
     var openStop: OpenStop?
-        get() = readJson(KEY_OPEN_STOP)?.let {
+        get() = readJson(KEY_OPEN_STOP) {
             OpenStop(
                 environmentId = if (it.has("env")) it.getString("env") else null,
                 arrival = VisitFix.fromJson(it.getJSONObject("arrival")),
@@ -108,7 +110,7 @@ internal class VisitStateStore(context: Context) {
     data class Candidate(val environmentId: String, val first: VisitFix, val last: VisitFix)
 
     var softCandidate: Candidate?
-        get() = readJson(KEY_SOFT_CANDIDATE)?.let {
+        get() = readJson(KEY_SOFT_CANDIDATE) {
             Candidate(
                 environmentId = it.getString("env"),
                 first = VisitFix.fromJson(it.getJSONObject("first")),
@@ -140,7 +142,7 @@ internal class VisitStateStore(context: Context) {
     data class NativeRegistration(val signature: String, val registeredAt: Long, val bootAt: Long)
 
     var nativeRegistration: NativeRegistration?
-        get() = readJson(KEY_NATIVE_REGISTRATION)?.let {
+        get() = readJson(KEY_NATIVE_REGISTRATION) {
             NativeRegistration(it.getString("sig"), it.getLong("at"), it.getLong("boot"))
         }
         set(value) = writeJson(KEY_NATIVE_REGISTRATION, value?.let {
@@ -207,17 +209,42 @@ internal class VisitStateStore(context: Context) {
         prefs.edit().clear().commit()
     }
 
-    private fun getLongOrNull(key: String): Long? =
-        if (prefs.contains(key)) prefs.getLong(key, 0L) else null
+    /** A value of the wrong type (a corrupt or foreign write) reads as absent and is dropped. */
+    private fun getLongOrNull(key: String): Long? {
+        if (!prefs.contains(key)) return null
+        return try {
+            prefs.getLong(key, 0L)
+        } catch (e: Exception) {
+            dropCorrupt(key, e)
+            null
+        }
+    }
 
     private fun putLongOrNull(key: String, value: Long?) {
         prefs.edit().apply { if (value != null) putLong(key, value) else remove(key) }.commit()
     }
 
-    private fun readJson(key: String): JSONObject? = try {
-        prefs.getString(key, null)?.let(::JSONObject)
-    } catch (e: Exception) {
-        null
+    /**
+     * Reads [key] as JSON and maps it with [decode]. Visit state must never break the caller
+     * (the beacon sync shares the worker window): a value that does not parse, lacks a field
+     * or has the wrong type reads as absent and is removed, so it cannot fail again.
+     */
+    private fun <T> readJson(key: String, decode: (JSONObject) -> T): T? {
+        return try {
+            prefs.getString(key, null)?.let { decode(JSONObject(it)) }
+        } catch (e: Exception) {
+            dropCorrupt(key, e)
+            null
+        }
+    }
+
+    private fun dropCorrupt(key: String, error: Exception) {
+        Log.w(TAG, "Dropping corrupt visit state '$key': ${error.message}")
+        try {
+            prefs.edit().remove(key).commit()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not drop corrupt visit state '$key': ${e.message}")
+        }
     }
 
     private fun writeJson(key: String, value: JSONObject?) {

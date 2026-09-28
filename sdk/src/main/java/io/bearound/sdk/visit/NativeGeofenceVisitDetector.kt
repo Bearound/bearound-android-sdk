@@ -12,12 +12,15 @@ import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.location.Geofence
 import com.google.android.gms.location.GeofenceStatusCodes
 import com.google.android.gms.location.GeofencingEvent
 import com.google.android.gms.location.GeofencingRequest
 import com.google.android.gms.location.LocationServices
 import io.bearound.sdk.BeAroundSDK
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 /** A geofence to register, in plain values so the plan is testable without Play Services. */
 internal data class VisitGeofence(
@@ -76,8 +79,12 @@ internal class NativeGeofenceVisitDetector(
     companion object {
         private const val TAG = "BeAroundSDK-Visit"
 
-        /** Android's per-app geofence ceiling. */
-        const val MAX_GEOFENCES = 100
+        /**
+         * The SDK's own geofence budget: the refresh fence plus the 19 nearest targets.
+         * Android allows 100 active geofences per app and the host shares that ceiling, so
+         * the SDK never takes more than a fifth of it.
+         */
+        const val MAX_GEOFENCES = 20
         const val REFRESH_FENCE_ID = "bearound.visit.refresh"
         const val TARGET_PREFIX = "bearound.visit.env:"
 
@@ -96,16 +103,15 @@ internal class NativeGeofenceVisitDetector(
          */
         fun plan(config: PlacesConfig): List<VisitGeofence> {
             val fences = mutableListOf<VisitGeofence>()
-            if (config.refreshAfterMeters > 0) {
-                fences += VisitGeofence(
-                    requestId = REFRESH_FENCE_ID,
-                    latitude = config.origin.lat,
-                    longitude = config.origin.lng,
-                    radiusMeters = config.refreshAfterMeters.toFloat(),
-                    transitions = Geofence.GEOFENCE_TRANSITION_EXIT,
-                    loiteringDelayMs = 0
-                )
-            }
+            // Same floored radius the controller's distance check uses.
+            fences += VisitGeofence(
+                requestId = REFRESH_FENCE_ID,
+                latitude = config.origin.lat,
+                longitude = config.origin.lng,
+                radiusMeters = VisitController.effectiveRefreshAfterMeters(config.refreshAfterMeters).toFloat(),
+                transitions = Geofence.GEOFENCE_TRANSITION_EXIT,
+                loiteringDelayMs = 0
+            )
             config.places
                 .sortedBy { it.distanceMeters }
                 .take(MAX_GEOFENCES - fences.size)
@@ -122,6 +128,31 @@ internal class NativeGeofenceVisitDetector(
                     )
                 }
             return fences
+        }
+
+        /**
+         * The smaller set tried once after `GEOFENCE_TOO_MANY_GEOFENCES` (the host already
+         * holds most of the per-app ceiling): the first half of [fences], which keeps the
+         * refresh fence and the nearest targets because [plan] puts them first.
+         */
+        fun halved(fences: List<VisitGeofence>): List<VisitGeofence> = fences.take(fences.size / 2)
+
+        fun isTooManyGeofences(error: Throwable?): Boolean =
+            (error as? ApiException)?.statusCode == GeofenceStatusCodes.GEOFENCE_TOO_MANY_GEOFENCES
+
+        /**
+         * Removes a registration a previous process left in Play Services. Geofences outlive
+         * the process that armed them, so an in-memory "nothing armed" proves nothing: the
+         * persisted [VisitStateStore.nativeRegistration] is the only record of them.
+         * @return true when there was one to remove.
+         */
+        fun removeStaleRegistration(store: VisitStateStore, registrar: () -> GeofenceRegistrar?): Boolean {
+            if (store.nativeRegistration == null) return false
+            val target = registrar() ?: return false
+            target.removeAll()
+            store.nativeRegistration = null
+            Log.i(TAG, "Removed visit geofences armed by a previous process")
+            return true
         }
 
         fun environmentIdOf(requestId: String): String? =
@@ -158,16 +189,35 @@ internal class NativeGeofenceVisitDetector(
             return
         }
         registrar.replaceAll(fences) { error ->
-            if (error == null) {
-                store.nativeFailedAt = null
-                store.nativeRegistration = VisitStateStore.NativeRegistration(signature, now, bootAt)
-                Log.i(TAG, "Visit geofences registered: ${fences.size}")
-            } else {
-                store.nativeFailedAt = clock()
-                store.nativeRegistration = null
-                Log.w(TAG, "Visit geofence registration failed, soft fence on the next tick: ${error.message}")
+            when {
+                error == null -> onRegistered(fences, signature, now, bootAt)
+                isTooManyGeofences(error) && fences.size > 1 -> {
+                    // The host holds most of the per-app ceiling: one retry with half the set.
+                    val smaller = halved(fences)
+                    Log.w(TAG, "Too many geofences for the app, retrying with ${smaller.size} of ${fences.size}")
+                    registrar.replaceAll(smaller) { retryError ->
+                        if (retryError == null) onRegistered(smaller, signature, now, bootAt) else onFailed(retryError)
+                    }
+                }
+                else -> onFailed(error)
             }
         }
+    }
+
+    /**
+     * [signature] is the one of the full plan, not of what was registered: the next apply of
+     * the same plan must not register again (it would restart the DWELL timers).
+     */
+    private fun onRegistered(registered: List<VisitGeofence>, signature: String, now: Long, bootAt: Long) {
+        store.nativeFailedAt = null
+        store.nativeRegistration = VisitStateStore.NativeRegistration(signature, now, bootAt)
+        Log.i(TAG, "Visit geofences registered: ${registered.size}")
+    }
+
+    private fun onFailed(error: Throwable) {
+        store.nativeFailedAt = clock()
+        store.nativeRegistration = null
+        Log.w(TAG, "Visit geofence registration failed, soft fence on the next tick: ${error.message}")
     }
 
     /** Stops come from DWELL/EXIT; the controller still refreshes by age and distance on ticks. */
@@ -223,6 +273,14 @@ internal class PlayServicesGeofenceRegistrar(context: Context) : GeofenceRegistr
         /** Lets Play Services batch transitions; well inside the 15 min of REQ-019. */
         private const val NOTIFICATION_RESPONSIVENESS_MS = 60_000
 
+        /**
+         * Task listeners run here, not on the main thread (Play Services' default): the
+         * result writes [VisitStateStore] with `commit()`, and a retry registers again.
+         */
+        private val callbackExecutor: Executor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "bearound-visit-geofence").apply { isDaemon = true }
+        }
+
         fun toPlayGeofence(fence: VisitGeofence): Geofence = Geofence.Builder()
             .setRequestId(fence.requestId)
             .setCircularRegion(fence.latitude, fence.longitude, fence.radiusMeters)
@@ -255,7 +313,7 @@ internal class PlayServicesGeofenceRegistrar(context: Context) : GeofenceRegistr
         }
         try {
             // Remove-then-add: ids from a previous list that are no longer near must go too.
-            client.removeGeofences(pendingIntent).addOnCompleteListener {
+            client.removeGeofences(pendingIntent).addOnCompleteListener(callbackExecutor) {
                 if (fences.isEmpty()) {
                     onResult(null)
                     return@addOnCompleteListener
@@ -267,8 +325,8 @@ internal class PlayServicesGeofenceRegistrar(context: Context) : GeofenceRegistr
                         .addGeofences(fences.map(::toPlayGeofence))
                         .build()
                     client.addGeofences(request, pendingIntent)
-                        .addOnSuccessListener { onResult(null) }
-                        .addOnFailureListener { onResult(it) }
+                        .addOnSuccessListener(callbackExecutor) { onResult(null) }
+                        .addOnFailureListener(callbackExecutor) { onResult(it) }
                 } catch (e: Exception) {
                     onResult(e)
                 }
@@ -278,6 +336,7 @@ internal class PlayServicesGeofenceRegistrar(context: Context) : GeofenceRegistr
         }
     }
 
+    /** Removes only the geofences behind the SDK's own PendingIntent; the host's stay. */
     override fun removeAll() {
         try {
             client.removeGeofences(pendingIntent)
