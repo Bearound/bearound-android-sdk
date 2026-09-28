@@ -60,11 +60,7 @@ class PushOpenMeasurementTest {
         // call ever sets its private `context` field); rebind it to THIS test's fresh
         // Robolectric Application so lifecycle-callback registration targets the right
         // instance instead of a previous test's dead Application.
-        BeAroundSDK::class.java.getDeclaredField("context").apply {
-            isAccessible = true
-            set(sdk, context)
-        }
-        unregisterNotificationOpenCallbacksForTest()
+        sdk.resetNotificationOpenStateForTest(context)
         SDKConfigStorage.clearConfiguration(context)
     }
 
@@ -75,30 +71,7 @@ class PushOpenMeasurementTest {
         BeAroundSDK::class.java.declaredFields
             .filter { it.type == SDKConfiguration::class.java }
             .forEach { it.isAccessible = true; it.set(sdk, null) }
-        unregisterNotificationOpenCallbacksForTest()
-    }
-
-    /**
-     * Unregisters the SDK's [android.app.Application.ActivityLifecycleCallbacks] from
-     * WHICHEVER Application it is currently attached to (per
-     * `notificationOpenCallbacksRegisteredOn`), then clears that tracking field. Called
-     * from both `@Before` and `@After`: the singleton (and, per observed Robolectric
-     * behavior, its Application) can outlive a single test method, so only unregistering
-     * in one of the two hooks left a stale registration that double-fired the next test's
-     * lifecycle callbacks.
-     */
-    private fun unregisterNotificationOpenCallbacksForTest() {
-        val registeredOnField = BeAroundSDK::class.java.getDeclaredField("notificationOpenCallbacksRegisteredOn")
-            .apply { isAccessible = true }
-        val registeredOn = registeredOnField.get(sdk) as? android.app.Application
-        val callback = BeAroundSDK::class.java.getDeclaredField("notificationOpenCallbacks")
-            .apply { isAccessible = true }
-            .get(sdk) as android.app.Application.ActivityLifecycleCallbacks
-        registeredOn?.unregisterActivityLifecycleCallbacks(callback)
-        // Also cover the CURRENT test's Application, in case it differs from whatever was
-        // tracked (e.g. first test in the class, where nothing was tracked yet).
-        (context as? android.app.Application)?.unregisterActivityLifecycleCallbacks(callback)
-        registeredOnField.set(sdk, null)
+        sdk.resetNotificationOpenStateForTest(context)
     }
 
     private fun captureSentUrls(expectedHits: Int = 1): Pair<MutableList<String>, CountDownLatch> {

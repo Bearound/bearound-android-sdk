@@ -786,6 +786,19 @@ class BeAroundSDK private constructor() {
      * or bridges should call [trackNotificationOpened] from `getInitialMessage`/
      * `getInitialNotification` for a cold launch.
      */
+    /**
+     * Test hook: rebinds the singleton to a test's Application and detaches the open
+     * callbacks from wherever they were registered. `internal`, not reflection: the release
+     * unit tests run against the R8-minified classes, where private fields are renamed.
+     */
+    internal fun resetNotificationOpenStateForTest(context: Context) {
+        notificationOpenCallbacksRegisteredOn?.unregisterActivityLifecycleCallbacks(notificationOpenCallbacks)
+        (context.applicationContext as? android.app.Application)
+            ?.unregisterActivityLifecycleCallbacks(notificationOpenCallbacks)
+        notificationOpenCallbacksRegisteredOn = null
+        this.context = context
+    }
+
     private fun registerNotificationOpenCallbacks() {
         val app = context.applicationContext as? android.app.Application ?: return
         if (notificationOpenCallbacksRegisteredOn === app) return
