@@ -249,7 +249,6 @@ see the [AI setup prompt](./AI-AGENT-SETUP.md), step 2).
 | `CHANGE_WIFI_STATE` | Keep the system's Wi-Fi scan cache fresh while scanning (install-time, no prompt — see [Wi-Fi observations](#wi-fi-observations)) |
 | `NEARBY_WIFI_DEVICES` | Alternative to location for reading neighbouring access points on Android 13+ — see [Wi-Fi observations](#wi-fi-observations) |
 | `BLUETOOTH_ADVERTISE` | Encounter layer on Android 12+ — lets the device be seen by other SDK devices (see [Encounter layer](#encounter-layer-device-to-device)) |
-| `com.google.android.gms.permission.AD_ID` | Google Advertising ID — see [Advertising identifier](#advertising-identifier-aaid) |
 
 Both Wi-Fi permissions are **normal** (granted at install, never prompted): the SDK reads
 the system's cached scan results and periodically nudges a refresh **only while scanning
@@ -450,22 +449,29 @@ The SDK reports the **Google Advertising ID** — the resettable identifier that
 person be recognised across apps for advertising. It is what makes audiences built from
 beacon visits usable in ad platforms.
 
-**There is no runtime prompt on Android.** The user's choice lives in system settings, and
-the platform enforces it: opting out of ad personalisation turns the id into zeros, and the
-SDK reports none. The `AD_ID` permission is a *normal* permission — granted at install, no
-dialog — but required from `targetSdk` 33+, otherwise the platform zeroes the id even for
-users who allow it.
-
-To actually receive an id, your app needs Google Play Services on the classpath:
+**The SDK does not declare the `AD_ID` permission.** Whether your app collects the AAID is
+your decision, and you opt in from your own app module:
 
 ```gradle
 implementation 'com.google.android.gms:play-services-ads-identifier:18.2.0'
 ```
 
-The SDK keeps this dependency `compileOnly` — the same soft-dependency pattern it uses for
-Firebase — so **nothing is forced on you**. Apps that already bundle Play Services (most apps
-with FCM already do) get the id automatically; apps that don't simply report none, and every
-other feature works the same.
+That dependency is what makes the id readable, and since 18.x it also declares
+`com.google.android.gms.permission.AD_ID` in its own manifest. If your app gets
+`AdvertisingIdClient` some other way (an older Play Services version, for example), declare
+the permission yourself:
+
+```xml
+<uses-permission android:name="com.google.android.gms.permission.AD_ID" />
+```
+
+Without `AD_ID`, from `targetSdk` 33 the platform returns a zeroed id and the SDK reports
+none; every other feature works the same. The SDK keeps Play Services `compileOnly`, the same
+soft-dependency pattern it uses for Firebase, so nothing is forced on you.
+
+**There is no runtime prompt on Android.** `AD_ID` is a *normal* permission, granted at
+install with no dialog. The user's choice lives in system settings and the platform enforces
+it: opting out of ad personalisation turns the id into zeros, and the SDK reports none.
 
 The payload carries `device.permissions.advertisingId` when available, plus `limitAdTracking`
 — so a user opt-out is distinguishable from Play Services being absent.
@@ -474,11 +480,15 @@ If your app collects the AAID for its own purposes but you do not want it sent t
 pass `collectAdvertisingId = false` — the SDK then never queries Play Services for it. See
 [Controlling what the SDK collects](#controlling-what-the-sdk-collects).
 
-> **Google Play Data Safety:** declaring `AD_ID` means ticking **"Device or other IDs"** in
-> your Data Safety form.
+> **Google Play Data Safety:** once your app declares `AD_ID` (directly or through Play
+> Services), tick **"Device or other IDs"** in your Data Safety form.
 >
-> **Apps for children:** Play Families policy forbids `AD_ID`. Strip it from the merged
-> manifest and the SDK degrades to reporting no id:
+> **Upgrading from 3.9.x:** earlier versions injected `AD_ID` into your merged manifest. If
+> your app reported an AAID only because of that, add the dependency (or the permission)
+> above to keep it.
+>
+> **Apps for children:** Play Families policy forbids `AD_ID`. Leave the dependency out; if
+> another library still brings the permission, strip it from the merged manifest:
 > ```xml
 > <uses-permission android:name="com.google.android.gms.permission.AD_ID"
 >     tools:node="remove" />
