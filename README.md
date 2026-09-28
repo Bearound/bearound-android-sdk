@@ -689,7 +689,7 @@ crash apps without Firebase).
 #### Push receipt and open (tap) measurement
 
 For a measurable Bearound push (one carrying `sid`, `d` and an `https` `tr` in the `bearound`
-marker — a sync/wake-up-only push has neither and is not measurable), the SDK reports two
+marker: a sync/wake-up-only push has neither and is not measurable), the SDK reports two
 events through the Bearound tracker: `received` when the FCM message is processed, and `open`
 when a tap on the notification launches or resumes the app. The SDK never renders
 notifications; this only measures taps on whatever the host app or FCM rendered.

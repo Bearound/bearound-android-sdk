@@ -107,7 +107,7 @@ internal object HttpPushEventTransport : PushEventTransport {
  *
  * Separate from [io.bearound.sdk.utilities.OfflineBatchStorage] (which only ever carries
  * beacon batches). Backed by its own SharedPreferences file so entries survive process
- * death — a notification tap can launch the app before `configure()` runs, and the hits
+ * death: a notification tap can launch the app before `configure()` runs, and the hits
  * carry no auth (design.md Amendment 1: "no Authorization"), so the queue flushes even
  * before the business token is known.
  *
@@ -150,7 +150,7 @@ internal object PushEventQueue {
      * Keys currently being sent by an in-flight [sendOne] call. `enqueue()` calls
      * `flush()` once per event, and two events enqueued back-to-back (e.g. `open` then
      * `received` for the same tap) each spawn their OWN flush thread that reads the WHOLE
-     * persisted queue — without this guard, both threads would see both entries (the
+     * persisted queue: without this guard, both threads would see both entries (the
      * second flush racing ahead of the first entry's drain) and send each one twice.
      * Guarded by [lock].
      */
@@ -254,7 +254,7 @@ internal object PushEventQueue {
         }
         // Release BEFORE drain/backoff: keepAndBackoff may schedule a retry that runs
         // synchronously (immediately, same call stack, e.g. in tests) and needs to
-        // re-claim the same key — it must see the claim already released here, not still
+        // re-claim the same key: it must see the claim already released here, not still
         // held by this (not-yet-returned) frame.
         lock.withLock { inFlight.remove(key) }
         if (generation != entryGeneration) return // reset happened while the transport ran
@@ -353,7 +353,7 @@ internal object PushEventQueue {
             )
         }
         // commit(), not apply(): every save is immediately followed by a read (from this
-        // thread or the flush thread `enqueue()` spawns right after) — apply()'s async
+        // thread or the flush thread `enqueue()` spawns right after): apply()'s async
         // write is not guaranteed visible by then. Writes are small and infrequent (capped
         // at 200 entries), so the synchronous cost is negligible.
         prefs(context).edit().putString(STORAGE_KEY, array.toString()).commit()

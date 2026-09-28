@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bearound` marker): `received` when `BeAroundSDK.handleRemoteMessage` processes the FCM
   message, and `open` when the app is launched by tapping a system-rendered notification
   that carries the same marker as an `Intent` extra. Both hit the tracker with
-  `GET {tr}/v1/push:{verb}?d={d}`, no `Authorization` header — the SDK never renders
+  `GET {tr}/v1/push:{verb}?d={d}`, no `Authorization` header: the SDK never renders
   notifications itself, this only measures taps on notifications the host app or FCM
   rendered.
 
@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(sid, verb)`, with an immediate off-main-thread send attempt and exponential-backoff
   retry. A 2xx or any 4xx other than 429 drains the entry; 5xx, 429 or a transport error
   keeps it queued. The queue carries no business token (the tracker hit needs none), so it
-  flushes even before `configure()` runs — a cold-launch tap can enqueue before the SDK is
+  flushes even before `configure()` runs: a cold-launch tap can enqueue before the SDK is
   configured.
 
 ## [3.10.0] - 2026-09-28

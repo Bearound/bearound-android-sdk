@@ -688,7 +688,7 @@ class BeAroundSDK private constructor() {
         logOemProfileOnce()
 
         // A cold-launch tap can enqueue push events before configure() runs (push hits
-        // carry no auth, see PushEventQueue) — flush whatever is already queued now.
+        // carry no auth, see PushEventQueue): flush whatever is already queued now.
         io.bearound.sdk.push.PushEventQueue.flush(context)
 
         if (isScanning) {
@@ -760,7 +760,7 @@ class BeAroundSDK private constructor() {
     /**
      * Registers [Application.ActivityLifecycleCallbacks], idempotent per Application
      * instance. `onActivityCreated` and `onActivityResumed` both call [maybeReportOpen] on
-     * the activity's intent — a tap can deliver via either callback depending on launch
+     * the activity's intent: a tap can deliver via either callback depending on launch
      * mode / task state.
      */
     private fun registerNotificationOpenCallbacks() {
@@ -811,12 +811,12 @@ class BeAroundSDK private constructor() {
      * same parse-and-report-and-strip logic as the automatic lifecycle hook.
      *
      * @return true if a Bearound marker was found and consumed (an `open` event was
-     *   recorded), false otherwise — including for a third-party notification.
+     *   recorded), false otherwise: including for a third-party notification.
      */
     fun handleNotificationIntent(intent: android.content.Intent?): Boolean = maybeReportOpen(intent)
 
     /**
-     * Reports a push open from a data map instead of an Android [android.content.Intent] —
+     * Reports a push open from a data map instead of an Android [android.content.Intent] :
      * for Flutter/React Native bridges, which hand the tap payload as a
      * `Map<String, String>` (`data["bearound"]`) rather than a native intent extra.
      */
