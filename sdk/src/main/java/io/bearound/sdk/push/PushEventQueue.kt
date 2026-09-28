@@ -15,7 +15,7 @@ import kotlin.concurrent.thread
 import kotlin.concurrent.withLock
 
 /**
- * Verb reported to the ads--tracker for a Bearound push event (design.md Amendment 1).
+ * Verb reported to the Bearound tracker for a Bearound push event.
  */
 enum class PushEventVerb(val wireValue: String) {
     RECEIVED("received"),
@@ -27,8 +27,7 @@ enum class PushEventVerb(val wireValue: String) {
  * `Intent` extra. Both are the same JSON string shape: `{"t":..,"sid":uuid,"d":string,
  * "tr":"https://track.bearound.io"}`. Sync pushes only have `t`.
  *
- * Measurable only when `sid`, `d` and `tr` are all present and `tr` is `https`
- * (design.md Amendment 1 contract).
+ * Measurable only when `sid`, `d` and `tr` are all present and `tr` is `https`.
  */
 internal data class PushMarker(
     val sid: String,
@@ -54,7 +53,7 @@ internal data class PushMarker(
     }
 }
 
-/** Outcome of one tracker hit attempt (design.md section 9 / Amendment 1). */
+/** Outcome of one tracker hit attempt. */
 internal enum class PushHitOutcome {
     /** 2xx, or any 4xx other than 429: drop the entry, do not retry. */
     DRAIN,
@@ -80,7 +79,7 @@ internal object HttpPushEventTransport : PushEventTransport {
     private const val READ_TIMEOUT_MS = 5_000
 
     /**
-     * Maps an HTTP status code to a [PushHitOutcome] (design.md section 9 / Amendment 1):
+     * Maps an HTTP status code to a [PushHitOutcome]:
      * 2xx or any 4xx other than 429 drains, 429/5xx keeps. Pure function, extracted so the
      * mapping itself can be unit-tested without a network round trip.
      */
@@ -119,7 +118,7 @@ internal object HttpPushEventTransport : PushEventTransport {
  * Separate from [io.bearound.sdk.utilities.OfflineBatchStorage] (which only ever carries
  * beacon batches). Backed by its own SharedPreferences file so entries survive process
  * death: a notification tap can launch the app before `configure()` runs, and the hits
- * carry no auth (design.md Amendment 1: "no Authorization"), so the queue flushes even
+ * carry no auth (no Authorization), so the queue flushes even
  * before the business token is known.
  *
  * Thread-safety: every public entry point synchronizes on [lock].
@@ -236,7 +235,7 @@ internal object PushEventQueue {
 
     /**
      * Enqueues a tracker hit and attempts immediate delivery off the main thread. No-op if
-     * `(sid, verb)` was already enqueued (or drained) in this process install (REQ-025).
+     * `(sid, verb)` was already enqueued (or drained) in this process install.
      *
      * The in-memory dedupe check (cheap, no I/O) runs synchronously on the caller's
      * thread so a duplicate is rejected without any dispatch. The SharedPreferences
@@ -392,7 +391,7 @@ internal object PushEventQueue {
         }
     }
 
-    /** `{tr}/v1/push:{verb}?d={URL-encoded d}` (design.md Amendment 1). */
+    /** `{tr}/v1/push:{verb}?d={URL-encoded d}`. */
     internal fun buildUrl(entry: Entry): String = buildUrl(entry.tr, entry.verb, entry.d)
 
     /** Test-visible overload taking the raw fields instead of an [Entry]. */

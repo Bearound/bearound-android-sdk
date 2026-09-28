@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [3.11.0] - 2026-09-28
 
 ### Added
-- **Push receipt and open (tap) measurement through the ads--tracker.** The SDK now reports
+- **Push receipt and open (tap) measurement through the Bearound tracker.** The SDK now reports
   two events for a measurable push (one carrying `sid`, `d` and an `https` `tr` in the
   `bearound` marker): `received` when `BeAroundSDK.handleRemoteMessage` processes the FCM
   message, and `open` when the app is launched by tapping a system-rendered notification
