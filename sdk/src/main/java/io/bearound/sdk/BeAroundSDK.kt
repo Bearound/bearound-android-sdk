@@ -95,7 +95,10 @@ class BeAroundSDK private constructor() {
          * 30-min cliff and is far above ScanStartBudget's 4-starts/30 s throttle window.
          */
         private const val SCAN_REFRESH_INTERVAL_MS = 20 * 60 * 1000L
-        
+
+        /** Key the FCM `data` map and the notification-tap Intent extra both use. */
+        private const val BEAROUND_EXTRA_KEY = "bearound"
+
         @SuppressLint("StaticFieldLeak")
         @Volatile
         private var instance: BeAroundSDK? = null
@@ -329,6 +332,14 @@ class BeAroundSDK private constructor() {
 
         setupCallbacks()
         setupLifecycleObserver()
+
+        // Registered here (singleton creation), not only in configure(): a Flutter/React
+        // Native host typically calls configure() AFTER the cold-launch Activity has
+        // already resumed (bridge init runs on the JS thread, well after onCreate), which
+        // would miss that first tap's `onActivityCreated`/`onActivityResumed`. Idempotent
+        // per Application instance (see registerNotificationOpenCallbacks), so calling it
+        // again from configure() is a no-op.
+        registerNotificationOpenCallbacks()
     }
 
     private fun setupCallbacks() {
@@ -681,7 +692,12 @@ class BeAroundSDK private constructor() {
         scope.launch { registerDeviceIfNeeded() }
 
         registerBluetoothStateReceiver()
+        registerNotificationOpenCallbacks()
         logOemProfileOnce()
+
+        // A cold-launch tap can enqueue push events before configure() runs (push hits
+        // carry no auth, see PushEventQueue): flush whatever is already queued now.
+        io.bearound.sdk.push.PushEventQueue.flush(context)
 
         if (isScanning) {
             startSyncTimer()
@@ -738,6 +754,133 @@ class BeAroundSDK private constructor() {
             Log.w(TAG, "Bluetooth state receiver registration failed: ${e.message}")
         }
     }
+
+    // region Push open (tap) measurement (REQ-023, REQ-024)
+
+    /**
+     * The [Application] the lifecycle callbacks are currently registered on, or null if not
+     * registered yet. Tracked by instance (not a boolean) so a `configure()` against a
+     * DIFFERENT Application instance (e.g. Robolectric's per-test Application in tests) still
+     * registers instead of being skipped by a flag left over from a previous Application.
+     */
+    private var notificationOpenCallbacksRegisteredOn: android.app.Application? = null
+
+    /**
+     * Registers [Application.ActivityLifecycleCallbacks], idempotent per Application
+     * instance. `onActivityCreated` and `onActivityResumed` both call [maybeReportOpen] on
+     * the activity's intent: a tap can deliver via either callback depending on launch
+     * mode / task state.
+     *
+     * Called both from [initialize] (the singleton's FIRST `getInstance(context)`, so a
+     * Flutter/React Native host whose `configure()` runs after the cold-launch Activity
+     * already resumed does not miss that first tap) and from [configure] (idempotent
+     * no-op on the second call; kept as a fallback for any path that reaches `configure()`
+     * before `getInstance()` ever ran the registration, which should not happen but costs
+     * nothing to guard).
+     *
+     * Known gap: if `initialize()` runs AFTER the cold-launch Activity's own
+     * `onCreate`/`onResume` already fired (still possible on some FCM/WorkManager cold
+     * starts), that first tap's intent is missed by this hook: there is no public Android
+     * API to read "the currently resumed Activity" without reflection. Hosts on such a
+     * path should call [handleNotificationIntent] from their own `onCreate`/`onNewIntent`,
+     * or bridges should call [trackNotificationOpened] from `getInitialMessage`/
+     * `getInitialNotification` for a cold launch.
+     */
+    /**
+     * Test hook: rebinds the singleton to a test's Application and detaches the open
+     * callbacks from wherever they were registered. `internal`, not reflection: the release
+     * unit tests run against the R8-minified classes, where private fields are renamed.
+     */
+    internal fun resetNotificationOpenStateForTest(context: Context) {
+        notificationOpenCallbacksRegisteredOn?.unregisterActivityLifecycleCallbacks(notificationOpenCallbacks)
+        (context.applicationContext as? android.app.Application)
+            ?.unregisterActivityLifecycleCallbacks(notificationOpenCallbacks)
+        notificationOpenCallbacksRegisteredOn = null
+        this.context = context
+    }
+
+    private fun registerNotificationOpenCallbacks() {
+        val app = context.applicationContext as? android.app.Application ?: return
+        if (notificationOpenCallbacksRegisteredOn === app) return
+        app.registerActivityLifecycleCallbacks(notificationOpenCallbacks)
+        notificationOpenCallbacksRegisteredOn = app
+    }
+
+    private val notificationOpenCallbacks =
+        object : android.app.Application.ActivityLifecycleCallbacks {
+            override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) {
+                maybeReportOpen(activity.intent)
+            }
+
+            override fun onActivityResumed(activity: android.app.Activity) {
+                maybeReportOpen(activity.intent)
+            }
+
+            override fun onActivityStarted(activity: android.app.Activity) {}
+            override fun onActivityPaused(activity: android.app.Activity) {}
+            override fun onActivityStopped(activity: android.app.Activity) {}
+            override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: android.os.Bundle) {}
+            override fun onActivityDestroyed(activity: android.app.Activity) {}
+        }
+
+    /**
+     * Reads the `bearound` extra off [intent]; if measurable, enqueues `open` AND
+     * `received` (an opened push is inherently received), then removes the extra so a
+     * later `onResume` (e.g. after a config change) does not double-report. Returns true
+     * when a Bearound marker was found and consumed.
+     *
+     * NEVER-CRASH-THE-HOST: called from every host [android.app.Activity]'s
+     * `onCreate`/`onResume` via the lifecycle callbacks, with no host try/catch around it.
+     * `intent.getStringExtra` can throw `BadParcelableException` on API < 33 for a foreign
+     * intent carrying a parcelable extra the app's classloader cannot resolve: that must
+     * never propagate into the host's activity lifecycle.
+     */
+    private fun maybeReportOpen(intent: android.content.Intent?): Boolean {
+        return try {
+            val raw = intent?.getStringExtra(BEAROUND_EXTRA_KEY) ?: return false
+            val marker = io.bearound.sdk.push.PushMarker.parse(raw)
+            intent.removeExtra(BEAROUND_EXTRA_KEY)
+            if (marker == null) return false
+
+            io.bearound.sdk.push.PushEventQueue.enqueue(context, io.bearound.sdk.push.PushEventVerb.OPEN, marker)
+            io.bearound.sdk.push.PushEventQueue.enqueue(context, io.bearound.sdk.push.PushEventVerb.RECEIVED, marker)
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "maybeReportOpen failed: ${t.message}")
+            false
+        }
+    }
+
+    /**
+     * Public entry point for hosts that route notification taps manually (custom
+     * `PendingIntent`, `onNewIntent`, `singleTop`/`singleTask` launch modes where
+     * `onActivityCreated`/`onActivityResumed` do not see the fresh intent). Performs the
+     * same parse-and-report-and-strip logic as the automatic lifecycle hook.
+     *
+     * @return true if a Bearound marker was found and consumed (an `open` event was
+     *   recorded), false otherwise: including for a third-party notification.
+     */
+    fun handleNotificationIntent(intent: android.content.Intent?): Boolean = maybeReportOpen(intent)
+
+    /**
+     * Reports a push open from a data map instead of an Android [android.content.Intent] :
+     * for Flutter/React Native bridges, which hand the tap payload as a
+     * `Map<String, String>` (`data["bearound"]`) rather than a native intent extra.
+     *
+     * NEVER-CRASH-THE-HOST: this is a public entry point called directly from a
+     * Flutter/React Native method-channel handler with no SDK-side supervision.
+     */
+    fun trackNotificationOpened(data: Map<String, String>) {
+        try {
+            val marker = io.bearound.sdk.push.PushMarker.parse(data[BEAROUND_EXTRA_KEY]) ?: return
+            io.bearound.sdk.push.PushEventQueue.enqueue(context, io.bearound.sdk.push.PushEventVerb.OPEN, marker)
+            io.bearound.sdk.push.PushEventQueue.enqueue(context, io.bearound.sdk.push.PushEventVerb.RECEIVED, marker)
+        } catch (t: Throwable) {
+            Log.w(TAG, "trackNotificationOpened failed: ${t.message}")
+        }
+    }
+
+    // endregion
 
     private var oemProfileLogged = false
 
@@ -835,9 +978,18 @@ class BeAroundSDK private constructor() {
     fun handleRemoteMessage(data: Map<String, String>): Boolean {
         // Marker set by the backend FCM payload (buildFcmPayload → data["bearound"]).
         // Guards against acting on third-party pushes routed through the same service.
-        if (data["bearound"] == null) return false
+        val raw = data[BEAROUND_EXTRA_KEY] ?: return false
         Log.d(TAG, "Bearound wake-up push received — restarting scan + flushing sync")
+
         try {
+            // Measurable push (sid + d + tr present, see PushMarker): report a `received`
+            // hit through the tracker. Sync/silent pushes only carry `t` and are not
+            // measurable. Inside the try: a malformed marker or a queue failure must not
+            // skip the restart/sync below, nor throw into the host's messaging service.
+            io.bearound.sdk.push.PushMarker.parse(raw)?.let { marker ->
+                io.bearound.sdk.push.PushEventQueue.enqueue(context, io.bearound.sdk.push.PushEventVerb.RECEIVED, marker)
+            }
+
             // Restore config first if the app was killed (cold start via FCM).
             if (!isConfigured) attemptConfigRestore()
             if (!isConfigured) {
@@ -850,9 +1002,9 @@ class BeAroundSDK private constructor() {
             // (unlike the watchdog/boot self-heal paths, which only restore what was on).
             restartScanningFromBackground()
             performBackgroundSync()
-        } catch (e: Exception) {
-            Log.e(TAG, "handleRemoteMessage error: ${e.message}")
-            io.bearound.sdk.telemetry.ErrorReporter.report(e, "BeAroundSDK.handleRemoteMessage")
+        } catch (t: Throwable) {
+            Log.e(TAG, "handleRemoteMessage error: ${t.message}")
+            io.bearound.sdk.telemetry.ErrorReporter.report(t, "BeAroundSDK.handleRemoteMessage")
         }
         return true
     }

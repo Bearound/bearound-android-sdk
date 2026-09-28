@@ -5,6 +5,65 @@ All notable changes to the BeAround Android SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.0] - 2026-09-28
+
+### Added
+- **Push receipt and open (tap) measurement through the ads--tracker.** The SDK now reports
+  two events for a measurable push (one carrying `sid`, `d` and an `https` `tr` in the
+  `bearound` marker): `received` when `BeAroundSDK.handleRemoteMessage` processes the FCM
+  message, and `open` when the app is launched by tapping a system-rendered notification
+  that carries the same marker as an `Intent` extra. Both hit the tracker with
+  `GET {tr}/v1/push:{verb}?d={d}`, no `Authorization` header: the SDK never renders
+  notifications itself, this only measures taps on notifications the host app or FCM
+  rendered.
+
+  Tap detection is automatic: the SDK registers an
+  `Application.ActivityLifecycleCallbacks` as early as its first `getInstance(context)` call
+  (so a Flutter/React Native host whose `configure()` runs after the cold-launch Activity
+  already resumed does not miss that first tap) and checks `onActivityCreated`/
+  `onActivityResumed` for the marker, stripping it after reporting so a later `onResume`
+  (e.g. after a config change) does not double-report. Hosts that route notification taps
+  manually (custom `PendingIntent`, `onNewIntent`, `singleTop`/`singleTask` launch modes)
+  call the new public `handleNotificationIntent(intent: Intent?): Boolean` directly.
+  Flutter/React Native bridges use the new
+  `trackNotificationOpened(data: Map<String, String>)`, which reads `data["bearound"]`
+  instead of an Android `Intent` extra; bridges should also call it from their
+  `getInitialMessage`/`getInitialNotification` equivalent to cover a cold launch the
+  native hook cannot see.
+
+  Events are queued in a new, persisted `PushEventQueue` (SharedPreferences, separate from
+  `OfflineBatchStorage`): capped at 200 entries and 7 days of age (both enforced on every
+  `enqueue()` and `flush()`), deduped locally per `(sid, verb)`, with an immediate
+  off-main-thread send attempt and exponential-backoff retry, single-flight per entry (at
+  most one pending retry per `(sid, verb)` at a time). A 2xx or any 4xx other than 429
+  drains the entry; 5xx, 429 or a transport error keeps it queued. The queue carries no
+  business token (the tracker hit needs none), so it flushes even before `configure()`
+  runs: a cold-launch tap can enqueue before the SDK is configured. `enqueue()`'s
+  SharedPreferences read/write always runs off the caller's thread, since callers include
+  host UI-thread callbacks.
+
+### Fixed
+- **Unbounded retry threads from repeated `flush()` calls on a kept entry.** Every `flush()`
+  used to re-claim any entry not mid-send, including one already waiting on a scheduled
+  backoff retry, so `k` queued entries times `n` flush calls could each start their own
+  independent, sleeping retry chain. A key now stays claimed for its ENTIRE retry chain
+  (not just the single HTTP attempt), and at most one retry can be pending per key at a
+  time; retries also re-read the persisted entry under lock instead of resending a stale
+  captured copy, and `flush()` now evicts stale entries (age + count cap) on every call
+  instead of only on `enqueue()`.
+- **`SharedPreferences` I/O on the host's UI thread.** `enqueue()` (reachable from an
+  Activity's `onCreate`/`onResume` and from a Flutter/React Native method-channel handler)
+  read and `commit()`-wrote the queue synchronously on the caller's thread. The read/write
+  now always run on a background executor; the write uses `apply()` instead of the
+  fsync'd `commit()`.
+- **Crashes from push hooks reaching the host.** `maybeReportOpen` (driven by every host
+  Activity's `onCreate`/`onResume`), `trackNotificationOpened` and the `enqueue()` call in
+  `handleRemoteMessage` are now wrapped in their own `try`/`catch`, so a malformed intent
+  (e.g. `BadParcelableException` from `getStringExtra` on API < 33) or a queue failure logs
+  instead of propagating into the host.
+- **`PushMarker`'s `tr` scheme check is now case-insensitive** (`Https://`, `HTTPS://`, ...),
+  matching the iOS SDK.
+
 ## [3.10.0] - 2026-09-28
 
 ### Changed
