@@ -5,6 +5,36 @@ All notable changes to the BeAround Android SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.0] - 2026-09-28
+
+### Added
+- **Push receipt and open (tap) measurement through the ads--tracker.** The SDK now reports
+  two events for a measurable push (one carrying `sid`, `d` and an `https` `tr` in the
+  `bearound` marker): `received` when `BeAroundSDK.handleRemoteMessage` processes the FCM
+  message, and `open` when the app is launched by tapping a system-rendered notification
+  that carries the same marker as an `Intent` extra. Both hit the tracker with
+  `GET {tr}/v1/push:{verb}?d={d}`, no `Authorization` header — the SDK never renders
+  notifications itself, this only measures taps on notifications the host app or FCM
+  rendered.
+
+  Tap detection is automatic: the SDK registers an
+  `Application.ActivityLifecycleCallbacks` at `configure()` time and checks
+  `onActivityCreated`/`onActivityResumed` for the marker, stripping it after reporting so a
+  later `onResume` (e.g. after a config change) does not double-report. Hosts that route
+  notification taps manually (custom `PendingIntent`, `onNewIntent`, `singleTop`/
+  `singleTask` launch modes) call the new public `handleNotificationIntent(intent: Intent?):
+  Boolean` directly. Flutter/React Native bridges use the new
+  `trackNotificationOpened(data: Map<String, String>)`, which reads `data["bearound"]`
+  instead of an Android `Intent` extra.
+
+  Events are queued in a new, persisted `PushEventQueue` (SharedPreferences, separate from
+  `OfflineBatchStorage`): capped at 200 entries and 7 days of age, deduped locally per
+  `(sid, verb)`, with an immediate off-main-thread send attempt and exponential-backoff
+  retry. A 2xx or any 4xx other than 429 drains the entry; 5xx, 429 or a transport error
+  keeps it queued. The queue carries no business token (the tracker hit needs none), so it
+  flushes even before `configure()` runs — a cold-launch tap can enqueue before the SDK is
+  configured.
+
 ## [3.10.0] - 2026-09-28
 
 ### Changed

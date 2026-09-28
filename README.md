@@ -686,6 +686,43 @@ was killed, restarts scanning (always — a backend wake-up overrides a previous
 Firebase — the SDK never auto-registers the service (`compileOnly`, so auto-registering would
 crash apps without Firebase).
 
+#### Push receipt and open (tap) measurement
+
+For a measurable Bearound push (one carrying `sid`, `d` and an `https` `tr` in the `bearound`
+marker — a sync/wake-up-only push has neither and is not measurable), the SDK reports two
+events through the Bearound tracker: `received` when the FCM message is processed, and `open`
+when a tap on the notification launches or resumes the app. The SDK never renders
+notifications; this only measures taps on whatever the host app or FCM rendered.
+
+**Automatic tap tracking** requires no wiring: `configure()` registers an
+`Application.ActivityLifecycleCallbacks` that checks every `onActivityCreated`/
+`onActivityResumed` for the marker.
+
+**Hosts that route notification taps manually** (a custom `PendingIntent`, `onNewIntent`,
+or `singleTop`/`singleTask` launch modes where the automatic hook may not see the fresh
+intent) call the marker check directly:
+
+```kotlin
+override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    BeAroundSDK.getInstance(this).handleNotificationIntent(intent)
+}
+```
+
+`handleNotificationIntent` returns `true` when a Bearound marker was found and consumed
+(the extra is stripped so it is not re-reported), `false` otherwise.
+
+**Flutter/React Native bridges**, which hand the tap payload as a `Map<String, String>`
+rather than a native `Intent`, use `trackNotificationOpened` instead:
+
+```kotlin
+BeAroundSDK.getInstance(this).trackNotificationOpened(data) // data["bearound"] is read
+```
+
+Both APIs enqueue into a small persisted queue (capped at 200 entries / 7 days, deduped per
+event, retried with backoff on a transient failure) that requires no business token, so a
+cold-launch tap is measured even if it happens before `configure()` runs.
+
 ## Background scanning
 
 **Background scanning is automatically enabled** by `startScanning()`. On Android 8+ the SDK

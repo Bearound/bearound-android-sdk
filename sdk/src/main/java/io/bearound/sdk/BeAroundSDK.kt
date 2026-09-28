@@ -95,7 +95,10 @@ class BeAroundSDK private constructor() {
          * 30-min cliff and is far above ScanStartBudget's 4-starts/30 s throttle window.
          */
         private const val SCAN_REFRESH_INTERVAL_MS = 20 * 60 * 1000L
-        
+
+        /** Key the FCM `data` map and the notification-tap Intent extra both use. */
+        private const val BEAROUND_EXTRA_KEY = "bearound"
+
         @SuppressLint("StaticFieldLeak")
         @Volatile
         private var instance: BeAroundSDK? = null
@@ -681,7 +684,12 @@ class BeAroundSDK private constructor() {
         scope.launch { registerDeviceIfNeeded() }
 
         registerBluetoothStateReceiver()
+        registerNotificationOpenCallbacks()
         logOemProfileOnce()
+
+        // A cold-launch tap can enqueue push events before configure() runs (push hits
+        // carry no auth, see PushEventQueue) — flush whatever is already queued now.
+        io.bearound.sdk.push.PushEventQueue.flush(context)
 
         if (isScanning) {
             startSyncTimer()
@@ -738,6 +746,87 @@ class BeAroundSDK private constructor() {
             Log.w(TAG, "Bluetooth state receiver registration failed: ${e.message}")
         }
     }
+
+    // region Push open (tap) measurement (REQ-023, REQ-024)
+
+    /**
+     * The [Application] the lifecycle callbacks are currently registered on, or null if not
+     * registered yet. Tracked by instance (not a boolean) so a `configure()` against a
+     * DIFFERENT Application instance (e.g. Robolectric's per-test Application in tests) still
+     * registers instead of being skipped by a flag left over from a previous Application.
+     */
+    private var notificationOpenCallbacksRegisteredOn: android.app.Application? = null
+
+    /**
+     * Registers [Application.ActivityLifecycleCallbacks], idempotent per Application
+     * instance. `onActivityCreated` and `onActivityResumed` both call [maybeReportOpen] on
+     * the activity's intent — a tap can deliver via either callback depending on launch
+     * mode / task state.
+     */
+    private fun registerNotificationOpenCallbacks() {
+        val app = context.applicationContext as? android.app.Application ?: return
+        if (notificationOpenCallbacksRegisteredOn === app) return
+        app.registerActivityLifecycleCallbacks(notificationOpenCallbacks)
+        notificationOpenCallbacksRegisteredOn = app
+    }
+
+    private val notificationOpenCallbacks =
+        object : android.app.Application.ActivityLifecycleCallbacks {
+            override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) {
+                maybeReportOpen(activity.intent)
+            }
+
+            override fun onActivityResumed(activity: android.app.Activity) {
+                maybeReportOpen(activity.intent)
+            }
+
+            override fun onActivityStarted(activity: android.app.Activity) {}
+            override fun onActivityPaused(activity: android.app.Activity) {}
+            override fun onActivityStopped(activity: android.app.Activity) {}
+            override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: android.os.Bundle) {}
+            override fun onActivityDestroyed(activity: android.app.Activity) {}
+        }
+
+    /**
+     * Reads the `bearound` extra off [intent]; if measurable, enqueues `open` AND
+     * `received` (an opened push is inherently received), then removes the extra so a
+     * later `onResume` (e.g. after a config change) does not double-report. Returns true
+     * when a Bearound marker was found and consumed.
+     */
+    private fun maybeReportOpen(intent: android.content.Intent?): Boolean {
+        val raw = intent?.getStringExtra(BEAROUND_EXTRA_KEY) ?: return false
+        val marker = io.bearound.sdk.push.PushMarker.parse(raw)
+        intent.removeExtra(BEAROUND_EXTRA_KEY)
+        if (marker == null) return false
+
+        io.bearound.sdk.push.PushEventQueue.enqueue(context, io.bearound.sdk.push.PushEventVerb.OPEN, marker)
+        io.bearound.sdk.push.PushEventQueue.enqueue(context, io.bearound.sdk.push.PushEventVerb.RECEIVED, marker)
+        return true
+    }
+
+    /**
+     * Public entry point for hosts that route notification taps manually (custom
+     * `PendingIntent`, `onNewIntent`, `singleTop`/`singleTask` launch modes where
+     * `onActivityCreated`/`onActivityResumed` do not see the fresh intent). Performs the
+     * same parse-and-report-and-strip logic as the automatic lifecycle hook.
+     *
+     * @return true if a Bearound marker was found and consumed (an `open` event was
+     *   recorded), false otherwise — including for a third-party notification.
+     */
+    fun handleNotificationIntent(intent: android.content.Intent?): Boolean = maybeReportOpen(intent)
+
+    /**
+     * Reports a push open from a data map instead of an Android [android.content.Intent] —
+     * for Flutter/React Native bridges, which hand the tap payload as a
+     * `Map<String, String>` (`data["bearound"]`) rather than a native intent extra.
+     */
+    fun trackNotificationOpened(data: Map<String, String>) {
+        val marker = io.bearound.sdk.push.PushMarker.parse(data[BEAROUND_EXTRA_KEY]) ?: return
+        io.bearound.sdk.push.PushEventQueue.enqueue(context, io.bearound.sdk.push.PushEventVerb.OPEN, marker)
+        io.bearound.sdk.push.PushEventQueue.enqueue(context, io.bearound.sdk.push.PushEventVerb.RECEIVED, marker)
+    }
+
+    // endregion
 
     private var oemProfileLogged = false
 
@@ -835,8 +924,15 @@ class BeAroundSDK private constructor() {
     fun handleRemoteMessage(data: Map<String, String>): Boolean {
         // Marker set by the backend FCM payload (buildFcmPayload → data["bearound"]).
         // Guards against acting on third-party pushes routed through the same service.
-        if (data["bearound"] == null) return false
+        val raw = data[BEAROUND_EXTRA_KEY] ?: return false
         Log.d(TAG, "Bearound wake-up push received — restarting scan + flushing sync")
+
+        // Measurable push (sid + d + tr present, see PushMarker): report a `received` hit
+        // through the tracker. Sync/silent pushes only carry `t` and are not measurable.
+        io.bearound.sdk.push.PushMarker.parse(raw)?.let { marker ->
+            io.bearound.sdk.push.PushEventQueue.enqueue(context, io.bearound.sdk.push.PushEventVerb.RECEIVED, marker)
+        }
+
         try {
             // Restore config first if the app was killed (cold start via FCM).
             if (!isConfigured) attemptConfigRestore()
