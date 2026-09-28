@@ -9,7 +9,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Upgrade path of the retired visit outbox (sdk-visit-cohesion REQ-011).
+ * Upgrade path of the retired visit outbox.
  *
  * Earlier builds kept undelivered visit events as a JSON array under [LEGACY_KEY] in
  * [VisitStateStore]'s preferences. Visit events now live in [OfflineBatchStorage]; this

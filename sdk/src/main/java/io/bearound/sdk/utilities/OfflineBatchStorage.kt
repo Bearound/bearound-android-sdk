@@ -62,7 +62,7 @@ class OfflineBatchStorage(private val context: Context) {
         // Nullable: Gson leaves a missing field null even in a non-null Kotlin field. Only a
         // batch with a syncTrigger (a visit) may carry no beacons.
         @SerializedName("beacons") val beacons: List<StoredBeacon>?,
-        // Added by sdk-visit-cohesion (REQ-018). Both OPTIONAL: a batch written before them
+        // Added in 3.12.0. Both OPTIONAL: a batch written before them
         // decodes with null here and is sent with the device context collected at send time.
         @SerializedName("syncTrigger") val syncTrigger: String? = null,
         @SerializedName("context") val context: StoredContext? = null
@@ -621,7 +621,7 @@ class OfflineBatchStorage(private val context: Context) {
 
     /**
      * Evicts the oldest beacon batches beyond [maxBatchCount]. A visit batch is exempt and
-     * does not count toward the cap (REQ-018): a stop yields two events a day at most, and
+     * does not count toward the cap: a stop yields two events a day at most, and
      * losing one loses the whole visit. The 7-day expiry and the drain's 24 h capture window
      * still bound them.
      */

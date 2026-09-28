@@ -20,7 +20,7 @@ internal data class VisitPermissions(
 }
 
 /**
- * Chooses the visit detector (design 2.7, D-08). The SDK never declares
+ * Chooses the visit detector. The SDK never declares
  * `ACCESS_BACKGROUND_LOCATION`; the native geofence path is used only when the HOST declares
  * it and the user grants it.
  */

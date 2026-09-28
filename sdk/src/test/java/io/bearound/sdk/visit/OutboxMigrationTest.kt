@@ -14,7 +14,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
-/** sdk-visit-cohesion REQ-011: one queue for visit events, and the retired outbox migrates on upgrade. */
+/** One queue for visit events, and the retired outbox migrates on upgrade. */
 @RunWith(RobolectricTestRunner::class)
 class OutboxMigrationTest {
 

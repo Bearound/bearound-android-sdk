@@ -569,7 +569,7 @@ class BeAroundSDK private constructor() {
             restartSyncTimer()
         }
 
-        // Foreground is where the soft fence can see at all (AND1-00): evaluate right away.
+        // Foreground is where the soft fence can see at all: evaluate right away.
         tickVisitDetection("foreground", force = true)
 
         dispatchToListener { it.onAppStateChanged(isInBackground = false) }
@@ -1170,7 +1170,7 @@ class BeAroundSDK private constructor() {
         // stopped on region exit. BackgroundScanManager.enableBackgroundScanning() (above)
         // already runs the low-power filter scan that wakes us when a beacon appears.
 
-        // Visit detection: independent of the beacon eye, self-gated (REQ-014, iOS parity).
+        // Visit detection: independent of the beacon eye, self-gated (iOS parity).
         startVisitDetection()
 
         // Register the device with the backend even when no beacons are in range so that
@@ -1718,7 +1718,7 @@ class BeAroundSDK private constructor() {
             //
             // The device context is collected BEFORE the save and persisted with the batch:
             // a retry replays where the beacons were seen, not where the device is at retry
-            // time (sdk-visit-cohesion REQ-018). An encounter/heartbeat report carries no
+            // time. An encounter/heartbeat report carries no
             // beacon and is not persisted, as before.
             val locationPermission = getLocationPermissionStatus()
             val bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off"
@@ -1864,7 +1864,7 @@ class BeAroundSDK private constructor() {
     /**
      * Sends the persisted batches (all of them, or only those with [onlyTrigger]) through
      * [StoredBatchDrain]: one request per batch, each with the `syncTrigger` and the device
-     * context persisted with it (REQ-018).
+     * context persisted with it.
      * @return null when there was nothing to send (or the SDK is not configured); otherwise
      *         false when a transient failure stopped the drain.
      */

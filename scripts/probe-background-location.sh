@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AND1-00 (spec sdk-visit-intelligence, D-28): background location probe.
+# Background location probe.
 #
 # Question: without ACCESS_BACKGROUND_LOCATION, and with the SDK foreground service
 # typed `connectedDevice`, does LocationCollector.lastKnown() (LocationManager
@@ -244,7 +244,7 @@ verdict_for() {
 }
 
 main() {
-  section "AND1-00 background location probe · avd=$AVD · $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  section "background location probe · avd=$AVD · $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   boot_emulator
   prepare_device
   setup_test_provider

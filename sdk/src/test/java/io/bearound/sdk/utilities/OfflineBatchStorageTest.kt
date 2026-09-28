@@ -142,7 +142,7 @@ class OfflineBatchStorageTest {
         assertEquals(0, storage.getBatchCount())
     }
 
-    // region sdk-visit-cohesion (REQ-018)
+    // region captured context
 
     private val capturedLocation = DeviceLocation(
         latitude = -23.561, longitude = -46.656, accuracy = 12f, timestamp = 1_700_000_000_000L, source = "fused"

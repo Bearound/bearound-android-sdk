@@ -7,11 +7,11 @@ import android.util.Log
 import org.json.JSONObject
 
 /**
- * Persisted visit state: the last good places config (D-22: a failed fetch keeps the last
- * list and the last `visit_detection_enabled`), the open stop (REQ-023: a departure seen by
+ * Persisted visit state: the last good places config (a failed fetch keeps the last
+ * list and the last `visit_detection_enabled`), the open stop (a departure seen by
  * the next process still pairs with the arrival of the previous one) and the native
  * registration. Undelivered visit events are NOT kept here: they live in the SDK's single
- * queue, `OfflineBatchStorage` (sdk-visit-cohesion REQ-011); [OutboxMigration] moves what an
+ * queue, `OfflineBatchStorage`; [OutboxMigration] moves what an
  * older version left under the retired outbox key.
  *
  * Writes use `commit()`: every value here is small, and state must be on disk before the
