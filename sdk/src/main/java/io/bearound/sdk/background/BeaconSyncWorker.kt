@@ -50,6 +50,7 @@ class BeaconSyncWorker(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         Log.i(TAG, "periodic_worker_started attempt=$runAttemptCount")
+        io.bearound.sdk.utilities.LocationProbe.log(applicationContext, "worker")
 
         try {
             val sdk = BeAroundSDK.getInstance(applicationContext)

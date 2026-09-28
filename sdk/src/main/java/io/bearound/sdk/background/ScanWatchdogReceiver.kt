@@ -33,6 +33,7 @@ class ScanWatchdogReceiver : BroadcastReceiver() {
         val action = intent?.action ?: return
         
         Log.d(TAG, "ScanWatchdogReceiver triggered: $action")
+        io.bearound.sdk.utilities.LocationProbe.log(context, "watchdog")
         
         when (action) {
             ACTION_WATCHDOG -> handleWatchdog(context)
