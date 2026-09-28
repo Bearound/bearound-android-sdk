@@ -53,7 +53,7 @@ internal interface GeofenceRegistrar {
 }
 
 /**
- * Native path (REQ-017, D-08): `GeofencingClient` DWELL around the nearest target
+ * Native path: `GeofencingClient` DWELL around the nearest target
  * environments, used only when the host declares and the user grants
  * `ACCESS_BACKGROUND_LOCATION` (see [VisitDetectorFactory]). Unlike the soft fence it works
  * with the app killed: the geofence broadcast goes to [VisitGeofenceReceiver], declared in
@@ -64,7 +64,7 @@ internal interface GeofenceRegistrar {
  *   of the exit fix (the exit fix itself lies outside the environment by definition, and the
  *   ingest resolves the environment from the coordinates);
  * - EXIT of the refresh fence (circle at `origin`, radius `refreshAfterMeters`) makes the
- *   controller fetch the config again (REQ-021).
+ *   controller fetch the config again.
  *
  * A registration failure is recorded; the factory then picks the soft fence on the next tick.
  */
@@ -163,9 +163,9 @@ internal class NativeGeofenceVisitDetector(
 
     override fun apply(config: PlacesConfig?, now: Long) {
         when {
-            // No list yet (first run without a successful fetch): nothing native (D-22).
+            // No list yet (first run without a successful fetch): nothing native.
             config == null -> Unit
-            // Kill switch (REQ-014, D-14): only the visit geofences go.
+            // Kill switch: only the visit geofences go.
             !config.visitDetectionEnabled -> tearDown()
             else -> register(plan(config), now)
         }
@@ -270,7 +270,10 @@ internal class PlayServicesGeofenceRegistrar(context: Context) : GeofenceRegistr
         private const val TAG = "BeAroundSDK-Visit"
         private const val REQUEST_CODE = 19931
 
-        /** Lets Play Services batch transitions; well inside the 15 min of REQ-019. */
+        /**
+         * Lets Play Services batch transitions; well inside the 15 min budget for sending both
+         * visit events after a detection.
+         */
         private const val NOTIFICATION_RESPONSIVENESS_MS = 60_000
 
         /**

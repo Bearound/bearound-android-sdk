@@ -3,13 +3,13 @@ package io.bearound.sdk.visit
 import android.util.Log
 
 /**
- * "Soft fence" (REQ-018, D-08): the no-extra-permission path. On every wakeup the SDK
+ * "Soft fence": the no-extra-permission path. On every wakeup the SDK
  * already has (sync timer, scan broadcast, [io.bearound.sdk.background.ScanWatchdogReceiver],
  * [io.bearound.sdk.background.BeaconSyncWorker], app foreground) it compares the platform's
  * LAST KNOWN fix with the target circles. It never requests a fix and never schedules
  * anything of its own.
  *
- * **Measured limit (AND1-00, `docs/specs/sdk-visit-intelligence/verification.md`):** without
+ * **Measured limit (emulator, API 36):** without
  * `ACCESS_BACKGROUND_LOCATION`, `LocationManager.getLastKnownLocation` returns `null` for
  * every provider as soon as the app leaves the foreground, even with the SDK's
  * `connectedDevice` foreground service running and after a kill + watchdog wake (the process
@@ -21,7 +21,7 @@ import android.util.Log
  * - arrival: inside a target for at least `minDwellMinutes`, reported with the FIRST inside
  *   fix (its real position and time);
  * - departure: the first fix outside, reported with the LAST inside fix, so the pair spans
- *   the time the device was actually seen inside (REQ-023, D-26).
+ *   the time the device was actually seen inside.
  */
 internal class SoftFenceVisitDetector(
     private val store: VisitStateStore,

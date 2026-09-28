@@ -10,24 +10,24 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * GPS visit detection on Android (design 2.7): one interface, two strategies.
+ * GPS visit detection on Android: one interface, two strategies.
  *
  * - [SoftFenceVisitDetector]: compares the last known fix with the target environments on
  *   the wakeups the SDK already has. No permission beyond foreground location, and blind in
- *   background (measured, see `docs/specs/sdk-visit-intelligence/verification.md`, AND1-00).
+ *   background (measured on the emulator, API 36).
  * - `NativeGeofenceVisitDetector`: `GeofencingClient` DWELL/EXIT, only when the host
- *   declares and the user grants `ACCESS_BACKGROUND_LOCATION` (D-08).
+ *   declares and the user grants `ACCESS_BACKGROUND_LOCATION`.
  *
- * [VisitDetectorFactory] picks one; [VisitController] owns the config (REQ-021), the kill
- * switch (REQ-014) and delivery. A detector only decides WHEN a stop starts and ends and
+ * [VisitDetectorFactory] picks one; [VisitController] owns the config, the kill
+ * switch and delivery. A detector only decides WHEN a stop starts and ends and
  * reports it through [VisitStopTracker].
  */
 internal interface VisitDetector {
     val mode: VisitDetectionMode
 
     /**
-     * Arms the detector for [config]. `null` means no list was ever fetched (D-22): nothing
-     * native is registered. A config with `visitDetectionEnabled = false` disarms it (REQ-014).
+     * Arms the detector for [config]. `null` means no list was ever fetched: nothing
+     * native is registered. A config with `visitDetectionEnabled = false` disarms it.
      */
     fun apply(config: PlacesConfig?, now: Long)
 
@@ -78,8 +78,8 @@ internal data class VisitFix(
 internal enum class VisitEventKind(val wire: String) { ARRIVAL("arrival"), DEPARTURE("departure") }
 
 /**
- * One `/ingest` visit event. Carries the REAL time of the fix, never the send time
- * (REQ-023, D-26): the ingest honours capture times in [-24 h, +5 min], and a qualified
+ * One `/ingest` visit event. Carries the REAL time of the fix, never the send time:
+ * the ingest honours capture times in [-24 h, +5 min], and a qualified
  * visit needs two observations at least 30 s apart, so a stop always produces an arrival
  * AND a departure.
  */
@@ -117,8 +117,8 @@ internal data class VisitEvent(
 }
 
 /**
- * Where visit events wait for `/ingest`: the SDK's single queue (`OfflineBatchStorage`,
- * sdk-visit-cohesion REQ-011), never a queue of its own.
+ * Where visit events wait for `/ingest`: the SDK's single queue (`OfflineBatchStorage`),
+ * never a queue of its own.
  */
 internal interface VisitEventQueue {
     /** Writes [event] to disk before anything tries to send it (persist-before-send). */

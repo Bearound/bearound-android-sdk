@@ -9,8 +9,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Owns everything around the detectors: the places config and its refresh (REQ-021), the kill
- * switch (REQ-014, D-14), which detector runs ([VisitDetectorFactory]) and delivery of the
+ * Owns everything around the detectors: the places config and its refresh, the kill
+ * switch, which detector runs ([VisitDetectorFactory]) and delivery of the
  * events the detectors produce.
  *
  * Driven only by wakeups that already exist; it schedules nothing. Every entry point is
@@ -165,7 +165,7 @@ internal class VisitController(
 
         val fix = signal.fix ?: lastKnownFix()
         if (native.onTransition(signal.copy(fix = fix))) {
-            // Left the refresh fence (REQ-021): fetch around the exit fix and re-arm.
+            // Left the refresh fence: fetch around the exit fix and re-arm.
             refreshIfNeeded(fix, forced = true, now = now)
             applyConfig(native, now)
         }
@@ -206,9 +206,9 @@ internal class VisitController(
     }
 
     /**
-     * REQ-021: fetch again when the device is more than `refreshAfterMeters` from the origin
+     * Fetch again when the device is more than `refreshAfterMeters` from the origin
      * of the last fetch, or `maxAgeSeconds` passed. Needs a fix (the request carries it); a
-     * failure keeps the last list and the last kill-switch value (D-22).
+     * failure keeps the last list and the last kill-switch value.
      */
     private suspend fun refreshIfNeeded(fix: VisitFix?, forced: Boolean, now: Long) {
         val cached = store.loadConfig()
@@ -265,9 +265,9 @@ internal class VisitController(
 
 /**
  * The production [VisitEventQueue]: visit events are batches of the SDK's single queue,
- * [OfflineBatchStorage] (sdk-visit-cohesion REQ-011), sent as ordinary `/ingest` payloads
+ * [OfflineBatchStorage], sent as ordinary `/ingest` payloads
  * with no beacons, `syncTrigger: "visit"` and the event's own fix as `location` (real fix
- * time, `source: "gnss"`, D-26). [drain] sends the pending visit batches.
+ * time, `source: "gnss"`). [drain] sends the pending visit batches.
  *
  * Each flush first moves what an older SDK left in the retired outbox ([OutboxMigration]),
  * so the first flush after an upgrade delivers it.

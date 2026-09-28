@@ -6,7 +6,7 @@ import io.bearound.sdk.models.UserDevice
 import io.bearound.sdk.network.HttpException
 
 /**
- * Sends the batches persisted in [OfflineBatchStorage] (sdk-visit-cohesion REQ-018).
+ * Sends the batches persisted in [OfflineBatchStorage].
  *
  * Every batch goes up with the `syncTrigger` and the device context persisted WITH it, never
  * with values recomputed at drain time, so a retried beacon keeps the location where it was

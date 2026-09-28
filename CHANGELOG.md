@@ -7,15 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.12.0] - 2026-09-28
+
 ### Added
-- **Nova dependência de runtime: `com.google.android.gms:play-services-location:21.3.0`.** A
-  detecção de visitas por geofence nativa (`GeofencingClient`) usa essa biblioteca, e ela chega
-  ao app integrador como dependência transitiva de `implementation`: a partir desta versão o
-  app passa a carregar em runtime `play-services-base`, `play-services-basement` e
-  `play-services-tasks` (nas versões que a 21.3.0 já resolve). Um app que fixa versões dessas
-  bibliotecas deve conferir o grafo resolvido (`./gradlew :app:dependencies`). O SDK usa no
-  máximo 20 geofences próprias (a cerca de atualização e os 19 alvos mais próximos) dentro do
-  teto de 100 por app que o Android impõe e que o app integrador compartilha.
+- **GPS visit detection.** The SDK now detects stops outside beacon range too, against the
+  nearest environments it fetches from the Bearound backend at
+  `GET {apiBaseURL}/sdk/places/nearby`. The list is refreshed when the device leaves the
+  refresh fence or when it expires, and the last good list is kept when a fetch fails. Each
+  stop produces two events, arrival and departure, with `syncTrigger: "visit"` and the real
+  fix time. Two detectors, picked at runtime:
+  - **Native geofence** (`GeofencingClient`, DWELL and EXIT) when the host app declares and
+    the user grants `ACCESS_BACKGROUND_LOCATION` and Google Play services is available.
+  - **Soft fence** on the SDK's existing wakeups otherwise. Without background location
+    Android returns no location once the app is in background (measured with the SDK
+    foreground service running), so in practice this mode only sees stops while the app is
+    open.
+
+  The SDK manifest still does not declare `ACCESS_BACKGROUND_LOCATION`; it only adds a
+  non-exported receiver (`io.bearound.sdk.visit.VisitGeofenceReceiver`) for geofence
+  transitions. There is no new public API: detection turns itself on, the backend can turn
+  it off per account, and it stops on the device with `collectLocation = false`.
+  Beacon detection is unchanged.
+- **New runtime dependency: `com.google.android.gms:play-services-location:21.3.0`.** Native
+  geofence visit detection (`GeofencingClient`) needs it, and it reaches the host app as a
+  transitive `implementation` dependency: from this version the app loads
+  `play-services-base`, `play-services-basement` and `play-services-tasks` at runtime (at the
+  versions 21.3.0 resolves). An app that pins those libraries should check the resolved graph
+  (`./gradlew :app:dependencies`). The SDK registers at most 20 geofences of its own (the
+  refresh fence plus the 19 nearest targets), inside the 100-per-app ceiling that Android
+  imposes and the host app shares.
+
+### Fixed
+- **Retries keep the captured context.** Batches stored offline now carry the location,
+  Wi-Fi, device data and `syncTrigger` from capture time. The old drain rebuilt that data at
+  retry time and merged batches, so a retried event arrived with the position from when the
+  network came back. Batches written by older versions still decode. Visit events are never
+  evicted by the queue limit.
 
 ## [3.11.0] - 2026-09-28
 

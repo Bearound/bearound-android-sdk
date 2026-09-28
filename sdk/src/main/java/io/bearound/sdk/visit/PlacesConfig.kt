@@ -13,11 +13,11 @@ import java.net.URL
 import java.util.Locale
 
 /**
- * Body of `GET /sdk/places/nearby` (REQ-013, REQ-021, D-14). The list keeps the name
- * `places` for payload compatibility, but every item is an environment (D-23).
+ * Body of `GET /sdk/places/nearby`. The list keeps the name
+ * `places` for payload compatibility, but every item is an environment.
  *
  * Only the circle of each geometry is used on device: `GeofencingClient` accepts nothing
- * else, and the ingest decides the environment from the coordinates (design 2.4a).
+ * else, and the ingest decides the environment from the coordinates.
  */
 internal data class PlacesConfig(
     val origin: Coordinate,
@@ -55,7 +55,7 @@ internal data class PlacesConfig(
                 origin = origin,
                 refreshAfterMeters = root.getDouble("refreshAfterMeters"),
                 maxAgeSeconds = root.getDouble("maxAgeSeconds"),
-                // The API defaults the flag to true (D-13); an absent field keeps that default.
+                // The API defaults the flag to true; an absent field keeps that default.
                 visitDetectionEnabled = root.optBoolean("visit_detection_enabled", true),
                 places = places
             )
@@ -89,7 +89,7 @@ internal data class PlacesConfig(
 }
 
 internal sealed class PlacesFetchResult {
-    /** [body] is persisted verbatim, so the cache is exactly what the API said (D-22). */
+    /** [body] is persisted verbatim, so the cache is exactly what the API said. */
     data class Updated(val body: String, val config: PlacesConfig, val etag: String?) : PlacesFetchResult()
     object NotModified : PlacesFetchResult()
     data class Failed(val error: Throwable) : PlacesFetchResult()

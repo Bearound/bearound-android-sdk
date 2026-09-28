@@ -2,20 +2,19 @@ package io.bearound.sdk.models
 
 import io.bearound.sdk.visit.PlacesConfigClient
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** sdk-visit-cohesion REQ-004: the SDK talks to one host, the ingest's. */
+/** The SDK talks to one host, `apiBaseURL`. */
 class SDKConfigurationTest {
 
     private val config = SDKConfiguration(businessToken = "token", appId = "app")
 
     @Test
-    fun `the configuration has no Control Hub host any more`() {
-        val members = SDKConfiguration::class.java.declaredFields.map { it.name } +
-            SDKConfiguration::class.java.declaredMethods.map { it.name }
-        assertFalse(members.any { it.contains("controlHub", ignoreCase = true) })
+    fun `apiBaseURL is the only host in the configuration`() {
+        val urlFields = SDKConfiguration::class.java.declaredFields.map { it.name }
+            .filter { it.contains("url", ignoreCase = true) }
+        assertEquals(listOf("apiBaseURL"), urlFields)
     }
 
     @Test
