@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.13.0] - 2026-09-29
+
+### Added
+- **Rich push notifications rendered by the SDK.** A data-only FCM message carrying
+  `data["bearound_rich"]` (contract version `1`) is now built and posted by the SDK itself,
+  inside `BeAroundSDK.handleRemoteMessage`: it works with the SDK's optional
+  `BearoundMessagingService` and with a host `FirebaseMessagingService` that forwards
+  messages to `handleRemoteMessage`. Formats:
+  - `IMAGE`: a `BigPictureStyle` notification.
+  - `TWO_IMAGES`: two image cards side by side, each with its caption and its own tap target.
+  - `CAROUSEL`: one card at a time with previous/next arrows; the arrows re-post the same
+    notification with the new card, from the cards already delivered (no payload re-fetch).
+  - `PLAY`: the cover image with a play glyph; tapping opens the video URL.
+
+  When the push marker is measurable, each image is fetched through the tracker view
+  endpoint (`push:view`, with the card index) and each http(s) card tap goes through the
+  tracker click endpoint (`push:click`, with the card index); deep links open directly. Every
+  tap still reports the push `open` through the existing open measurement, via an invisible
+  SDK Activity (allowed by the Android 12+ notification trampoline rules). The received
+  measurement is unchanged. If an image cannot be downloaded, the notification degrades to
+  title and body. An unknown contract version renders title and body only.
+
+  The notification uses the host's FCM default channel
+  (`com.google.firebase.messaging.default_notification_channel_id`) when it exists, otherwise
+  an SDK channel `bearound_rich_push` ("Promotions", localized pt/es). Small icon: the host's
+  FCM default notification icon when declared, otherwise the app icon. The manifest now
+  declares `RichNotificationTrampolineActivity` and `RichNotificationActionReceiver` (both
+  `exported="false"`).
+- **Push token registration reports the SDK version.** The `device` object carries
+  `sdkVersion` next to `pushToken`, so the backend can tell which devices render rich push.
+  After an SDK upgrade the token is re-sent once so the new version is reported.
+
 ## [3.12.0] - 2026-09-28
 
 ### Added

@@ -2,4 +2,8 @@
 <resources>
     <string name="title_notification_sdk">Monitoramento de Beacons</string>
     <string name="subtitle_notification_sdk">Execução contínua em segundo plano</string>
+    <string name="bearound_rich_push_channel_name">Promoções</string>
+    <string name="bearound_rich_push_previous">Anterior</string>
+    <string name="bearound_rich_push_next">Próximo</string>
+    <string name="bearound_rich_push_play">Reproduzir vídeo</string>
 </resources>

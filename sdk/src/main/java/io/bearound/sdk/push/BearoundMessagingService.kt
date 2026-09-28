@@ -37,6 +37,9 @@ import io.bearound.sdk.BeAroundSDK
  * }
  * ```
  *
+ * Rich push formats (image, two images, carousel, play) arrive as data-only messages and are
+ * rendered by the SDK inside `handleRemoteMessage`, so both wirings above show them.
+ *
  * This class is intentionally **not** declared in the SDK's own manifest: `firebase-messaging`
  * is a `compileOnly` dependency, so auto-registering it would crash apps that don't bundle
  * Firebase. It stays inert in the `.aar` until you register it.
