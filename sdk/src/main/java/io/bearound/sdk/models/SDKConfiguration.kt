@@ -195,6 +195,12 @@ data class SDKConfiguration(
 
     val apiBaseURL: String = "https://ingest.bearound.io"
 
+    /**
+     * Control Hub API, which serves the visit-detection config (`GET /sdk/places/nearby`).
+     * [apiBaseURL] is the ingest host and does not serve it. Same value as the iOS SDK.
+     */
+    internal val controlHubBaseURL: String = "https://chapi.bearound.io"
+
     // NOTE: the old precisionScanDuration/PauseDuration/CycleCount/CycleInterval props
     // described a manual scan/pause duty cycle the SDK no longer runs — scanning is
     // continuous and the OS handles duty-cycling; precision now only drives the scan

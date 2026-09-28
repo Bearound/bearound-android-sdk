@@ -48,6 +48,13 @@ import io.bearound.sdk.utilities.PushTokenStore
 import io.bearound.sdk.utilities.RegisterStore
 import io.bearound.sdk.utilities.SDKConfigStorage
 import io.bearound.sdk.utilities.SecureStorage
+import io.bearound.sdk.utilities.LocationCollector
+import io.bearound.sdk.visit.IngestVisitEventSink
+import io.bearound.sdk.visit.PlacesConfigClient
+import io.bearound.sdk.visit.VisitController
+import io.bearound.sdk.visit.VisitDetectorFactory
+import io.bearound.sdk.visit.VisitFix
+import io.bearound.sdk.visit.VisitStateStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -78,7 +85,7 @@ class BeAroundSDK private constructor() {
          * exceeds the limit it is malformed, not splittable. Everything else (408, 429,
          * 5xx, transport errors) is treated as transient and retried whole.
          */
-        private val PERMANENT_HTTP_CODES = setOf(400, 401, 403, 404, 413, 422)
+        internal val PERMANENT_HTTP_CODES = setOf(400, 401, 403, 404, 413, 422)
 
         /**
          * Minimum gap between broadcast-triggered background flushes. Beacons
@@ -539,6 +546,9 @@ class BeAroundSDK private constructor() {
             restartSyncTimer()
         }
 
+        // Foreground is where the soft fence can see at all (AND1-00): evaluate right away.
+        tickVisitDetection("foreground", force = true)
+
         dispatchToListener { it.onAppStateChanged(isInBackground = false) }
     }
 
@@ -996,6 +1006,9 @@ class BeAroundSDK private constructor() {
         // stopped on region exit. BackgroundScanManager.enableBackgroundScanning() (above)
         // already runs the low-power filter scan that wakes us when a beacon appears.
 
+        // Visit detection: independent of the beacon eye, self-gated (REQ-014, iOS parity).
+        startVisitDetection()
+
         // Register the device with the backend even when no beacons are in range so that
         // the device appears in the Control Hub on first launch (iOS parity).
         scope.launch { registerDeviceIfNeeded() }
@@ -1079,6 +1092,7 @@ class BeAroundSDK private constructor() {
     }
 
     fun stopScanning() {
+        stopVisitDetection()
         wifiNudgeHandler.removeCallbacks(wifiNudgeRunnable)
         encounterMesh?.stop()
         beaconManager.stopScanning()
@@ -1455,6 +1469,9 @@ class BeAroundSDK private constructor() {
     }
 
     private fun syncBeacons(forceBackground: Boolean = false) {
+        // Every sync wakeup (foreground timer, FGS timer, scan broadcast) is also a visit
+        // tick; the controller throttles it and does nothing without a fix.
+        tickVisitDetection("sync")
         scope.launch { syncBeaconsAwait(forceBackground) }
     }
 
@@ -2028,8 +2045,100 @@ class BeAroundSDK private constructor() {
             BeaconScanService.start(context, fgConfig)
         }
 
+        startVisitDetection()
+
         Log.d(TAG, "Scanning restarted from background")
     }
+
+    // region Visit detection
+
+    private val visitLock = Any()
+    private var visitController: VisitController? = null
+    private val visitLocationCollector by lazy { LocationCollector(context) }
+
+    /**
+     * The visit controller for the current configuration, created on first use. A new token
+     * swaps only the config client, like iOS; the cached list is re-fetched on the next
+     * refresh trigger.
+     */
+    private fun visitController(): VisitController? {
+        val config = configuration ?: return null
+        val fetcher = PlacesConfigClient(config.controlHubBaseURL, config.businessToken)
+        synchronized(visitLock) {
+            visitController?.let {
+                it.fetcher = fetcher
+                return it
+            }
+            val store = VisitStateStore(context)
+            val sink = IngestVisitEventSink(
+                deviceSnapshot = ::visitDeviceSnapshot,
+                post = ::postVisitPayload,
+                permanentHttpCodes = PERMANENT_HTTP_CODES
+            )
+            return VisitController(
+                store = store,
+                fetcher = fetcher,
+                sink = sink,
+                permissions = { VisitDetectorFactory.readPermissions(context) },
+                locationAllowedByHost = { DataCollectionPolicyStore.current.location },
+                lastKnownFix = { visitLocationCollector.lastKnown()?.let(VisitFix::fromDeviceLocation) },
+                createDetector = { mode, tracker -> VisitDetectorFactory.create(mode, context, store, tracker) }
+            ).also { visitController = it }
+        }
+    }
+
+    private fun startVisitDetection() {
+        scope.launch { visitController()?.start() }
+    }
+
+    private fun stopVisitDetection() {
+        val controller = synchronized(visitLock) { visitController } ?: return
+        scope.launch { controller.stop() }
+    }
+
+    /**
+     * A visit tick from an existing wakeup. Runs only while the host wants scanning
+     * (persisted, so a revived process knows), exactly like the rest of the background work.
+     */
+    internal fun tickVisitDetection(trigger: String, force: Boolean = false) {
+        scope.launch { tickVisitDetectionAwait(trigger, force) }
+    }
+
+    /** Awaitable form, for callers that own an execution window (workers). */
+    internal suspend fun tickVisitDetectionAwait(trigger: String, force: Boolean = false) {
+        if (!isConfigured || !wasScanningEnabled()) return
+        val controller = visitController() ?: return
+        if (!controller.isStarted) controller.start() else controller.tick(trigger, force)
+    }
+
+    private fun visitDeviceSnapshot(): io.bearound.sdk.models.UserDevice? {
+        if (!isConfigured) return null
+        return deviceInfoCollector.collectDeviceInfo(
+            locationPermission = getLocationPermissionStatus(),
+            bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off",
+            appInForeground = !isInBackground
+        )
+    }
+
+    /** One visit payload, straight to `/ingest`: never through the beacon retry drain. */
+    private suspend fun postVisitPayload(
+        userDevice: io.bearound.sdk.models.UserDevice,
+        syncTrigger: String
+    ): Result<Unit> {
+        val client = apiClient ?: return Result.failure(IllegalStateException("SDK not configured"))
+        val info = sdkInfo ?: return Result.failure(IllegalStateException("SDK not configured"))
+        var outcome: Result<Unit> = Result.failure(IllegalStateException("no response"))
+        client.sendBeacons(emptyList(), info, userDevice, userProperties, syncTrigger) { outcome = it }
+        val fixAt = userDevice.location?.timestamp
+        DetectionLogStore.append(
+            context,
+            type = "Visit",
+            detail = if (outcome.isSuccess) "sent (fix at $fixAt)" else "send failed (fix at $fixAt): ${outcome.exceptionOrNull()?.message}"
+        )
+        return outcome
+    }
+
+    // endregion
     
     // endregion
 }

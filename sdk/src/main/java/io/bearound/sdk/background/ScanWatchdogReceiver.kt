@@ -79,6 +79,10 @@ class ScanWatchdogReceiver : BroadcastReceiver() {
                 ImmediateSyncWorker.enqueue(context.applicationContext)
             }
 
+            // Visit tick (soft fence config refresh / native re-check). Cheap, and a no-op
+            // without a fix, which is the norm here without background location (AND1-00).
+            if (shouldBeScanning) sdk.tickVisitDetection("watchdog")
+
             // Reschedule ONLY while scanning is still wanted: after stopScanning() the
             // old unconditional reschedule kept the alarm waking the process forever.
             if (shouldBeScanning) {

@@ -116,6 +116,9 @@ class BeaconSyncWorker(
 
             ensureActive()
 
+            // Visit tick inside this worker's window, so a pending visit event can land too.
+            if (wantsScanning) sdk.tickVisitDetectionAwait("worker")
+
             // Check if there are pending beacons or failed batches
             val hasPendingData = sdk.hasPendingBeacons()
 
