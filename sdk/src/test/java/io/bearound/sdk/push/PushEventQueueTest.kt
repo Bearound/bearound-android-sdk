@@ -89,6 +89,42 @@ class PushEventQueueTest {
 
     // endregion
 
+    // region HttpPushEventTransport.outcomeForStatus (pure status -> outcome mapping)
+
+    @Test
+    fun `2xx status codes drain`() {
+        assertEquals(PushHitOutcome.DRAIN, HttpPushEventTransport.outcomeForStatus(200))
+        assertEquals(PushHitOutcome.DRAIN, HttpPushEventTransport.outcomeForStatus(204))
+        assertEquals(PushHitOutcome.DRAIN, HttpPushEventTransport.outcomeForStatus(299))
+    }
+
+    @Test
+    fun `400 drains`() {
+        assertEquals(PushHitOutcome.DRAIN, HttpPushEventTransport.outcomeForStatus(400))
+    }
+
+    @Test
+    fun `404 drains`() {
+        assertEquals(PushHitOutcome.DRAIN, HttpPushEventTransport.outcomeForStatus(404))
+    }
+
+    @Test
+    fun `429 keeps`() {
+        assertEquals(PushHitOutcome.KEEP, HttpPushEventTransport.outcomeForStatus(429))
+    }
+
+    @Test
+    fun `500 keeps`() {
+        assertEquals(PushHitOutcome.KEEP, HttpPushEventTransport.outcomeForStatus(500))
+    }
+
+    @Test
+    fun `503 keeps`() {
+        assertEquals(PushHitOutcome.KEEP, HttpPushEventTransport.outcomeForStatus(503))
+    }
+
+    // endregion
+
     // region URL building
 
     @Test
@@ -270,6 +306,88 @@ class PushEventQueueTest {
         PushEventQueue.seedForTest(context, PushEventVerb.RECEIVED, sid = "sid-fresh", enqueuedAt = now)
 
         assertEquals(1, PushEventQueue.sizeForTest(context))
+    }
+
+    @Test
+    fun `queue caps at 200 entries and it is specifically the oldest that is dropped`() {
+        PushEventQueue.transport = PushEventTransport { PushHitOutcome.KEEP } // never drains
+        PushEventQueue.scheduleRetry = { _, _ -> }
+
+        val now = System.currentTimeMillis()
+        repeat(205) { i ->
+            PushEventQueue.seedForTest(context, PushEventVerb.RECEIVED, sid = "sid-$i", enqueuedAt = now + i)
+        }
+
+        // sid-0..sid-4 are the 5 oldest (lowest enqueuedAt): identity check, not just count.
+        val survivors = PushEventQueue.sidsForTest(context)
+        assertEquals(PushEventQueue.MAX_ENTRIES, survivors.size)
+        (0 until 5).forEach { i ->
+            assertFalse("sid-$i (oldest) must have been evicted", survivors.contains("sid-$i"))
+        }
+        (5 until 205).forEach { i ->
+            assertTrue("sid-$i must have survived", survivors.contains("sid-$i"))
+        }
+    }
+
+    @Test
+    fun `flush evicts entries older than 7 days even when they were never re-enqueued`() {
+        // Transport must NEVER be reached: eviction happens on the read/save inside
+        // flush(), before any entry is claimed and sent.
+        val sendCount = AtomicInteger(0)
+        PushEventQueue.transport = PushEventTransport { sendCount.incrementAndGet(); PushHitOutcome.DRAIN }
+
+        val now = System.currentTimeMillis()
+        // seedForTestWithoutEviction: a plain seedForTest() would evict this stale entry
+        // on write, proving nothing about flush()'s OWN eviction step.
+        PushEventQueue.seedForTestWithoutEviction(
+            context,
+            PushEventVerb.RECEIVED,
+            sid = "sid-stale",
+            enqueuedAt = now - PushEventQueue.MAX_AGE_MS - 1_000
+        )
+        assertEquals(1, PushEventQueue.sizeForTest(context))
+
+        PushEventQueue.flush(context)
+        Thread.sleep(200)
+
+        assertEquals(0, PushEventQueue.sizeForTest(context))
+        assertEquals("the stale entry must be dropped by eviction, not sent", 0, sendCount.get())
+    }
+
+    // endregion
+
+    // region single-flight retry
+
+    @Test
+    fun `repeated flush of a kept entry never schedules more than one pending retry`() {
+        val scheduledDelays = mutableListOf<Long>()
+        // Deterministic: capture the scheduled action instead of firing it, so the test
+        // controls exactly when (and how many times) a retry would run.
+        PushEventQueue.scheduleRetry = { delayMs, _ -> synchronized(scheduledDelays) { scheduledDelays.add(delayMs) } }
+        val sendCount = AtomicInteger(0)
+        val latch = CountDownLatch(1)
+        PushEventQueue.transport = PushEventTransport {
+            sendCount.incrementAndGet()
+            latch.countDown()
+            PushHitOutcome.KEEP
+        }
+
+        PushEventQueue.enqueue(context, PushEventVerb.OPEN, marker("sid-single-retry"))
+        awaitFlush(latch)
+
+        // The first flush's send KEEPs and schedules a retry; the entry must now be
+        // claimed for the whole retry chain (see keepAndBackoff), so further flushes must
+        // not pick it up again.
+        assertEquals(1, PushEventQueue.pendingRetryCountForTest())
+
+        PushEventQueue.flush(context)
+        PushEventQueue.flush(context)
+        PushEventQueue.flush(context)
+        Thread.sleep(200)
+
+        assertEquals("only the original send, no re-claim by a later flush", 1, sendCount.get())
+        assertEquals("still exactly one pending retry, not one per extra flush", 1, scheduledDelays.size)
+        assertEquals(1, PushEventQueue.pendingRetryCountForTest())
     }
 
     // endregion

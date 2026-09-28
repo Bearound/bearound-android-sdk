@@ -149,14 +149,14 @@ allprojects {
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("com.github.Bearound:bearound-android-sdk:3.10.0")
+    implementation("com.github.Bearound:bearound-android-sdk:3.11.0")
 }
 ```
 
 ```gradle
 // build.gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:3.10.0'
+    implementation 'com.github.Bearound:bearound-android-sdk:3.11.0'
 }
 ```
 
@@ -166,7 +166,7 @@ for how they wire together with one line):
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:3.10.0'
+    implementation 'com.github.Bearound:bearound-android-sdk:3.11.0'
     implementation 'com.github.Bearound:bearound-telemetry-android-sdk:v0.1.2'
 }
 ```
@@ -694,8 +694,9 @@ events through the Bearound tracker: `received` when the FCM message is processe
 when a tap on the notification launches or resumes the app. The SDK never renders
 notifications; this only measures taps on whatever the host app or FCM rendered.
 
-**Automatic tap tracking** requires no wiring: `configure()` registers an
-`Application.ActivityLifecycleCallbacks` that checks every `onActivityCreated`/
+**Automatic tap tracking** requires no wiring: the SDK registers an
+`Application.ActivityLifecycleCallbacks` (as early as the SDK's first `getInstance(context)`
+call, so it is active before `configure()` runs) that checks every `onActivityCreated`/
 `onActivityResumed` for the marker.
 
 **Hosts that route notification taps manually** (a custom `PendingIntent`, `onNewIntent`,
@@ -718,6 +719,13 @@ rather than a native `Intent`, use `trackNotificationOpened` instead:
 ```kotlin
 BeAroundSDK.getInstance(this).trackNotificationOpened(data) // data["bearound"] is read
 ```
+
+The automatic `ActivityLifecycleCallbacks` hook only sees intents delivered to an
+**Activity's own** `onCreate`/`onResume`; on a bridge (Flutter/React Native), the tap
+that cold-launches the app is often consumed by the messaging plugin before the SDK's
+native hook ever runs. Bridges should call `trackNotificationOpened` from their own
+`getInitialMessage`/`getInitialNotification` equivalent for a cold launch, in addition to
+wiring it into the plugin's foreground/background tap listeners.
 
 Both APIs enqueue into a small persisted queue (capped at 200 entries / 7 days, deduped per
 event, retried with backoff on a transient failure) that requires no business token, so a
