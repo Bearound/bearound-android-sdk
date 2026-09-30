@@ -10,26 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [3.14.0] - 2026-09-30
 
 ### Added
-- **Wi-Fi visit matching.** The places configuration may now carry `knownApIds` per place
-  (hashed access point identities, the same `apId` the SDK already reports). The SDK matches
-  the visible access points against that list and sends a `visit` arrival and departure with
-  the same dwell rule as the GPS visit: arrival after the known access point is seen across
-  the dwell with no conclusive scan without it, departure once it has been gone for the
-  dwell. Stale (older than 5 minutes) or empty scan results never count either way.
-- **Native geofence path:** places with known access points also register
-  `GEOFENCE_TRANSITION_ENTER`, which asks the system for one scan (inside the OS scan
-  throttle) and never counts as an arrival by itself. The soft fence path only reads the
-  cached scan results at its existing wakeups.
+- **Wi-Fi visit matching.** On places configured for it, the SDK also detects a visit through
+  the Wi-Fi networks around the device, reported as an ordinary `visit` event.
 
 ### Changed
-- **One stop per place.** GPS and Wi-Fi share the open stop of an environment: a Wi-Fi arrival
-  on an open GPS stop only adds its access points; a Wi-Fi departure closes only a stop opened
-  by Wi-Fi; a GPS departure closes any stop and carries the matched access points.
-- A visit event from a Wi-Fi-only stop has no location. Its matched access points go first in
-  `wifis[]`, stamped with the time they were seen, and a stored batch without a location now
-  expires by that time.
-- A config without `knownApIds` still parses (empty list), and a stop persisted by 3.13.0
-  still loads.
+- A visit event may be sent without a location. Configurations and state stored by 3.13.0
+  still load.
 
 No new permission is declared or requested.
 
