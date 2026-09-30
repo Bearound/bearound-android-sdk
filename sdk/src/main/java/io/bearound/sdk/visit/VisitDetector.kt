@@ -409,7 +409,7 @@ internal class WifiVisitRunner(
         if (discardStop) tracker.discardWifiStop()
     }
 
-    private fun isActive(config: PlacesConfig?) =
+    fun isActive(config: PlacesConfig?) =
         config != null && config.visitDetectionEnabled && allowedByHost()
 }
 

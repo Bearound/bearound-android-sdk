@@ -76,8 +76,18 @@ internal object VisitDetectorFactory {
         store: VisitStateStore,
         tracker: VisitStopTracker
     ): VisitDetector = when (mode) {
-        VisitDetectionMode.NATIVE_GEOFENCE ->
-            NativeGeofenceVisitDetector(PlayServicesGeofenceRegistrar(context), store, tracker)
+        VisitDetectionMode.NATIVE_GEOFENCE -> {
+            val collector = WifiCollector(context)
+            val cache = WifiCacheReader.of(collector)
+            NativeGeofenceVisitDetector(
+                PlayServicesGeofenceRegistrar(context),
+                store,
+                tracker,
+                wifi = WifiVisitRunner(tracker, cache),
+                nudgeScan = collector::nudgeScan,
+                wifiCache = cache
+            )
+        }
         VisitDetectionMode.SOFT_FENCE ->
             SoftFenceVisitDetector(store, tracker, WifiVisitRunner(tracker, WifiCacheReader.of(WifiCollector(context))))
     }

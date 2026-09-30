@@ -59,6 +59,9 @@ internal interface GeofenceRegistrar {
  * with the app killed: the geofence broadcast goes to [VisitGeofenceReceiver], declared in
  * the SDK manifest, which revives the process.
  *
+ * - ENTER is registered only for places with known Wi-Fi access points. It is never an arrival:
+ *   it asks for one scan (inside the platform scan throttle) and feeds the cached results to
+ *   the [WifiVisitRunner] as a round. DWELL and EXIT are rounds too;
  * - DWELL (loitering delay = `minDwellMinutes`) sends the arrival with the triggering fix;
  * - EXIT of the same environment sends the departure: the stop position with the real time
  *   of the exit fix (the exit fix itself lies outside the environment by definition, and the
@@ -73,7 +76,13 @@ internal class NativeGeofenceVisitDetector(
     private val store: VisitStateStore,
     private val tracker: VisitStopTracker,
     private val clock: () -> Long = System::currentTimeMillis,
-    private val elapsedRealtime: () -> Long = SystemClock::elapsedRealtime
+    private val elapsedRealtime: () -> Long = SystemClock::elapsedRealtime,
+    /** Wi-Fi matching on geofence transitions. Null: GPS only. */
+    private val wifi: WifiVisitRunner? = null,
+    /** Asks the platform for one scan; the platform throttles it. Never loops. */
+    private val nudgeScan: () -> Unit = {},
+    /** The platform's cached scan results. Empty without the background location grant. */
+    private val wifiCache: WifiCacheReader = WifiCacheReader { emptyList() }
 ) : VisitDetector {
 
     companion object {
@@ -99,7 +108,9 @@ internal class NativeGeofenceVisitDetector(
 
         /**
          * The geofences for [config]: the refresh fence plus the nearest targets, up to
-         * [MAX_GEOFENCES] in total.
+         * [MAX_GEOFENCES] in total. Places with known access points also register ENTER, which
+         * only triggers a Wi-Fi round (the initial trigger stays DWELL, so a device already
+         * inside gets no ENTER on registration).
          */
         fun plan(config: PlacesConfig): List<VisitGeofence> {
             val fences = mutableListOf<VisitGeofence>()
@@ -123,7 +134,13 @@ internal class NativeGeofenceVisitDetector(
                         latitude = place.center.lat,
                         longitude = place.center.lng,
                         radiusMeters = maxOf(place.radiusMeters, MIN_TARGET_RADIUS_METERS).toFloat(),
-                        transitions = Geofence.GEOFENCE_TRANSITION_DWELL or Geofence.GEOFENCE_TRANSITION_EXIT,
+                        transitions = if (place.knownApIds.isNotEmpty()) {
+                            Geofence.GEOFENCE_TRANSITION_ENTER or
+                                Geofence.GEOFENCE_TRANSITION_DWELL or
+                                Geofence.GEOFENCE_TRANSITION_EXIT
+                        } else {
+                            Geofence.GEOFENCE_TRANSITION_DWELL or Geofence.GEOFENCE_TRANSITION_EXIT
+                        },
                         loiteringDelayMs = dwellMinutes * 60_000
                     )
                 }
@@ -161,7 +178,10 @@ internal class NativeGeofenceVisitDetector(
 
     override val mode = VisitDetectionMode.NATIVE_GEOFENCE
 
+    private var config: PlacesConfig? = null
+
     override fun apply(config: PlacesConfig?, now: Long) {
+        this.config = config
         when {
             // No list yet (first run without a successful fetch): nothing native.
             config == null -> Unit
@@ -226,6 +246,25 @@ internal class NativeGeofenceVisitDetector(
     override fun tearDown() {
         registrar.removeAll()
         store.nativeRegistration = null
+        wifi?.reset()
+    }
+
+    /**
+     * One Wi-Fi round for a transition of a place with known access points. ENTER asks for one
+     * scan (a single burst, inside the platform throttle) and reads the cache; DWELL and EXIT
+     * read the cache only. Without `ACCESS_BACKGROUND_LOCATION` the cache is empty and the
+     * round is inconclusive.
+     */
+    private fun runWifiRound(transition: Int) {
+        val runner = wifi ?: return
+        val config = config
+        if (!runner.isActive(config)) {
+            runner.reset(discardStop = true)
+            return
+        }
+        if (transition == Geofence.GEOFENCE_TRANSITION_ENTER) nudgeScan()
+        val observations = wifiCache.read()
+        runner.onRound(WifiRound(clock(), observations, conclusive = observations.isNotEmpty()), config)
     }
 
     /** @return true when the refresh fence was exited and the config must be fetched again. */
@@ -238,12 +277,17 @@ internal class NativeGeofenceVisitDetector(
             return false
         }
         var refresh = false
+        var wifiEnvironment = false
         for (requestId in signal.requestIds) {
             if (requestId == REFRESH_FENCE_ID) {
                 if (signal.transition == Geofence.GEOFENCE_TRANSITION_EXIT) refresh = true
                 continue
             }
             val environmentId = environmentIdOf(requestId) ?: continue
+            if (config?.places?.any { it.environmentId == environmentId && it.knownApIds.isNotEmpty() } == true) {
+                wifiEnvironment = true
+            }
+            // ENTER is only a Wi-Fi round trigger: never an arrival, and it needs no fix.
             val fix = signal.fix ?: continue
             when (signal.transition) {
                 Geofence.GEOFENCE_TRANSITION_DWELL -> if (tracker.arrive(environmentId, fix)) {
@@ -259,6 +303,7 @@ internal class NativeGeofenceVisitDetector(
                 }
             }
         }
+        if (wifiEnvironment) runWifiRound(signal.transition)
         return refresh
     }
 }

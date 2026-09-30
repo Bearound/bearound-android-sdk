@@ -69,21 +69,24 @@ internal class WifiVisitMatcher {
             val dwellMs = (place.minDwellMinutes ?: SoftFenceVisitDetector.DEFAULT_MIN_DWELL_MINUTES)
                 .coerceAtLeast(1) * 60_000L
             val id = place.environmentId
+            // Dated by the sightings themselves (the round may read a cache up to minutes old).
+            val firstSeen = matched.minOfOrNull { it.timestamp } ?: round.at
+            val lastSeen = matched.maxOfOrNull { it.timestamp } ?: round.at
 
             when (val state = states[id] ?: State.Idle) {
                 State.Idle -> if (matched.isNotEmpty()) {
-                    states[id] = State.Candidate(round.at, round.at, matched)
+                    states[id] = State.Candidate(firstSeen, lastSeen, matched)
                 }
                 is State.Candidate -> if (matched.isEmpty()) {
                     states[id] = State.Idle
                 } else if (round.at - state.first >= dwellMs) {
-                    states[id] = State.Open(round.at, matched)
+                    states[id] = State.Open(lastSeen, matched)
                     actions += WifiVisitAction.Arrive(id, state.first, matched)
                 } else {
-                    states[id] = state.copy(last = round.at, observations = matched)
+                    states[id] = state.copy(last = lastSeen, observations = matched)
                 }
                 is State.Open -> if (matched.isNotEmpty()) {
-                    states[id] = State.Open(round.at, matched)
+                    states[id] = State.Open(lastSeen, matched)
                 } else if (round.at - state.last >= dwellMs) {
                     states[id] = State.Idle
                     actions += WifiVisitAction.Depart(id, state.last, state.observations)

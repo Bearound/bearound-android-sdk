@@ -6,9 +6,11 @@ import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.Status
 import com.google.android.gms.location.Geofence
 import com.google.android.gms.location.GeofenceStatusCodes
+import io.bearound.sdk.models.WifiObservation
 import io.bearound.sdk.visit.VisitTestFixtures.ENV_ID
 import io.bearound.sdk.visit.VisitTestFixtures.ORIGIN_LAT
 import io.bearound.sdk.visit.VisitTestFixtures.ORIGIN_LNG
+import io.bearound.sdk.visit.VisitTestFixtures.WIFI_ENV_ID
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -292,5 +294,99 @@ class NativeGeofenceVisitDetectorTest {
         controller.tick("test")
 
         assertEquals(VisitDetectionMode.SOFT_FENCE, controller.currentMode)
+    }
+
+    private fun wifiConfig(): PlacesConfig {
+        store.saveConfig(VisitTestFixtures.configBody(withWifiPlace = true), "etag-1", now)
+        return store.loadConfig()!!.config
+    }
+
+    @Test
+    fun `ENTER is registered only for the place with known APs, DWELL and EXIT for the others`() {
+        val fences = NativeGeofenceVisitDetector.plan(wifiConfig()).associateBy { it.requestId }
+        val dwellExit = Geofence.GEOFENCE_TRANSITION_DWELL or Geofence.GEOFENCE_TRANSITION_EXIT
+
+        assertEquals(
+            Geofence.GEOFENCE_TRANSITION_ENTER or dwellExit,
+            fences.getValue(NativeGeofenceVisitDetector.TARGET_PREFIX + WIFI_ENV_ID).transitions
+        )
+        assertEquals(dwellExit, fences.getValue(NativeGeofenceVisitDetector.TARGET_PREFIX + ENV_ID).transitions)
+        assertEquals(dwellExit, fences.getValue(NativeGeofenceVisitDetector.TARGET_PREFIX + "env-2").transitions)
+        assertEquals(Geofence.GEOFENCE_TRANSITION_EXIT, fences.getValue(NativeGeofenceVisitDetector.REFRESH_FENCE_ID).transitions)
+        // The budget is untouched.
+        assertTrue(NativeGeofenceVisitDetector.plan(bigConfig()).size <= NativeGeofenceVisitDetector.MAX_GEOFENCES)
+    }
+
+    private inner class WifiHarness {
+        val known = "9f3a1c02b7d4e688"
+        var nudges = 0
+        var cache: List<WifiObservation> = emptyList()
+        val tracker = VisitStopTracker(store, queue) { now }
+        val detector = NativeGeofenceVisitDetector(
+            FakeRegistrar(), store, tracker, clock = { now }, elapsedRealtime = { 5_000L },
+            wifi = WifiVisitRunner(tracker, { cache }, allowedByHost = { true }),
+            nudgeScan = { nudges++ },
+            wifiCache = WifiCacheReader { cache }
+        ).also { it.apply(wifiConfig(), now) }
+        val id = NativeGeofenceVisitDetector.TARGET_PREFIX + WIFI_ENV_ID
+
+        fun see(apId: String) {
+            cache = listOf(WifiObservation(apId = apId, timestamp = now))
+        }
+
+        fun signal(transition: Int) = detector.onTransition(GeofenceSignal(transition, listOf(id), fix = null))
+    }
+
+    @Test
+    fun `ENTER nudges one scan and is never an arrival by itself`() {
+        val h = WifiHarness()
+        h.see(h.known)
+
+        h.signal(Geofence.GEOFENCE_TRANSITION_ENTER)
+
+        assertEquals(1, h.nudges)
+        assertNull(store.openStop)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test
+    fun `ENTER for a place without known APs does not scan`() {
+        val h = WifiHarness()
+        val other = NativeGeofenceVisitDetector.TARGET_PREFIX + ENV_ID
+
+        h.detector.onTransition(GeofenceSignal(Geofence.GEOFENCE_TRANSITION_ENTER, listOf(other), fix = null))
+
+        assertEquals(0, h.nudges)
+    }
+
+    @Test
+    fun `DWELL and EXIT are Wi-Fi rounds that open and close the stop`() {
+        val h = WifiHarness()
+        h.see(h.known)
+        h.signal(Geofence.GEOFENCE_TRANSITION_ENTER)
+        val enterAt = now
+
+        now += 5 * 60_000L
+        h.see(h.known)
+        h.signal(Geofence.GEOFENCE_TRANSITION_DWELL)
+        assertEquals(listOf(VisitEventKind.ARRIVAL), sent.map { it.kind })
+        assertEquals(enterAt, sent[0].timestamp)
+
+        now += 7 * 60_000L
+        h.see("ffffffffffffffff")
+        h.signal(Geofence.GEOFENCE_TRANSITION_EXIT)
+        assertEquals(listOf(VisitEventKind.ARRIVAL, VisitEventKind.DEPARTURE), sent.map { it.kind })
+        assertEquals(1, h.nudges) // only ENTER scans
+    }
+
+    @Test
+    fun `without the background grant the cache is empty and the round is inconclusive`() {
+        val h = WifiHarness()
+        h.signal(Geofence.GEOFENCE_TRANSITION_ENTER)
+        now += 5 * 60_000L
+        h.signal(Geofence.GEOFENCE_TRANSITION_DWELL)
+
+        assertNull(store.openStop)
+        assertTrue(sent.isEmpty())
     }
 }
