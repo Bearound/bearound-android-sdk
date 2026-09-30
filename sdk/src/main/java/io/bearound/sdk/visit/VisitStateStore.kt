@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -79,22 +80,52 @@ internal class VisitStateStore(context: Context) {
 
     // region Stops
 
-    /** A stop whose arrival was sent and whose departure was not yet. */
-    data class OpenStop(val environmentId: String?, val arrival: VisitFix, val lastInside: VisitFix)
+    /**
+     * A stop whose arrival was sent and whose departure was not yet. ONE stop per environment,
+     * whichever detector opened it: [sources] says who has seen it, and [apIds] are the
+     * matched Wi-Fi access points. A stop opened by Wi-Fi alone has no fix, so [arrival] and
+     * [lastInside] are null and [arrivedAt] is the time of the first sighting.
+     */
+    data class OpenStop(
+        val environmentId: String?,
+        val arrival: VisitFix?,
+        val lastInside: VisitFix?,
+        val arrivedAt: Long = arrival?.timestamp ?: 0L,
+        val sources: Set<VisitSource> = setOf(VisitSource.GPS),
+        val apIds: List<String> = emptyList()
+    )
 
     var openStop: OpenStop?
         get() = readJson(KEY_OPEN_STOP) {
+            val arrival = if (it.has("arrival")) VisitFix.fromJson(it.getJSONObject("arrival")) else null
             OpenStop(
                 environmentId = if (it.has("env")) it.getString("env") else null,
-                arrival = VisitFix.fromJson(it.getJSONObject("arrival")),
-                lastInside = VisitFix.fromJson(it.getJSONObject("lastInside"))
+                arrival = arrival,
+                lastInside = if (it.has("lastInside")) VisitFix.fromJson(it.getJSONObject("lastInside")) else null,
+                // Written before Wi-Fi stops: the arrival fix is the arrival time, GPS is the source.
+                arrivedAt = if (it.has("at")) it.getLong("at") else arrival!!.timestamp,
+                sources = if (it.has("sources")) {
+                    val wires = it.getJSONArray("sources")
+                    (0 until wires.length()).mapNotNull { index -> VisitSource.fromWire(wires.getString(index)) }.toSet()
+                } else {
+                    setOf(VisitSource.GPS)
+                },
+                apIds = if (it.has("apIds")) {
+                    val ids = it.getJSONArray("apIds")
+                    (0 until ids.length()).map { index -> ids.getString(index) }
+                } else {
+                    emptyList()
+                }
             )
         }
         set(value) = writeJson(KEY_OPEN_STOP, value?.let {
             JSONObject().apply {
                 it.environmentId?.let { env -> put("env", env) }
-                put("arrival", it.arrival.toJson())
-                put("lastInside", it.lastInside.toJson())
+                it.arrival?.let { fix -> put("arrival", fix.toJson()) }
+                it.lastInside?.let { fix -> put("lastInside", fix.toJson()) }
+                put("at", it.arrivedAt)
+                put("sources", JSONArray(it.sources.map { source -> source.wire }))
+                put("apIds", JSONArray(it.apIds))
             }
         })
 

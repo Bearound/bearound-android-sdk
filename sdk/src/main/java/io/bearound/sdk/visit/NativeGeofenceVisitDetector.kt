@@ -252,7 +252,7 @@ internal class NativeGeofenceVisitDetector(
                 Geofence.GEOFENCE_TRANSITION_EXIT -> {
                     val open = tracker.openStop() ?: continue
                     if (open.environmentId != environmentId) continue
-                    val departure = open.arrival.copy(timestamp = fix.timestamp, isMocked = fix.isMocked)
+                    val departure = open.arrival?.copy(timestamp = fix.timestamp, isMocked = fix.isMocked) ?: fix
                     if (tracker.depart(environmentId, departure)) {
                         Log.i(TAG, "Geofence EXIT: departure from $environmentId (fix at ${fix.timestamp})")
                     }

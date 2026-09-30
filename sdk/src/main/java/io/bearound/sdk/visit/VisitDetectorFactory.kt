@@ -7,6 +7,7 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
+import io.bearound.sdk.utilities.WifiCollector
 
 /** What the host app was granted, read once per decision. */
 internal data class VisitPermissions(
@@ -77,6 +78,7 @@ internal object VisitDetectorFactory {
     ): VisitDetector = when (mode) {
         VisitDetectionMode.NATIVE_GEOFENCE ->
             NativeGeofenceVisitDetector(PlayServicesGeofenceRegistrar(context), store, tracker)
-        VisitDetectionMode.SOFT_FENCE -> SoftFenceVisitDetector(store, tracker)
+        VisitDetectionMode.SOFT_FENCE ->
+            SoftFenceVisitDetector(store, tracker, WifiVisitRunner(tracker, WifiCacheReader.of(WifiCollector(context))))
     }
 }

@@ -274,11 +274,11 @@ class NativeGeofenceVisitDetectorTest {
         controller.onGeofenceSignal(GeofenceSignal(Geofence.GEOFENCE_TRANSITION_EXIT, listOf(id), exitFix))
 
         assertEquals(listOf(VisitEventKind.ARRIVAL, VisitEventKind.DEPARTURE), sent.map { it.kind })
-        assertEquals(dwellFix.timestamp, sent[0].fix.timestamp)
-        assertEquals(exitFix.timestamp, sent[1].fix.timestamp)
+        assertEquals(dwellFix.timestamp, sent[0].fix!!.timestamp)
+        assertEquals(exitFix.timestamp, sent[1].fix!!.timestamp)
         // The departure is placed at the stop, not at the exit fix outside the environment.
-        assertEquals(dwellFix.latitude, sent[1].fix.latitude, 1e-9)
-        assertEquals("gnss", sent[1].toDeviceLocation().source)
+        assertEquals(dwellFix.latitude, sent[1].fix!!.latitude, 1e-9)
+        assertEquals("gnss", sent[1].toDeviceLocation()!!.source)
     }
 
     @Test

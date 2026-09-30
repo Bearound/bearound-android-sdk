@@ -166,7 +166,10 @@ internal class StoredBatchDrain(
     /** A visit whose fix is past the ingest's capture window would be ignored: drop it. */
     private fun isExpiredVisit(record: OfflineBatchStorage.StoredBatchRecord, now: Long): Boolean {
         if (record.syncTrigger != OfflineBatchStorage.VISIT_SYNC_TRIGGER) return false
-        val fixAt = record.context?.location?.timestamp ?: return false
+        // A Wi-Fi visit without GPS has no fix: its first observation dates it.
+        val fixAt = record.context?.location?.timestamp
+            ?: record.context?.wifis?.firstOrNull()?.timestamp
+            ?: return false
         return now - fixAt > VISIT_MAX_AGE_MS
     }
 }
