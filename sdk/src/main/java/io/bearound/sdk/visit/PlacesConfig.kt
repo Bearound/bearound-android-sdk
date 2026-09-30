@@ -35,7 +35,9 @@ internal data class PlacesConfig(
         /** `point` lat/lng, or the circumscribed circle of a `polygon`. */
         val center: Coordinate,
         val radiusMeters: Double,
-        val minDwellMinutes: Int?
+        val minDwellMinutes: Int?,
+        /** Hashed `apId` values known to belong to the place. Empty when the API sends none. */
+        val knownApIds: List<String> = emptyList()
     )
 
     companion object {
@@ -74,11 +76,19 @@ internal data class PlacesConfig(
                     distanceMeters = item.optDouble("distanceMeters", 0.0),
                     center = it,
                     radiusMeters = geometry.getDouble("radiusMeters"),
-                    minDwellMinutes = if (item.isNull("minDwellMinutes")) null else item.optInt("minDwellMinutes")
+                    minDwellMinutes = if (item.isNull("minDwellMinutes")) null else item.optInt("minDwellMinutes"),
+                    knownApIds = item.optJSONArray("knownApIds").toStringList()
                 )
             }
         } catch (e: Exception) {
             null
+        }
+
+        private fun JSONArray?.toStringList(): List<String> {
+            if (this == null) return emptyList()
+            return (0 until length()).mapNotNull { index ->
+                optString(index, "").takeIf { it.isNotEmpty() && !isNull(index) }
+            }
         }
 
         private fun JSONObject.toCoordinate(): Coordinate? {
