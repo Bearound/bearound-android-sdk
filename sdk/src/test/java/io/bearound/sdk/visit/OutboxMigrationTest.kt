@@ -57,7 +57,7 @@ class OutboxMigrationTest {
             assertTrue(it.beacons.isEmpty())
         }
         assertEquals(
-            setOf(arrival.fix.timestamp, departure.fix.timestamp),
+            setOf(arrival.fix!!.timestamp, departure.fix!!.timestamp),
             records.map { it.context?.location?.timestamp }.toSet()
         )
         assertEquals(
@@ -74,7 +74,7 @@ class OutboxMigrationTest {
     @Test
     fun `migration leaves the rest of the visit state untouched`() {
         store.saveConfig(VisitTestFixtures.configBody(), "etag-1", now)
-        store.openStop = VisitStateStore.OpenStop("env-1", arrival.fix, arrival.fix)
+        store.openStop = VisitStateStore.OpenStop("env-1", arrival.fix!!, arrival.fix!!)
         writeLegacyOutbox(arrival)
 
         OutboxMigration.migrate(context, storage)
@@ -102,13 +102,13 @@ class OutboxMigrationTest {
         val queue = OfflineBatchVisitEventQueue(context, storage) { drained++ }
         val tracker = VisitStopTracker(store, queue) { now }
 
-        assertTrue(tracker.arrive("env-1", arrival.fix))
-        assertTrue(tracker.depart("env-1", departure.fix))
+        assertTrue(tracker.arrive("env-1", arrival.fix!!))
+        assertTrue(tracker.depart("env-1", departure.fix!!))
 
         val records = storage.loadAllRecords()
         assertEquals(listOf("visit", "visit"), records.map { it.syncTrigger })
         assertEquals(
-            listOf(arrival.fix.timestamp, departure.fix.timestamp),
+            listOf(arrival.fix!!.timestamp, departure.fix!!.timestamp),
             records.mapNotNull { it.context?.location?.timestamp }.sorted()
         )
         assertFalse(prefs().contains(OutboxMigration.LEGACY_KEY))

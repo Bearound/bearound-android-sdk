@@ -81,7 +81,7 @@ class BluetoothScanReceiver : BroadcastReceiver() {
                 // goAsync(): keep the broadcast's process-priority window open until
                 // the immediate flush settles, instead of returning with the POST
                 // still in flight (the process became freezable the moment onReceive
-                // returned — top-5 fix #1). Guarded by a hard timeout well under the
+                // returned). Guarded by a hard timeout well under the
                 // ~10s broadcast budget; double-finish is a crash, hence the flag.
                 val pending = goAsync()
                 val finished = java.util.concurrent.atomic.AtomicBoolean(false)

@@ -106,10 +106,10 @@ class BeAroundSDK private constructor() {
         private const val IMMEDIATE_FLUSH_MIN_GAP_MS = 10_000L
 
         /**
-         * Anti-downgrade scan refresh (Fix B, 2026-07). OEMs on Android 13+ silently
-         * downgrade long-lived scan sessions (field-observed: requested BALANCED/LOW_LATENCY
-         * demoted to AMBIENT_DISCOVERY/OPPORTUNISTIC on Moto G35 / realme C61, shrinking
-         * listening to ~10% duty), and AOSP drops any scan older than 30 min to opportunistic.
+         * Anti-downgrade scan refresh. OEMs on Android 13+ silently
+         * downgrade long-lived scan sessions (requested BALANCED/LOW_LATENCY demoted to
+         * AMBIENT_DISCOVERY/OPPORTUNISTIC, shrinking listening duty), and AOSP drops any
+         * scan older than 30 min to opportunistic.
          * Re-registering the client restores full duty. 20 min stays safely under the AOSP
          * 30-min cliff and is far above ScanStartBudget's 4-starts/30 s throttle window.
          */
@@ -1001,7 +1001,7 @@ class BeAroundSDK private constructor() {
      * letting the backend trigger an on-demand scan + sync.
      */
     fun handleRemoteMessage(data: Map<String, String>): Boolean {
-        // Marker set by the backend FCM payload (buildFcmPayload → data["bearound"]).
+        // Marker set in the FCM data payload (data["bearound"]).
         // Guards against acting on third-party pushes routed through the same service.
         val raw = data[BEAROUND_EXTRA_KEY] ?: return false
         Log.d(TAG, "Bearound wake-up push received — restarting scan + flushing sync")
@@ -1020,9 +1020,8 @@ class BeAroundSDK private constructor() {
             if (!isConfigured) {
                 Log.w(TAG, "Wake-up ignored - SDK not configured")
             } else {
-                // Backend-commanded wake: restart scanning UNCONDITIONALLY and flush pending
-                // sync. Product decision: there is no user opt-out; stopScanning() is not a
-                // consent gate, so a wake-up push always brings the device back to scanning
+                // Push-commanded wake: restart scanning UNCONDITIONALLY and flush pending
+                // sync. A wake-up push restarts scanning even after stopScanning()
                 // (unlike the watchdog/boot self-heal paths, which only restore what was on).
                 restartScanningFromBackground()
                 performBackgroundSync()
@@ -1170,7 +1169,7 @@ class BeAroundSDK private constructor() {
         // Equivalent in spirit to iOS's CLBeaconRegion monitoring.
         backgroundScanManager.enableBackgroundScanning()
 
-        // Fix B — keep long-lived scan sessions at full duty (anti-downgrade re-register).
+        // Keep long-lived scan sessions at full duty (anti-downgrade re-register).
         startScanRefreshTimer()
 
         // Persist scanning state for recovery after kill/reboot
@@ -1462,8 +1461,7 @@ class BeAroundSDK private constructor() {
      * Replaces the manual 10 s-scan/10 s-pause duty cycle: that design consumed 3-4 of
      * the 5 scan-starts/30 s the OS allows BY DESIGN, so any extra start (watchdog,
      * batch revive, anti-downgrade refresh, fg/bg flip) tripped the quota and the OS
-     * silently starved every scanner for 30 s+ — field-observed on Moto G35 as
-     * "minutes without a beacon". One registration = zero start churn: the whole
+     * silently starved every scanner for 30 s+ (minutes without a beacon). One registration = zero start churn: the whole
      * budget stays available for the recovery paths, and beacons never expire inside
      * an artificial pause window.
      */
@@ -1523,7 +1521,7 @@ class BeAroundSDK private constructor() {
     }
 
     /**
-     * Fix B — periodic anti-downgrade refresh (see [SCAN_REFRESH_INTERVAL_MS]).
+     * Periodic anti-downgrade refresh (see [SCAN_REFRESH_INTERVAL_MS]).
      *
      * Every tick re-registers the two long-lived scan clients so the platform treats them
      * as fresh sessions at full duty:
@@ -1556,13 +1554,8 @@ class BeAroundSDK private constructor() {
     /**
      * Attaches encounter-mesh data (sightings + own rotating ids) to a payload.
      *
-     * `encounterIds` is the device DECLARING ITS OWN IDENTITY, and it must go up whenever
-     * the mesh is running — not only when this device happened to see someone. It is the
-     * other half of every pair: the backend resolves a sighting reported by A into a real
-     * device only if B declared that identifier in the same window. Gating it on
-     * `sightings.isEmpty()` (as 3.8.x did) made the two halves depend on each other, so a
-     * device that saw nobody stayed anonymous and no pair could ever be closed — measured
-     * in production as zero `encounterIds` from every Android host.
+     * `encounterIds` are this device's own rotating identifiers. They are sent whenever
+     * the mesh is running, whether or not this device recorded any sighting.
      *
      * No-op (empty fields, omitted from JSON) before the mesh spins up.
      *
@@ -1618,11 +1611,8 @@ class BeAroundSDK private constructor() {
     @Volatile private var lastPresenceHeartbeatAt = 0L
 
     /**
-     * True when a scan that found nothing should still report in.
-     *
-     * The scan found no beacon and no peer — but the device has its own location, or the
-     * Wi-Fi around it, and *that* is the datum: it was here, and there was nothing here.
-     * Without this the backend cannot tell "no coverage" apart from "app not running".
+     * True when a scan that found nothing should still send a presence heartbeat (device
+     * location and Wi-Fi, subject to DataCollectionPolicy).
      *
      * Throttled by [SDKConfiguration.presenceHeartbeatIntervalMillis] (5 min by default, `0`
      * disables it) so a phone sitting still overnight does not repeat one coordinate every
@@ -1635,8 +1625,7 @@ class BeAroundSDK private constructor() {
         if (interval <= 0L) return false
         val now = System.currentTimeMillis()
         if (now - lastPresenceHeartbeatAt < interval) return false
-        // Nothing to say: no fix and no access point. Reporting an empty shell would cost a
-        // request and teach the backend nothing.
+        // Nothing to report (no fix, no access point): no request is sent.
         if (!deviceInfoCollector.hasPresenceSignal()) return false
         lastPresenceHeartbeatAt = now
         Log.d(TAG, "No beacons or peers — reporting empty scan (location/Wi-Fi)")
@@ -1691,15 +1680,9 @@ class BeAroundSDK private constructor() {
                 collectedBeacons.values.filter { !it.alreadySynced }
             }
 
-            // Two reasons to upload with no beacon in hand:
-            //  - encounter mesh: the device saw other devices (throttled 60s, gated on fresh
-            //    identified sightings) — otherwise a device that only sees peers never uploads;
-            //  - empty scan: it saw nothing at all, and where it was plus the Wi-Fi around it
-            //    is the datum (throttled by presenceHeartbeatIntervalMillis).
-            // Why this payload is going up, when it is not simply "beacons were seen".
-            // Without stamping it, an encounter batch and an empty-scan report reach the
-            // backend looking exactly like an ordinary sync with nothing in it — which is
-            // precisely the distinction this release exists to make.
+            // Two reasons to upload with no beacon: encounter mesh (throttled 60s, gated on
+            // fresh sightings) and the empty-scan heartbeat (throttled by
+            // presenceHeartbeatIntervalMillis). `syncTrigger` labels which one.
             var syncTrigger: String? = null
             if (rawBeaconsToSend.isEmpty()) {
                 syncTrigger = when {
@@ -1724,8 +1707,8 @@ class BeAroundSDK private constructor() {
             // process death mid-request can no longer lose the batch (the old flow only
             // saved AFTER a failure callback — death between send and callback = data
             // gone). On success the exact id is removed; on failure the batch is already
-            // on disk for the retry drain. A lost 2xx response re-sends the batch — the
-            // known at-least-once trade-off until the backend dedupe lands.
+            // on disk for the retry drain. A lost 2xx response re-sends the batch
+            // (at-least-once delivery).
             //
             // The device context is collected BEFORE the save and persisted with the batch:
             // a retry replays where the beacons were seen, not where the device is at retry
@@ -1757,13 +1740,10 @@ class BeAroundSDK private constructor() {
                 }
             }
 
-            // Peers pulsing as VIRTUAL BEACONS ride inside `beacons[]` with the reserved
-            // major — the exact shape the backend rebuilds mesh edges from, and the only
-            // mesh port that has ever produced pairs in the field. Deliberately added
-            // AFTER the diagnostics and the durable batch: they are encounters using the
-            // beacon envelope, not detections, so they must not inflate the scan counters
-            // and must not be replayed by the offline retry drain (a rotating identity is
-            // worthless once its window has passed).
+            // Peers advertising as virtual beacons go inside `beacons[]` with the reserved
+            // major. Added after diagnostics and the durable batch: they are encounters,
+            // not detections, so they neither inflate scan counters nor get replayed by the
+            // offline retry (a rotating identity expires with its window).
             val meshBeacons = encounterMesh?.drainVirtualBeacons().orEmpty().map { it.toBeacon() }
 
             // Notify listener that sync is starting
@@ -2202,7 +2182,7 @@ class BeAroundSDK private constructor() {
         // Bluetooth scanning is always enabled in v2.2.0+
         bluetoothManager.startScanning()
 
-        // Fix B — this revive path starts the same long-lived scan sessions as
+        // This revive path starts the same long-lived scan sessions as
         // startScanning(), so it needs the same anti-downgrade refresh. Without this,
         // a process revived by the watchdog/boot receiver ran unprotected until the
         // host happened to call startScanning() again.

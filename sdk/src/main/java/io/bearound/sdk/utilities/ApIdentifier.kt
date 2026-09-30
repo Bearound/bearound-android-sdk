@@ -11,14 +11,13 @@ import java.util.Locale
  *
  * 1. **Deterministic across platforms.** iOS reports the same address without leading
  *    zeros (`b8:1e:61:0:95:e`) while Android keeps them (`b8:1e:61:00:95:0e`). Hashing
- *    the raw strings would give one physical router two different identities and the
- *    access-point map would never converge. Canonical form fixes that: each octet
- *    left-padded to two hex digits, lowercased, joined without separators.
+ *    the raw strings would give one physical router two different identities.
+ *    Canonical form fixes that: each octet left-padded to two hex digits, lowercased,
+ *    joined without separators. This contract must never drift from the iOS
+ *    implementation: both platforms must produce the same identifier.
  *
- * 2. **Deterministic across devices.** No salt, on purpose — two phones that see the
- *    same router must produce the same `apId`, otherwise cross-device correlation
- *    (the whole point of the map) is impossible. This is pseudonymisation, not
- *    anonymisation, and it is a conscious trade-off.
+ * 2. **Deterministic across devices.** No salt, on purpose: two phones that see the
+ *    same router produce the same `apId`. This is pseudonymisation, not anonymisation.
  *
  * Verified on-device: `b8:1e:61:00:95:0e` (Android) and `b8:1e:61:0:95:e` (iOS) both
  * produce `2dc5d7448d0b3ef4`.

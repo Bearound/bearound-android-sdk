@@ -167,9 +167,7 @@ class DeviceInfoCollector(
      * every host app through that review — including the ones that never collect Wi-Fi.
      * Declaring it is the host's decision; making its absence visible is ours.
      *
-     * Measured in production on 2026-08-05: the same device, same session, every permission
-     * it asked for granted, went from 25 access points to zero the instant it was
-     * backgrounded — and nothing anywhere said why.
+     * Without it, a backgrounded app on Android 10+ gets an empty Wi-Fi list with no error.
      */
     private fun hasBackgroundLocation(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||

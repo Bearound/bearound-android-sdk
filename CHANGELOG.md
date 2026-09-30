@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.14.0] - 2026-09-30
+
+### Added
+- **Wi-Fi visit matching.** On places configured for it, the SDK also detects a visit through
+  the Wi-Fi networks around the device, reported as an ordinary `visit` event.
+
+### Changed
+- A visit event may be sent without a location. Configurations and state stored by 3.13.0
+  still load.
+
+No new permission is declared or requested.
+
 ## [3.13.0] - 2026-09-29
 
 ### Added
