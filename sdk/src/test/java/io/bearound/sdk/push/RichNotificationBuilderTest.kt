@@ -42,6 +42,7 @@ class RichNotificationBuilderTest {
     private lateinit var context: Context
     private lateinit var manager: NotificationManager
     private val fetched: MutableList<String> = Collections.synchronizedList(mutableListOf())
+    private val hits: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
     private val tracker = "https://tracker.example.com"
     private val mediaBase = "https://api.example.com/push-media/"
@@ -70,16 +71,18 @@ class RichNotificationBuilderTest {
         PushEventQueue.resetForTest(context)
         BeAroundSDK.getInstance(context).resetNotificationOpenStateForTest(context)
         SDKConfigStorage.clearConfiguration(context)
-        RichNotificationBuilder.resetForTest()
+        RichNotificationBuilder.resetForTest(context)
         RichNotificationBuilder.imageLoader = RichImageLoader { url, _ ->
             fetched += url
             Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
         }
+        RichNotificationBuilder.hitSender = RichHitSender { url -> hits += url }
+        RichNotificationBuilder.videoFrameSource = RichVideoFrameSource { _, _, _, _, _ -> emptyList() }
     }
 
     @After
     fun tearDown() {
-        RichNotificationBuilder.resetForTest()
+        RichNotificationBuilder.resetForTest(context)
         PushEventQueue.resetForTest(context)
         SDKConfigStorage.clearConfiguration(context)
         BeAroundSDK.getInstance(context).resetNotificationOpenStateForTest(context)
@@ -109,7 +112,7 @@ class RichNotificationBuilderTest {
     // region carousel
 
     @Test
-    fun `carousel next and prev re-post the same notification id with the wrapped index`() {
+    fun `carousel prefetches every card and page turns never hit the network`() {
         val rich = """{"v":1,"f":"CAROUSEL","mb":"$mediaBase","c":[
             {"m":"$mediaA","t":"First","u":"https://shop.example.com/1"},
             {"m":"$mediaB","t":"Second"},
@@ -121,24 +124,47 @@ class RichNotificationBuilderTest {
         assertEquals(1, posted().size)
         assertEquals(0, shadowOf(manager).getNotification(id).extras.getInt(RichNotificationBuilder.EXTRA_CARD_INDEX))
         assertNotNull("custom expanded view", shadowOf(manager).getNotification(id).bigContentView)
-        // Only the displayed card is fetched: the fetch is the view.
-        assertEquals(listOf("$tracker/v1/push:view?d=d-sid-carousel&r=${enc(mediaBase + mediaA)}&idx=0"), fetched)
+        // Every card is fetched once, up front. Only the displayed card goes through the
+        // tracker view endpoint (that fetch is its view); the others use the raw media URL.
+        assertEquals(
+            setOf(
+                "$tracker/v1/push:view?d=d-sid-carousel&r=${enc(mediaBase + mediaA)}&idx=0",
+                mediaBase + mediaB,
+                mediaBase + mediaC
+            ),
+            fetched.toSet()
+        )
+        assertEquals("first render: $fetched", 3, fetched.size)
+        assertTrue("card 0's view was the fetch itself", hits.isEmpty())
 
         val prev = existingNavIntent(id, "prev")!!
         assertEquals(2, prev.getIntExtra(RichNotificationBuilder.EXTRA_CARD_INDEX, -1))
 
         val next = existingNavIntent(id, "next")!!
         assertEquals(1, next.getIntExtra(RichNotificationBuilder.EXTRA_CARD_INDEX, -1))
+        // A page turn often lands in a fresh process: only the files in cacheDir are left.
+        RichMediaCache.clearMemory()
         RichNotificationBuilder.onCarouselNav(context, next)
 
         assertEquals("same id replaced, not a second notification", 1, posted().size)
         val reposted = shadowOf(manager).getNotification(id)
         assertEquals(1, reposted.extras.getInt(RichNotificationBuilder.EXTRA_CARD_INDEX))
         assertEquals(1_000L, reposted.`when`)
-        assertTrue(fetched.last().endsWith("&idx=1"))
+        assertEquals("no network on a page turn: $fetched", 3, fetched.size)
+        // Card 1 came from the cache, so its view is reported with a hit, once.
+        assertEquals(listOf("$tracker/v1/push:view?d=d-sid-carousel&r=${enc(mediaBase + mediaB)}&idx=1"), hits)
+
         // After moving to card 1, next points at card 2 and prev back at card 0.
-        assertEquals(2, existingNavIntent(id, "next")!!.getIntExtra(RichNotificationBuilder.EXTRA_CARD_INDEX, -1))
-        assertEquals(0, existingNavIntent(id, "prev")!!.getIntExtra(RichNotificationBuilder.EXTRA_CARD_INDEX, -1))
+        val nextAgain = existingNavIntent(id, "next")!!
+        assertEquals(2, nextAgain.getIntExtra(RichNotificationBuilder.EXTRA_CARD_INDEX, -1))
+        val back = existingNavIntent(id, "prev")!!
+        assertEquals(0, back.getIntExtra(RichNotificationBuilder.EXTRA_CARD_INDEX, -1))
+
+        // Back to card 0 and forward to card 1 again: both already viewed, no new hit.
+        RichNotificationBuilder.onCarouselNav(context, back)
+        RichNotificationBuilder.onCarouselNav(context, existingNavIntent(id, "next")!!)
+        assertEquals(1, hits.size)
+        assertEquals("revisits: $fetched", 3, fetched.size)
     }
 
     @Test
@@ -186,24 +212,24 @@ class RichNotificationBuilderTest {
 
     @Test
     fun `card tap reports the open and opens the card target`() {
-        val rich = """{"v":1,"f":"PLAY","mb":"$mediaBase","c":[{"m":"$mediaA","u":"https://video.example.com/v"}]}"""
-        val payload = data("sid-play", rich)
+        val rich = """{"v":1,"f":"IMAGE","mb":"$mediaBase","c":[{"m":"$mediaA","u":"https://shop.example.com/p"}]}"""
+        val payload = data("sid-image", rich)
         val id = RichNotificationBuilder.notificationIdFor(payload)
         RichNotificationBuilder.post(context, payload, id, 0, 1_000L, true)
         val tap = existingActivityIntent(id, "card0")!!
 
-        val hits = Collections.synchronizedList(mutableListOf<String>())
+        val queued = Collections.synchronizedList(mutableListOf<String>())
         val latch = CountDownLatch(2) // open + received
-        PushEventQueue.transport = PushEventTransport { url -> hits += url; latch.countDown(); PushHitOutcome.DRAIN }
+        PushEventQueue.transport = PushEventTransport { url -> queued += url; latch.countDown(); PushHitOutcome.DRAIN }
 
         Robolectric.buildActivity(RichNotificationTrampolineActivity::class.java, tap).create()
 
         assertTrue(latch.await(5, TimeUnit.SECONDS))
-        assertTrue("hits=$hits", hits.any { it.contains("push:open") && it.contains("d-sid-play") })
+        assertTrue("hits=$queued", queued.any { it.contains("push:open") && it.contains("d-sid-image") })
         val started = shadowOf(context as Application).nextStartedActivity
         assertEquals(Intent.ACTION_VIEW, started.action)
         assertEquals(
-            "$tracker/v1/push:click?d=d-sid-play&r=${enc("https://video.example.com/v")}&idx=0",
+            "$tracker/v1/push:click?d=d-sid-image&r=${enc("https://shop.example.com/p")}&idx=0",
             started.dataString
         )
         assertNull("tap dismisses the notification", shadowOf(manager).getNotification(id))
@@ -218,6 +244,131 @@ class RichNotificationBuilderTest {
         assertEquals("https://shop.example.com", RichPushUrls.tapUrl("https://shop.example.com", 0, null))
         assertNull("blocked scheme opens the app", RichPushUrls.tapUrl("javascript:alert(1)", 0, null))
         assertNull(RichPushUrls.tapUrl(null, 0, null))
+    }
+
+    // endregion
+
+    // region PLAY
+
+    private val videoUrl = "https://media.example.com/clip.mp4"
+
+    private fun playRich(u: String? = videoUrl) =
+        if (u == null) """{"v":1,"f":"PLAY","mb":"$mediaBase","c":[{"m":"$mediaA"}]}"""
+        else """{"v":1,"f":"PLAY","mb":"$mediaBase","c":[{"m":"$mediaA","u":"$u","vt":"video/mp4"}]}"""
+
+    private fun frames(n: Int) = List(n) { Bitmap.createBitmap(16, 9, Bitmap.Config.RGB_565) }
+
+    @Test
+    fun `PLAY parse keeps the video URL only when it is http(s)`() {
+        val payload = RichPayload.parse(playRich())!!
+        assertEquals(RichFormat.PLAY, payload.format)
+        assertEquals(videoUrl, payload.cards[0].url)
+        assertEquals(videoUrl, payload.videoUrl())
+        assertEquals(mediaBase + mediaA, payload.imageUrl(0))
+        assertNull(RichPayload.parse(playRich("myapp://video"))!!.videoUrl())
+        assertNull(RichPayload.parse(playRich(null))!!.videoUrl())
+        assertNull("other formats carry no video", RichPayload.parse(
+            """{"v":1,"f":"IMAGE","mb":"$mediaBase","c":[{"m":"$mediaA","u":"$videoUrl"}]}"""
+        )!!.videoUrl())
+    }
+
+    @Test
+    fun `PLAY with video frames renders the flipper and fetches the poster as the view`() {
+        val requested = Collections.synchronizedList(mutableListOf<String>())
+        RichNotificationBuilder.videoFrameSource = RichVideoFrameSource { _, url, count, spec, _ ->
+            requested += url
+            assertEquals(RichNotificationBuilder.FRAME_COUNT, count)
+            assertEquals(RichNotificationBuilder.FRAME_SPEC, spec)
+            frames(8)
+        }
+        val payload = data("sid-play", playRich())
+        val id = RichNotificationBuilder.notificationIdFor(payload)
+
+        assertTrue(RichNotificationBuilder.post(context, payload, id, 0, 1_000L, true))
+
+        val n = shadowOf(manager).getNotification(id)
+        assertEquals(listOf(videoUrl), requested)
+        assertNotNull("custom expanded view with the frames", n.bigContentView)
+        assertNull("no still picture when the video works", n.extras.getParcelable<Bitmap>(NotificationCompat.EXTRA_PICTURE))
+        assertEquals(listOf("$tracker/v1/push:view?d=d-sid-play&r=${enc(mediaBase + mediaA)}&idx=0"), fetched)
+        val tap = existingActivityIntent(id, "card0")!!
+        assertEquals(videoUrl, tap.getStringExtra(RichNotificationBuilder.EXTRA_VIDEO_URL))
+        assertNull("never a browser target", tap.getStringExtra(RichNotificationBuilder.EXTRA_TARGET_URL))
+    }
+
+    @Test
+    fun `PLAY without usable video falls back to the poster with no play glyph`() {
+        val payload = data("sid-play-fallback", playRich())
+        val id = RichNotificationBuilder.notificationIdFor(payload)
+
+        assertTrue(RichNotificationBuilder.post(context, payload, id, 0, 1_000L, true))
+
+        val n = shadowOf(manager).getNotification(id)
+        assertNotNull("poster as the big picture", n.extras.getParcelable<Bitmap>(NotificationCompat.EXTRA_PICTURE))
+        assertEquals(
+            "a plain BigPicture, no custom view (so no glyph)",
+            Notification.BigPictureStyle::class.java.name,
+            n.extras.getString(Notification.EXTRA_TEMPLATE)
+        )
+        // Tapping still opens the player, which streams the video.
+        assertEquals(videoUrl, existingActivityIntent(id, "card0")!!.getStringExtra(RichNotificationBuilder.EXTRA_VIDEO_URL))
+    }
+
+    @Test
+    fun `PLAY with a single frame is not a video and uses the poster`() {
+        RichNotificationBuilder.videoFrameSource = RichVideoFrameSource { _, _, _, _, _ -> frames(1) }
+        val payload = data("sid-play-one", playRich())
+        val id = RichNotificationBuilder.notificationIdFor(payload)
+
+        assertTrue(RichNotificationBuilder.post(context, payload, id, 0, 1_000L, true))
+
+        assertNotNull(shadowOf(manager).getNotification(id).extras.getParcelable<Bitmap>(NotificationCompat.EXTRA_PICTURE))
+    }
+
+    @Test
+    fun `PLAY without video nor poster degrades to title and body`() {
+        RichNotificationBuilder.imageLoader = RichImageLoader { _, _ -> null }
+        val payload = data("sid-play-none", playRich())
+        val id = RichNotificationBuilder.notificationIdFor(payload)
+
+        assertTrue(RichNotificationBuilder.post(context, payload, id, 0, 1_000L, true))
+
+        val n = shadowOf(manager).getNotification(id)
+        assertEquals(Notification.BigTextStyle::class.java.name, n.extras.getString(Notification.EXTRA_TEMPLATE))
+        assertEquals("Tap a card to see it", n.extras.getCharSequence(NotificationCompat.EXTRA_TEXT).toString())
+    }
+
+    @Test
+    fun `PLAY tap reports the open, fires the click hit and opens the SDK player`() {
+        RichNotificationBuilder.videoFrameSource = RichVideoFrameSource { _, _, _, _, _ -> frames(8) }
+        val payload = data("sid-play-tap", playRich())
+        val id = RichNotificationBuilder.notificationIdFor(payload)
+        RichNotificationBuilder.post(context, payload, id, 0, 1_000L, true)
+        val tap = existingActivityIntent(id, "card0")!!
+
+        val queued = Collections.synchronizedList(mutableListOf<String>())
+        val latch = CountDownLatch(2) // open + received
+        PushEventQueue.transport = PushEventTransport { url -> queued += url; latch.countDown(); PushHitOutcome.DRAIN }
+
+        Robolectric.buildActivity(RichNotificationTrampolineActivity::class.java, tap).create()
+
+        assertTrue(latch.await(5, TimeUnit.SECONDS))
+        assertTrue("hits=$queued", queued.any { it.contains("push:open") && it.contains("d-sid-play-tap") })
+        assertEquals(listOf("$tracker/v1/push:click?d=d-sid-play-tap&r=${enc(videoUrl)}&idx=0"), hits)
+        val started = shadowOf(context as Application).nextStartedActivity
+        assertEquals(RichPushVideoActivity::class.java.name, started.component?.className)
+        assertEquals(videoUrl, started.getStringExtra(RichNotificationBuilder.EXTRA_VIDEO_URL))
+        assertNull("tap dismisses the notification", shadowOf(manager).getNotification(id))
+    }
+
+    @Test
+    fun `PLAY click hit needs d and tr in the marker`() {
+        assertNull(RichPushUrls.clickHitUrl(videoUrl, 0, null))
+        assertNull(RichPushUrls.clickHitUrl("myapp://video", 0, PushMarker("s", "d", tracker)))
+        assertEquals(
+            "$tracker/v1/push:click?d=d&r=${enc(videoUrl)}&idx=0",
+            RichPushUrls.clickHitUrl(videoUrl, 0, PushMarker("s", "d", tracker))
+        )
     }
 
     // endregion

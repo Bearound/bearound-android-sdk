@@ -6,4 +6,6 @@
     <string name="bearound_rich_push_previous">Anterior</string>
     <string name="bearound_rich_push_next">Próximo</string>
     <string name="bearound_rich_push_play">Reproduzir vídeo</string>
+    <string name="bearound_rich_push_close">Fechar</string>
+    <string name="bearound_rich_push_video_error">Não foi possível reproduzir este vídeo.</string>
 </resources>
