@@ -221,7 +221,7 @@ jobs:
           path: |
             sdk/build/outputs/aar/*.aar
             sdk/build/publications/
-          retention-days: 7
+          retention-days: 3
 
   jitpack-compatibility-check:
     name: JitPack Compatibility Check
