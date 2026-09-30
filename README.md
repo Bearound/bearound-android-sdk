@@ -259,9 +259,6 @@ just the connected access point.
 ### Wi-Fi observations
 
 Alongside each beacon sighting the SDK reports the **access points visible at that moment**.
-The purpose is positioning coverage: an access point seen repeatedly next to a known beacon
-gets a position of its own, and from then on it can place a device even where no beacon
-reaches.
 
 The identity that matters is `apId` — a one-way SHA-256 hash of the access point's hardware
 address, canonicalised so that the same router produces the same identifier on Android and
@@ -276,9 +273,8 @@ on iOS.
 | `timestamp` | When the access point was seen (not when the payload was sent) |
 | `ssid` | Network name (see the note below) |
 
-> **`ssid` and `network.wifiSSID` carry the network name**, and the backend consumes them:
-> the name says something the hashed `apId` cannot. Because a network name identifies a
-> place — and at home a household — both are personal data and ship only while Wi-Fi
+> **`ssid` and `network.wifiSSID` carry the network name.** Because a network name identifies
+> a place (and at home a household), both are personal data and are sent only while Wi-Fi
 > collection is on. `configure(collectWifi = false)` drops them with the rest of the Wi-Fi
 > block; see [Controlling what the SDK collects](#controlling-what-the-sdk-collects).
 
@@ -302,16 +298,11 @@ on which permissions the user granted:
 > This is the single most surprising thing on this page, so it is worth being blunt about:
 > from **Android 10** on, a backgrounded app without `ACCESS_BACKGROUND_LOCATION` gets an
 > **empty scan list** and the placeholder BSSID `02:00:00:00:00:00` — not an error, not a
-> `SecurityException`, nothing in logcat. The SDK discards the placeholder (it must — every
-> device on earth returns the same one), so `wifis[]` and `network.apId` simply arrive
-> empty.
+> `SecurityException`, nothing in logcat. The SDK discards the placeholder, so `wifis[]` and
+> `network.apId` simply arrive empty.
 >
-> Measured on a real device: the same app, same session, every permission it asked for
-> granted, went from **25 access points to zero** the instant it was backgrounded. Location
-> stopped coming through in the same payload.
->
-> Since a fleet spends almost all of its time in the background, "foreground only" means
-> "almost never". If your integration tests by hand with the app open, it will look perfect.
+> If your integration tests by hand with the app open, it will look perfect, while in the
+> background the Wi-Fi list stays empty.
 >
 > **Check it without guessing:** every payload reports
 > `device.permissions.backgroundLocation`. If it is `false`, you are collecting Wi-Fi in the
@@ -397,11 +388,10 @@ derived from the same rotating identifier. That frame is never treated as a beac
 it does not enter region monitoring, ranging or the detection log — but it IS reported as an
 encounter: it rides the beacon scan filters that already run in background (including the
 PendingIntent broadcast, the only delivery path left on some AOSP-like Android 14 builds), so
-it is the port that keeps producing pairs when the app is not in the foreground.
+it keeps being reported when the app is not in the foreground.
 
 Every payload from a running device also carries `encounterIds` — the identifiers this device
-is currently advertising. It is sent whether or not the device saw anyone: it is the half that
-lets the backend turn somebody else's sighting into a real pair.
+is currently advertising. It is sent whether or not the device saw anyone.
 
 **Permission involved (Android 12+ only):**
 
@@ -454,9 +444,8 @@ permissionLauncher.launch(permissions.toTypedArray())
 
 ### Advertising identifier (AAID)
 
-The SDK reports the **Google Advertising ID** — the resettable identifier that lets the same
-person be recognised across apps for advertising. It is what makes audiences built from
-beacon visits usable in ad platforms.
+The SDK reports the **Google Advertising ID**, the resettable, user-controlled identifier
+used for advertising.
 
 **The SDK does not declare the `AD_ID` permission.** Whether your app collects the AAID is
 your decision, and you opt in from your own app module:
@@ -623,7 +612,7 @@ Play's background-location review (declaration form + demo video) for zero detec
 
 `internalId` is **your own id for the user** (e.g. from your CRM) — a user property. Set it
 (and any other user data) via `setUserProperties` right after `configure()`, so every beacon
-event is tied back to that user on the backend:
+event carries that user id:
 
 ```kotlin
 import io.bearound.sdk.models.UserProperties

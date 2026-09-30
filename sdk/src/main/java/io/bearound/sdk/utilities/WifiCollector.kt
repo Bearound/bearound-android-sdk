@@ -82,8 +82,7 @@ internal class WifiCollector(private val context: Context) {
         val now = System.currentTimeMillis()
         val observations = LinkedHashMap<String, WifiObservation>()
 
-        // The connected access point comes first: it is the strongest signal of where
-        // the device actually is, and it is the only one iOS can offer.
+        // The connected access point comes first.
         connectedObservation(wifiManager, now)?.let { observations[it.apId] = it }
 
         // Neighbours need the scan permission on top of the Wi-Fi one.

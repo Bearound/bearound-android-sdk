@@ -3,8 +3,7 @@ package io.bearound.sdk.models
 /**
  * One access point seen by the device at a point in time.
  *
- * @property apId          canonical hash of the BSSID (16 hex chars) — the identity the
- *                         backend actually uses
+ * @property apId          canonical hash of the BSSID (16 hex chars)
  * @property ssid          human-readable network name, see below
  * @property rssi          signal strength in dBm; null when the platform does not expose it
  * @property connected     true when this is the access point the device is joined to
@@ -14,12 +13,7 @@ package io.bearound.sdk.models
 data class WifiObservation(
     val apId: String,
     /**
-     * Human-readable network name, reported alongside [apId].
-     *
-     * **Consumed by the backend — keep it.** It is not a debugging leftover on its way out:
-     * the name carries information the hashed [apId] cannot, so it is part of the payload
-     * contract. (An earlier revision of this file marked it for removal; that is no longer
-     * the plan, and deleting it would take a live signal down with it.)
+     * Human-readable network name, reported alongside [apId]. Part of the payload contract.
      *
      * It is personal data all the same — a network name identifies a place, and at home a
      * household — so it ships only while the host allows Wi-Fi collection

@@ -113,8 +113,7 @@ internal class EncounterMeshManager(private val context: Context) {
      *
      * Kept separate from [EncounterObservation] because the identity is different: the
      * virtual beacon carries a `minor` derived from the rotating identifier, not the
-     * identifier itself. It goes up as a `beacons[]` entry with the reserved major — the
-     * exact shape the backend reconstructs mesh edges from.
+     * identifier itself. It is sent as a `beacons[]` entry with the reserved major.
      */
     internal data class VirtualBeaconSighting(
         val minor: Int,
@@ -314,9 +313,8 @@ internal class EncounterMeshManager(private val context: Context) {
 
     /** iBeacon frame identical to the physical Bearound beacon's (same UUID, Apple
      * 0x004C 02-15 layout), with reserved major and minor derived from the rotating
-     * identifier. Unlike iOS (foreground-only), Android can emit this in background
-     * for as long as the process lives — a host device can (re)launch terminated iOS
-     * apps nearby through their CoreLocation region monitoring. */
+     * identifier. Unlike iOS (foreground-only), Android can emit this frame in background
+     * for as long as the process lives. */
     private fun virtualBeaconPayload(minor: Int): ByteArray {
         val uuid = io.bearound.sdk.utilities.IBeaconParser.BEAROUND_IBEACON_PREFIX
         return ByteArray(2 + uuid.size - 2 + 5).also { out ->
@@ -416,9 +414,9 @@ internal class EncounterMeshManager(private val context: Context) {
     /**
      * A peer seen pulsing as a virtual beacon (iBeacon frame, reserved major).
      *
-     * This is the path that demonstrably worked in the field: it rides the beacon scan
-     * filters that already run in background, including the PendingIntent broadcast that
-     * is the only delivery path left on AOSP-like Android 14 under `neverForLocation`.
+     * This path rides the beacon scan filters that already run in background, including
+     * the PendingIntent broadcast (the only delivery path on AOSP-like Android 14 under
+     * `neverForLocation`).
      */
     fun handleVirtualBeacon(minor: Int, rssi: Int) {
         if (!synchronized(lock) { started }) return

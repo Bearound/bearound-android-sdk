@@ -32,22 +32,18 @@ data class UserDevice(
      *
      * Reported because a `false` here is otherwise **invisible**: from Android 10 on, a
      * backgrounded app without it gets an empty Wi-Fi scan list and the placeholder BSSID
-     * `02:00:00:00:00:00` instead of an error. The SDK discards the placeholder (as it
-     * must — otherwise every device on earth would map to the same access point), so
+     * `02:00:00:00:00:00` instead of an error. The SDK discards the placeholder, so
      * `wifis[]` and `network.apId` simply arrive empty, with every permission the app
      * asked for granted and nothing in any log.
      *
      * Always `true` below Android 10, where background location was not a separate grant.
      */
     val backgroundLocation: Boolean,
-    /** Hash of the connected access point's BSSID — the identity the backend uses. */
+    /** Hash of the connected access point's BSSID. */
     val apId: String?,
     /**
-     * Name of the connected network.
-     *
-     * **Consumed by the backend — keep it.** See `WifiObservation.ssid`: the name carries
-     * information the hashed [apId] cannot. Personal data, so it ships only while the host
-     * allows Wi-Fi collection (`configure(collectWifi = ...)`).
+     * Name of the connected network. Personal data: sent only while the host allows Wi-Fi
+     * collection (`configure(collectWifi = ...)`).
      */
     val wifiSSID: String?,
     val connectionMetered: Boolean?,

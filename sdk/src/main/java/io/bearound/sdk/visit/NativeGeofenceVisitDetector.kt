@@ -64,8 +64,7 @@ internal interface GeofenceRegistrar {
  *   the [WifiVisitRunner] as a round. DWELL and EXIT are rounds too;
  * - DWELL (loitering delay = `minDwellMinutes`) sends the arrival with the triggering fix;
  * - EXIT of the same environment sends the departure: the stop position with the real time
- *   of the exit fix (the exit fix itself lies outside the environment by definition, and the
- *   ingest resolves the environment from the coordinates);
+ *   of the exit fix;
  * - EXIT of the refresh fence (circle at `origin`, radius `refreshAfterMeters`) makes the
  *   controller fetch the config again.
  *

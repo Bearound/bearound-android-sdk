@@ -17,7 +17,7 @@ import java.util.Locale
  * `places` for payload compatibility, but every item is an environment.
  *
  * Only the circle of each geometry is used on device: `GeofencingClient` accepts nothing
- * else, and the ingest decides the environment from the coordinates.
+ * else.
  */
 internal data class PlacesConfig(
     val origin: Coordinate,
@@ -111,8 +111,7 @@ internal fun interface PlacesConfigFetching {
 
 /**
  * `GET {apiBaseURL}/sdk/places/nearby?lat=&lng=`, authenticated with the raw business
- * token exactly like `/ingest` (`Authorization: <businessToken>`). Same host as `/ingest`:
- * the ingest's load balancer routes the `/sdk/places` paths to the places service (C-03).
+ * token exactly like `/ingest` (`Authorization: <businessToken>`). Same host as `/ingest`.
  */
 internal class PlacesConfigClient(
     internal val baseURL: String,

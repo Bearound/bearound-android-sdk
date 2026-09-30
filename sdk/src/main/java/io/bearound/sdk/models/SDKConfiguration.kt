@@ -31,7 +31,7 @@ object PresenceHeartbeatDefaults {
      * and every report wakes the radio.
      */
     const val MINIMUM_INTERVAL_MILLIS: Long = 60L * 1000L
-    /** Interval ceiling. Past an hour the trail is too sparse to say anything about presence. */
+    /** Interval ceiling (1 hour). */
     const val MAXIMUM_INTERVAL_MILLIS: Long = 60L * 60L * 1000L
 
     /**
@@ -138,9 +138,8 @@ data class SDKConfiguration(
     /**
      * How often a scan that found **nothing** still reports in.
      *
-     * A scan that finds no beacon and no peer is data too: the device was *here* and saw
-     * nothing. Those payloads carry the device's own location and the Wi-Fi it can see, and
-     * they are what make coverage — and the absence of it — visible.
+     * When no beacon and no peer is found, the SDK still sends a periodic report with the
+     * device location and visible Wi-Fi (subject to the collection switches).
      *
      * Only the *upload* is throttled, never the scan: a beacon or an encounter still syncs at
      * the normal cadence. This is the floor between two consecutive "saw nothing" reports, so
@@ -195,8 +194,7 @@ data class SDKConfiguration(
 
     /**
      * The SDK's only host: `/ingest`, `/sdk-errors` and the visit-detection config
-     * (`GET /sdk/places/nearby`, routed by path at the ingest's load balancer to the places
-     * service). One host means one domain for the client app to allow.
+     * (`GET /sdk/places/nearby`). One host means one domain for the client app to allow.
      */
     val apiBaseURL: String = "https://ingest.bearound.io"
 

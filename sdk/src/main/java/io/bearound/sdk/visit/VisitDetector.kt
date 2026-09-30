@@ -90,10 +90,8 @@ internal enum class VisitSource(val wire: String) {
 }
 
 /**
- * One `/ingest` visit event. Carries the REAL time of the fix, never the send time:
- * the ingest honours capture times in [-24 h, +5 min], and a qualified
- * visit needs two observations at least 30 s apart, so a stop always produces an arrival
- * AND a departure.
+ * One `/ingest` visit event. Carries the real time of the fix, never the send time
+ * (accepted window: -24 h to +5 min). Each stop produces an arrival and a departure.
  *
  * [fix] is null for a stop the Wi-Fi matcher opened without GPS: the event then goes with no
  * location and [wifis] (matched access points first) dates it. [wifis] null means "not
@@ -102,7 +100,7 @@ internal enum class VisitSource(val wire: String) {
 internal data class VisitEvent(
     val kind: VisitEventKind,
     val fix: VisitFix?,
-    /** The environment that triggered the event. Diagnostic only: the ingest resolves it. */
+    /** The environment that triggered the event (informational). */
     val environmentId: String?,
     val wifis: List<WifiObservation>? = null
 ) {
