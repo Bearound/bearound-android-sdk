@@ -821,7 +821,7 @@ class BeAroundSDK private constructor() {
         this.context = context
     }
 
-    private fun registerNotificationOpenCallbacks() {
+    internal fun registerNotificationOpenCallbacks() {
         val app = context.applicationContext as? android.app.Application ?: return
         if (notificationOpenCallbacksRegisteredOn === app) return
         app.registerActivityLifecycleCallbacks(notificationOpenCallbacks)
@@ -992,6 +992,9 @@ class BeAroundSDK private constructor() {
      * for you. Returns `true` if the message was a Bearound wake-up (handled here); `false`
      * for third-party messages (which the host should keep handling itself).
      *
+     * A data-only push carrying `bearound_rich` (image, two images, carousel or play) is
+     * rendered by the SDK itself as a notification, whichever service forwarded it here.
+     *
      * On a Bearound push the SDK restores its config if the app was killed, restarts
      * scanning (always — a backend wake-up overrides a previous [stopScanning]) and
      * flushes pending sync — the Android counterpart of the iOS silent-push wake-up,
@@ -1016,17 +1019,25 @@ class BeAroundSDK private constructor() {
             if (!isConfigured) attemptConfigRestore()
             if (!isConfigured) {
                 Log.w(TAG, "Wake-up ignored - SDK not configured")
-                return true
+            } else {
+                // Backend-commanded wake: restart scanning UNCONDITIONALLY and flush pending
+                // sync. Product decision: there is no user opt-out; stopScanning() is not a
+                // consent gate, so a wake-up push always brings the device back to scanning
+                // (unlike the watchdog/boot self-heal paths, which only restore what was on).
+                restartScanningFromBackground()
+                performBackgroundSync()
             }
-            // Backend-commanded wake: restart scanning UNCONDITIONALLY and flush pending
-            // sync. Product decision — there is no user opt-out; stopScanning() is not a
-            // consent gate, so a wake-up push always brings the device back to scanning
-            // (unlike the watchdog/boot self-heal paths, which only restore what was on).
-            restartScanningFromBackground()
-            performBackgroundSync()
         } catch (t: Throwable) {
             Log.e(TAG, "handleRemoteMessage error: ${t.message}")
             io.bearound.sdk.telemetry.ErrorReporter.report(t, "BeAroundSDK.handleRemoteMessage")
+        }
+
+        // Rich push (data-only, `bearound_rich`): the SDK builds and posts the notification
+        // itself, AFTER the wake-up above and on a worker thread (media downloads never hold
+        // the FCM callback). Past the configure gate on purpose: rendering needs no business
+        // token, and a cold start must still show the push. show() never throws.
+        if (data.containsKey(io.bearound.sdk.push.RichNotificationBuilder.KEY_RICH)) {
+            io.bearound.sdk.push.RichNotificationBuilder.show(context, data)
         }
         return true
     }

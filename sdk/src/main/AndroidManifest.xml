@@ -125,6 +125,32 @@
             android:name="io.bearound.sdk.visit.VisitGeofenceReceiver"
             android:exported="false" />
 
+        <!-- Rich push: every card/notification tap goes through this invisible Activity,
+             which reports the open and then opens the card target. An Activity because
+             Android 12+ forbids notification trampolines through receivers or services. -->
+        <activity
+            android:name="io.bearound.sdk.push.RichNotificationTrampolineActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Rich push PLAY: full-screen video player opened by a tap (after the trampoline
+             above reported the open). Handles rotation itself so playback never restarts. -->
+        <activity
+            android:name="io.bearound.sdk.push.RichPushVideoActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+
+        <!-- Rich push carousel prev/next: re-posts the same notification at a new index. -->
+        <receiver
+            android:name="io.bearound.sdk.push.RichNotificationActionReceiver"
+            android:exported="false" />
+
         <!-- Foreground service to keep process alive for BLE scanning (opt-in) -->
         <service
             android:name="io.bearound.sdk.background.BeaconScanService"

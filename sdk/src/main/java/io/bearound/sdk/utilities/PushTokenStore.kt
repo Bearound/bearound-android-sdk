@@ -5,6 +5,7 @@ object PushTokenStore {
     private const val TOKEN_KEY = "io.bearound.sdk.pushToken"
     private const val LAST_SENT_KEY = "io.bearound.sdk.pushTokenLastSent"
     private const val LAST_SENT_AT_KEY = "io.bearound.sdk.pushTokenLastSentAt"
+    private const val LAST_SENT_SDK_VERSION_KEY = "io.bearound.sdk.pushTokenLastSentSdkVersion"
 
     /** Re-send the token if the last successful send is older than 7 days. */
     private const val RESEND_INTERVAL_MS = 604800000L
@@ -19,8 +20,13 @@ object PushTokenStore {
         val lastSent = SecureStorage.retrieve(LAST_SENT_KEY)
         val lastSentAt = SecureStorage.retrieve(LAST_SENT_AT_KEY)?.toLongOrNull()
 
+        // An SDK upgrade re-sends the token once: the registration carries the SDK version,
+        // which the backend uses to enable rich push for this device.
+        val lastSentSdkVersion = SecureStorage.retrieve(LAST_SENT_SDK_VERSION_KEY)
+
         val shouldSend = token != lastSent ||
             lastSentAt == null ||
+            lastSentSdkVersion != io.bearound.sdk.BuildConfig.SDK_VERSION ||
             (System.currentTimeMillis() - lastSentAt) > RESEND_INTERVAL_MS
 
         return if (shouldSend) token else null
@@ -36,6 +42,7 @@ object PushTokenStore {
         if (sentToken.isNullOrEmpty()) return
         SecureStorage.save(LAST_SENT_KEY, sentToken)
         SecureStorage.save(LAST_SENT_AT_KEY, System.currentTimeMillis().toString())
+        SecureStorage.save(LAST_SENT_SDK_VERSION_KEY, io.bearound.sdk.BuildConfig.SDK_VERSION)
     }
 
     fun lastSentAt(): Long? {

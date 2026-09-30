@@ -320,7 +320,12 @@ class APIClient(private val configuration: SDKConfiguration) {
         val payload = JSONObject()
 
         payload.put("deviceId", device.deviceId)
-        device.pushToken?.let { payload.put("pushToken", it) }
+        device.pushToken?.let {
+            payload.put("pushToken", it)
+            // Token registration reports the native SDK version: the backend derives from it
+            // whether the device can render rich push formats.
+            payload.put("sdkVersion", io.bearound.sdk.BuildConfig.SDK_VERSION.take(32))
+        }
         payload.put("timestamp", device.timestamp)
         payload.put("timezone", device.timezone)
 

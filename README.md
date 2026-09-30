@@ -149,14 +149,14 @@ allprojects {
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("com.github.Bearound:bearound-android-sdk:3.12.0")
+    implementation("com.github.Bearound:bearound-android-sdk:3.13.0")
 }
 ```
 
 ```gradle
 // build.gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:3.12.0'
+    implementation 'com.github.Bearound:bearound-android-sdk:3.13.0'
 }
 ```
 
@@ -166,7 +166,7 @@ for how they wire together with one line):
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:3.12.0'
+    implementation 'com.github.Bearound:bearound-android-sdk:3.13.0'
     implementation 'com.github.Bearound:bearound-telemetry-android-sdk:v0.1.2'
 }
 ```
@@ -691,8 +691,9 @@ crash apps without Firebase).
 For a measurable Bearound push (one carrying `sid`, `d` and an `https` `tr` in the `bearound`
 marker: a sync/wake-up-only push has neither and is not measurable), the SDK reports two
 events through the Bearound tracker: `received` when the FCM message is processed, and `open`
-when a tap on the notification launches or resumes the app. The SDK never renders
-notifications; this only measures taps on whatever the host app or FCM rendered.
+when a tap on the notification launches or resumes the app. Except for rich push (below), the
+SDK never renders notifications; this only measures taps on whatever the host app or FCM
+rendered.
 
 **Automatic tap tracking** requires no wiring: the SDK registers an
 `Application.ActivityLifecycleCallbacks` (as early as the SDK's first `getInstance(context)`
@@ -730,6 +731,57 @@ wiring it into the plugin's foreground/background tap listeners.
 Both APIs enqueue into a small persisted queue (capped at 200 entries / 7 days, deduped per
 event, retried with backoff on a transient failure) that requires no business token, so a
 cold-launch tap is measured even if it happens before `configure()` runs.
+
+#### Rich push notifications
+
+A data-only FCM message carrying `data["bearound_rich"]` (contract version `1`) is rendered by
+the SDK itself inside `handleRemoteMessage`, whether the message arrives through
+`BearoundMessagingService` or through your own service that forwards it. No extra wiring.
+
+| Format | What the user sees | Tap |
+|---|---|---|
+| `IMAGE` | A big picture | The card URL, or the app |
+| `TWO_IMAGES` | Two cards side by side | Each card opens its own URL |
+| `CAROUSEL` | One card at a time with previous/next arrows | The shown card's URL |
+| `PLAY` | The video's own frames, animated in the expanded notification | The SDK's full-screen player |
+
+- **`PLAY` is a real video.** The card's `u` is a direct MP4 (H.264/AAC, at most 15 MB). The SDK
+  downloads it into `cacheDir`, extracts 8 evenly spaced frames with `MediaMetadataRetriever` and
+  shows them in a self-advancing `ViewFlipper` (a notification cannot host a video player, so the
+  preview is made of the video's own frames). A tap opens `RichPushVideoActivity`, a
+  full-screen `VideoView` with `MediaController` that plays the video with sound from the cached
+  file (or streams it) and has a close button. It never opens a browser. When the video cannot be
+  used, the notification shows the poster (`m`) with no play glyph, or title and body.
+- **Carousel page turns are instant.** The first render prefetches every card into files in
+  `cacheDir` (keyed by a hash of the media URL, dropped after two days and capped at 40 MB in
+  total, oldest first), so the arrows re-post the notification without any network, even in a
+  fresh process.
+- **Metered networks and Data Saver.** When the active network is metered, or Data Saver is on
+  for your app, the SDK downloads no video on its own: a `PLAY` push shows the poster (no play
+  glyph) and a tap still opens the player, which streams on demand. The carousel then fetches
+  only the card on screen; the others load when the user turns to them.
+- **Rendering never holds the FCM callback.** `handleRemoteMessage` restarts scanning and flushes
+  the sync first, then renders on a worker thread and returns at once. Media downloads have a
+  budget of about 9 s; nothing is downloaded (so no view is counted) when the notification could
+  not be shown: permission missing, notifications off for the app, or its channel turned off.
+- **Size discipline.** Every bitmap is cropped to its on-screen box and downscaled before it is
+  handed to the notification. The SDK's custom layouts (`TWO_IMAGES`, `CAROUSEL`, `PLAY`) keep
+  their bitmaps under 2 MB per RemoteViews, the size at which Android logs a "RemoteViews too
+  large" warning (it strips a custom view at 5 MB). The `IMAGE` picture is a standard
+  `BigPictureStyle` bitmap, not a custom RemoteViews: at most 1080 px on its longer edge, and
+  RGB_565 when it has no transparency (at most about 2.3 MB).
+- **Card links.** `http(s)` card URLs open in the browser (through the tracker when measurable).
+  Any other URI is treated as a deep link and kept only when an Activity of your own app handles
+  it; the tap then opens it inside your app. Everything else opens your app's launch Activity.
+- **Notification tag.** The SDK posts rich notifications under the tag `bearound_rich`, so their
+  ids never collide with your own notifications.
+- **Measurement.** With a measurable marker, a shown card's image is fetched through the
+  tracker view endpoint (or, when it came from the cache, its view is reported once), http(s)
+  card taps go through the tracker click endpoint, and a `PLAY` tap fires the click hit without
+  following its redirect. Every tap also reports the push `open` as above.
+- **Manifest.** The SDK declares `RichNotificationTrampolineActivity`, `RichPushVideoActivity`
+  and `RichNotificationActionReceiver`, all `exported="false"`. Framework APIs only, no new
+  dependency. The notification uses your FCM default channel and icon when declared.
 
 ## Background scanning
 
