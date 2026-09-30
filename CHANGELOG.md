@@ -18,9 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `IMAGE`: a `BigPictureStyle` notification.
   - `TWO_IMAGES`: two image cards side by side, each with its caption and its own tap target.
   - `CAROUSEL`: one card at a time with previous/next arrows. The first render prefetches every
-    card into a cache (memory plus files in `cacheDir`, keyed by a hash of the media URL), so the
-    arrows re-post the same notification from the cache without touching the network, even when
-    the page turn starts a fresh process (measured on a device: about 30 ms to rebuild a page).
+    card into files in `cacheDir` (keyed by a hash of the media URL, dropped after two days and
+    capped at 40 MB in total, oldest first), so the arrows re-post the same notification from the
+    cache without touching the network, even when the page turn starts a fresh process (measured
+    on a device: about 30 ms to rebuild a page).
   - `PLAY`: a real video. The card's `u` is a direct MP4 (at most 15 MB); the SDK downloads it
     into `cacheDir`, extracts 8 evenly spaced frames with `MediaMetadataRetriever` and shows them
     in a self-advancing `ViewFlipper` in the expanded notification (an animated preview made of
@@ -29,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     friendly, close button), which plays the cached file or streams `u`. It never opens a
     browser. If the video cannot be used, the notification shows the poster `m` with no play
     glyph, or title and body. Framework APIs only: no new dependency.
+
+  On a metered network, or with Data Saver on for the app, the SDK downloads no video on its
+  own: a `PLAY` push shows the poster (no play glyph) and a tap still opens the player, which
+  streams on demand; the carousel fetches only the card on screen and loads the others on their
+  page turn. `handleRemoteMessage` restarts scanning and flushes the sync first, then renders on a
+  worker thread and returns at once (media budget of about 9 s). Nothing is downloaded when the
+  notification could not be shown (permission missing, notifications off, or its channel turned
+  off). Rich notifications are posted under the tag `bearound_rich`, so their ids never collide
+  with the host's. Card URLs are allowlisted: `http(s)`, or a deep link that an Activity of the
+  host app itself handles (opened inside the host app); anything else opens the app.
 
   When the push marker is measurable, each image is fetched through the tracker view
   endpoint (`push:view`, with the card index) and each http(s) card tap goes through the
@@ -46,8 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an SDK channel `bearound_rich_push` ("Promotions", localized pt/es). Small icon: the host's
   FCM default notification icon when declared, otherwise the app icon. Every bitmap is cropped
   to its box and downscaled before it goes into the notification (720 px wide for carousel and
-  two-image cards, 1080 px for the `IMAGE` picture, 8 video frames within 1.8 MB), so no
-  RemoteViews crosses the platform's "RemoteViews too large" warning. The manifest now declares
+  two-image cards, 8 video frames within 1.8 MB), so no custom RemoteViews crosses the platform's
+  2 MB "RemoteViews too large" warning. The `IMAGE` picture is a standard `BigPictureStyle`
+  bitmap of at most 1080 px, RGB_565 when it has no transparency. The manifest now declares
   `RichNotificationTrampolineActivity`, `RichPushVideoActivity` and
   `RichNotificationActionReceiver` (all `exported="false"`).
 - **Push token registration reports the SDK version.** The `device` object carries

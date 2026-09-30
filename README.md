@@ -752,11 +752,29 @@ the SDK itself inside `handleRemoteMessage`, whether the message arrives through
   full-screen `VideoView` with `MediaController` that plays the video with sound from the cached
   file (or streams it) and has a close button. It never opens a browser. When the video cannot be
   used, the notification shows the poster (`m`) with no play glyph, or title and body.
-- **Carousel page turns are instant.** The first render prefetches every card into a cache in
-  memory and in `cacheDir` (keyed by a hash of the media URL, pruned after two days), so the
-  arrows re-post the notification without any network, even in a fresh process.
+- **Carousel page turns are instant.** The first render prefetches every card into files in
+  `cacheDir` (keyed by a hash of the media URL, dropped after two days and capped at 40 MB in
+  total, oldest first), so the arrows re-post the notification without any network, even in a
+  fresh process.
+- **Metered networks and Data Saver.** When the active network is metered, or Data Saver is on
+  for your app, the SDK downloads no video on its own: a `PLAY` push shows the poster (no play
+  glyph) and a tap still opens the player, which streams on demand. The carousel then fetches
+  only the card on screen; the others load when the user turns to them.
+- **Rendering never holds the FCM callback.** `handleRemoteMessage` restarts scanning and flushes
+  the sync first, then renders on a worker thread and returns at once. Media downloads have a
+  budget of about 9 s; nothing is downloaded (so no view is counted) when the notification could
+  not be shown: permission missing, notifications off for the app, or its channel turned off.
 - **Size discipline.** Every bitmap is cropped to its on-screen box and downscaled before it is
-  handed to the notification, keeping each RemoteViews under the platform's 2 MB warning.
+  handed to the notification. The SDK's custom layouts (`TWO_IMAGES`, `CAROUSEL`, `PLAY`) keep
+  their bitmaps under 2 MB per RemoteViews, the size at which Android logs a "RemoteViews too
+  large" warning (it strips a custom view at 5 MB). The `IMAGE` picture is a standard
+  `BigPictureStyle` bitmap, not a custom RemoteViews: at most 1080 px on its longer edge, and
+  RGB_565 when it has no transparency (at most about 2.3 MB).
+- **Card links.** `http(s)` card URLs open in the browser (through the tracker when measurable).
+  Any other URI is treated as a deep link and kept only when an Activity of your own app handles
+  it; the tap then opens it inside your app. Everything else opens your app's launch Activity.
+- **Notification tag.** The SDK posts rich notifications under the tag `bearound_rich`, so their
+  ids never collide with your own notifications.
 - **Measurement.** With a measurable marker, a shown card's image is fetched through the
   tracker view endpoint (or, when it came from the cache, its view is reported once), http(s)
   card taps go through the tracker click endpoint, and a `PLAY` tap fires the click hit without

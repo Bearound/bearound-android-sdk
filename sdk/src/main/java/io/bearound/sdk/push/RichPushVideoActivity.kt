@@ -17,10 +17,12 @@ import android.widget.TextView
 import android.widget.VideoView
 import androidx.core.graphics.drawable.toDrawable
 import androidx.core.net.toUri
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import io.bearound.sdk.R
+import kotlin.concurrent.thread
 
 /**
  * Full-screen player a PLAY rich push opens on tap: plays the card's video with sound, from
@@ -79,6 +81,13 @@ internal class RichPushVideoActivity : Activity() {
             }
         )
         setContentView(root)
+        // Edge-to-edge (enforced on Android 15 for apps targeting it): keep the video and the
+        // close button clear of the navigation bar and the display cutout.
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
         hideSystemBars()
 
         val controller = MediaController(this)
@@ -118,6 +127,15 @@ internal class RichPushVideoActivity : Activity() {
         if (::videoView.isInitialized && positionMs > 0) {
             videoView.seekTo(positionMs)
             videoView.start()
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (isFinishing) {
+            // The played file stays cached for a replay; the disk cap still holds.
+            val dir = RichMediaCache.dir(this)
+            thread(name = "bearound-rich-prune") { RichMediaCache.prune(dir) }
         }
     }
 

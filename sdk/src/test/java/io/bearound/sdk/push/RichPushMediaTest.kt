@@ -14,7 +14,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.nio.file.Files
+import kotlin.concurrent.thread
 
 /** Pure parts of the rich push media pipeline: frame times, downscale math, cache keys and hits. */
 @RunWith(RobolectricTestRunner::class)
@@ -178,6 +181,107 @@ class RichPushMediaTest {
         RichMediaCache.prune(dir)
         assertFalse(old.exists())
         assertTrue(fresh.exists())
+    }
+
+    // endregion
+
+    // region review fixes
+
+    @Test
+    fun `prune caps the directory by size, oldest first, and spares downloads in progress`() {
+        val now = System.currentTimeMillis()
+        fun file(name: String, kb: Int, ageMin: Int) = File(dir, name).apply {
+            writeBytes(ByteArray(kb * 1024))
+            setLastModified(now - ageMin * 60_000L)
+        }
+        val oldest = file("a.img", 40, 30)
+        val middle = file("b.mp4", 40, 20)
+        val newest = file("c.img", 40, 10)
+        val downloading = file("d.mp4.tmp-7", 40, 40)
+
+        RichMediaCache.prune(dir, now, maxBytes = 100 * 1024)
+
+        assertFalse("oldest dropped first", oldest.exists())
+        assertTrue(middle.exists())
+        assertTrue(newest.exists())
+        assertTrue("a download in progress is not counted nor dropped", downloading.exists())
+
+        RichMediaCache.prune(dir, now, maxBytes = 50 * 1024)
+        assertFalse(middle.exists())
+        assertTrue(newest.exists())
+        assertEquals(40L * 1024 * 1024, RichMediaCache.MAX_DISK_BYTES)
+    }
+
+    @Test
+    fun `memory entries backed by a file are released, the others kept`() {
+        val spec = RichNotificationBuilder.CAROUSEL_SPEC
+        RichMediaCache.put(dir, "https://m.example.com/on-disk", spec, Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888))
+        val unwritable = File(dir, "missing-parent/child")
+        RichMediaCache.put(unwritable, "https://m.example.com/memory-only", spec, Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888))
+        assertEquals(2, RichMediaCache.memoryKeys().size)
+
+        RichMediaCache.releaseMemoryBackedByDisk(dir)
+
+        assertEquals(setOf(RichMediaCache.key("https://m.example.com/memory-only", spec)), RichMediaCache.memoryKeys())
+        assertNotNull("still served from the file", RichMediaCache.get(dir, "https://m.example.com/on-disk", spec))
+        assertTrue(RichMediaCache.MAX_MEMORY_BYTES <= 4 * 1024 * 1024)
+    }
+
+    @Test
+    fun `a crop of an opaque source stays opaque, so it can go out as RGB_565`() {
+        val photo = Bitmap.createBitmap(1100, 1100, Bitmap.Config.ARGB_8888).apply { setHasAlpha(false) }
+        val out = RichBitmaps.render(photo, RichNotificationBuilder.IMAGE_SPEC)!!
+        assertEquals(1080 to 1080, out.width to out.height)
+        assertFalse(out.hasAlpha())
+        assertEquals(Bitmap.Config.RGB_565, RichBitmaps.opaqueAsRgb565(out).config)
+
+        val logo = Bitmap.createBitmap(1100, 1100, Bitmap.Config.ARGB_8888).apply { setHasAlpha(true) }
+        val kept = RichBitmaps.render(logo, RichNotificationBuilder.IMAGE_SPEC)!!
+        assertTrue(kept.hasAlpha())
+        assertSame(kept, RichBitmaps.opaqueAsRgb565(kept))
+    }
+
+    @Test
+    fun `blocking timeouts never reach past the deadline`() {
+        assertEquals(3_000, timeoutUntil(10_000, 3_000, nowMs = 0))
+        assertEquals(500, timeoutUntil(10_000, 3_000, nowMs = 9_500))
+        assertEquals(1, timeoutUntil(10_000, 3_000, nowMs = 12_000))
+    }
+
+    @Test
+    fun `image download stops at its deadline even when bytes keep trickling in`() {
+        val server = ServerSocket(0, 1, InetAddress.getLoopbackAddress())
+        val serverThread = thread {
+            try {
+                server.accept().use { socket ->
+                    val input = socket.getInputStream().bufferedReader()
+                    while (input.readLine()?.isNotEmpty() == true) Unit
+                    val out = socket.getOutputStream()
+                    out.write("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\r\n".toByteArray())
+                    out.flush()
+                    repeat(40) {
+                        out.write(ByteArray(8))
+                        out.flush()
+                        Thread.sleep(100)
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        try {
+            val startedAt = System.currentTimeMillis()
+            val bitmap = HttpRichImageLoader.load(
+                "http://127.0.0.1:${server.localPort}/img",
+                RichNotificationBuilder.CAROUSEL_SPEC,
+                startedAt + 600
+            )
+            val elapsed = System.currentTimeMillis() - startedAt
+            assertNull(bitmap)
+            assertTrue("took $elapsed ms (the body alone takes 4 s)", elapsed < 1_500)
+        } finally {
+            server.close()
+            serverThread.join(5_000)
+        }
     }
 
     // endregion

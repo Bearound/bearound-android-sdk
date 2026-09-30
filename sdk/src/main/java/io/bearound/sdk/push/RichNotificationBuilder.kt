@@ -14,7 +14,6 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
-import android.os.Looper
 import android.util.Log
 import android.view.View
 import android.widget.RemoteViews
@@ -27,6 +26,7 @@ import io.bearound.sdk.R
 import org.json.JSONObject
 import java.io.File
 import java.net.URLEncoder
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 /** Rich push formats carried by `bearound_rich.f` (contract v1). */
@@ -109,9 +109,6 @@ internal data class RichPayload(
  */
 internal object RichPushUrls {
 
-    /** Schemes never opened from a push tap: treated as "no target" (the tap opens the app). */
-    private val BLOCKED_SCHEMES = setOf("javascript", "file", "content", "intent", "data")
-
     /**
      * URL to fetch card [index]'s image. With a measurable [marker] it goes through the
      * tracker view endpoint (that fetch IS the view); otherwise it is the raw media URL.
@@ -124,17 +121,33 @@ internal object RichPushUrls {
 
     /**
      * Where a tap on card [index] goes. Null: open the app (same as a legacy push tap).
-     * http(s): through the tracker click endpoint when [marker] is measurable, raw otherwise.
-     * Any other allowed scheme (a deep link): opened directly, never through the tracker.
+     * Allowlist: http(s) goes through the tracker click endpoint when [marker] is measurable,
+     * raw otherwise. Any other URI is a deep link, kept only when [hostHandles] says an
+     * Activity of the host app itself opens it (opened directly, never through the tracker);
+     * everything else (`javascript:`, `file:`, `intent:`, another app's scheme...) opens the app.
      */
-    fun tapUrl(rawUrl: String?, index: Int, marker: PushMarker?): String? {
+    fun tapUrl(rawUrl: String?, index: Int, marker: PushMarker?, hostHandles: (String) -> Boolean): String? {
         val url = rawUrl?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-        val scheme = url.substringBefore(':', missingDelimiterValue = "").lowercase()
-        if (scheme.isEmpty() || scheme in BLOCKED_SCHEMES) return null
-        val isWeb = scheme == "http" || scheme == "https"
-        if (!isWeb || marker == null) return url
+        if (!isWebUrl(url)) return url.takeIf { hostHandles(it) }
+        if (marker == null) return url
         return "${trackerBase(marker)}/v1/push:click?d=${enc(marker.d)}&r=${enc(url)}&idx=$index"
     }
+
+    /**
+     * Whether an ACTION_VIEW of [url] resolves to an Activity of the host app. Querying the
+     * app's own package needs no `<queries>` entry (package visibility never hides it).
+     */
+    fun resolvesInHost(context: Context, url: String): Boolean = try {
+        val uri = url.toUri()
+        if (uri.scheme.isNullOrBlank()) false
+        else context.packageManager.queryIntentActivities(hostViewIntent(context, uri), 0).isNotEmpty()
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** ACTION_VIEW of [uri] restricted to the host app, so no other app can claim a deep link. */
+    fun hostViewIntent(context: Context, uri: android.net.Uri): Intent =
+        Intent(Intent.ACTION_VIEW, uri).setPackage(context.packageName)
 
     /**
      * The tracker click hit for a tap the SDK handles itself (the PLAY player): the tracker
@@ -169,11 +182,16 @@ internal object RichPushUrls {
  * - IMAGE: `BigPictureStyle`.
  * - TWO_IMAGES: two cards side by side, one `PendingIntent` per card.
  * - CAROUSEL: one card at a time. The first render prefetches EVERY card into
- *   [RichMediaCache] (memory + `cacheDir`), so prev/next re-post the SAME notification id
- *   through [RichNotificationActionReceiver] without touching the network.
+ *   [RichMediaCache] (`cacheDir`), so prev/next re-post the SAME notification id (and tag)
+ *   through [RichNotificationActionReceiver] without touching the network. On a metered
+ *   network or with Data Saver only the shown card is fetched; the others load on their turn.
  * - PLAY: the video's own frames in a self-advancing `ViewFlipper` (an animated preview);
  *   tapping opens [RichPushVideoActivity], which plays the video with sound. If the video
- *   cannot be used the poster is shown (no play glyph), else title + body.
+ *   cannot be used, or is not downloaded (metered network or Data Saver), the poster is shown
+ *   (no play glyph), else title + body. The tap still opens the player.
+ *
+ * Rendering runs on a worker thread ([show]) so the FCM callback returns at once. Nothing is
+ * downloaded when the notification could not be shown (permission, app or channel off).
  *
  * Every tap goes through [RichNotificationTrampolineActivity] (an Activity, so it is
  * allowed on Android 12+), which reports the `open` with the SDK's existing open
@@ -208,8 +226,15 @@ internal object RichNotificationBuilder {
     private const val SLOT_PREV = "prev"
     private const val SLOT_NEXT = "next"
 
-    private const val DOWNLOAD_BUDGET_MS = 8_000L
-    private const val VIDEO_BUDGET_MS = 12_000L
+    /** Notification tag: keeps the SDK's ids apart from the host app's own notifications. */
+    const val NOTIFICATION_TAG = "bearound_rich"
+
+    /** Whole budget of one image load (every card of a render in parallel). */
+    internal const val DOWNLOAD_BUDGET_MS = 8_000L
+
+    /** PLAY: the video download must end by then; frame extraction by [RENDER_BUDGET_MS]. */
+    internal const val VIDEO_DOWNLOAD_BUDGET_MS = 6_500L
+    internal const val RENDER_BUDGET_MS = 9_000L
 
     /** IMAGE: the BigPicture keeps the source aspect, at most 1080 px on either edge. */
     internal val IMAGE_SPEC = RichImageSpec(1080, 1080, null)
@@ -247,34 +272,49 @@ internal object RichNotificationBuilder {
     @Volatile
     internal var hitSender: RichHitSender = HttpRichHitSender
 
+    /** Metered network or Data Saver: no automatic video download, no carousel prefetch. */
+    @Volatile
+    internal var networkConstrained: (Context) -> Boolean = { RichNetworkPolicy.isConstrained(it) }
+
+    /** Image load budget; a test seam, [DOWNLOAD_BUDGET_MS] in production. */
+    @Volatile
+    internal var downloadBudgetMs: Long = DOWNLOAD_BUDGET_MS
+
     internal fun resetForTest(context: Context? = null) {
         imageLoader = HttpRichImageLoader
         videoFrameSource = HttpRichVideoFrameSource
         hitSender = HttpRichHitSender
+        networkConstrained = { RichNetworkPolicy.isConstrained(it) }
+        downloadBudgetMs = DOWNLOAD_BUDGET_MS
         RichMediaCache.clearMemory()
         context?.let { RichMediaCache.clearDisk(RichMediaCache.dir(it)) }
     }
 
     /**
-     * Entry point from `handleRemoteMessage`. Never throws. Downloads block, so on the main
-     * thread (a bridge forwarding from its UI thread) the work moves to a worker thread;
-     * on FCM's own worker thread it runs inline, inside the message's execution window.
+     * Entry point from `handleRemoteMessage`. Never throws and never blocks: downloads run on
+     * a worker thread, so the caller (FCM's message thread, or a bridge's UI thread) returns
+     * at once and the notification is posted when its media is ready (within
+     * [RENDER_BUDGET_MS] plus decode time). Returns the worker, for tests.
      */
-    fun show(context: Context, data: Map<String, String>) {
-        val appContext = context.applicationContext
-        val snapshot = HashMap(data)
-        val work = {
-            try {
-                RichMediaCache.prune(RichMediaCache.dir(appContext))
-                post(appContext, snapshot, notificationIdFor(snapshot), 0, System.currentTimeMillis(), true)
-            } catch (t: Throwable) {
-                Log.w(TAG, "Rich notification failed: ${t.message}")
+    fun show(context: Context, data: Map<String, String>): Thread? {
+        return try {
+            val appContext = context.applicationContext
+            val snapshot = HashMap(data)
+            thread(name = "bearound-rich-push") {
+                try {
+                    post(appContext, snapshot, notificationIdFor(snapshot), 0, System.currentTimeMillis(), true)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Rich notification failed: ${t.message}")
+                } finally {
+                    try {
+                        RichMediaCache.prune(RichMediaCache.dir(appContext))
+                    } catch (_: Throwable) {
+                    }
+                }
             }
-        }
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            thread(name = "bearound-rich-push") { work() }
-        } else {
-            work()
+        } catch (t: Throwable) {
+            Log.w(TAG, "Rich notification failed to start: ${t.message}")
+            null
         }
     }
 
@@ -297,15 +337,18 @@ internal object RichNotificationBuilder {
      * dismisses the notification, then opens the card target, the video player or the app.
      */
     fun onTap(activity: Activity, intent: Intent) {
-        // Read before the open report, which strips the marker extra.
-        val marker = PushMarker.parse(intent.getStringExtra(KEY_MARKER))
+        // From the data bundle: the SDK's lifecycle callbacks report the open (and strip the
+        // top-level `bearound` extra) in onActivityCreated, before this runs.
+        val marker = PushMarker.parse(
+            intent.getBundleExtra(EXTRA_DATA)?.getString(KEY_MARKER) ?: intent.getStringExtra(KEY_MARKER)
+        )
         try {
             BeAroundSDK.getInstance(activity.applicationContext).handleNotificationIntent(intent)
         } catch (t: Throwable) {
             Log.w(TAG, "Open report failed: ${t.message}")
         }
         if (intent.hasExtra(EXTRA_NOTIFICATION_ID)) {
-            NotificationManagerCompat.from(activity).cancel(intent.getIntExtra(EXTRA_NOTIFICATION_ID, 0))
+            NotificationManagerCompat.from(activity).cancel(NOTIFICATION_TAG, intent.getIntExtra(EXTRA_NOTIFICATION_ID, 0))
         }
         val video = intent.getStringExtra(EXTRA_VIDEO_URL)
         if (video != null) {
@@ -328,9 +371,10 @@ internal object RichNotificationBuilder {
         val target = intent.getStringExtra(EXTRA_TARGET_URL)
         if (target != null) {
             try {
-                activity.startActivity(
-                    Intent(Intent.ACTION_VIEW, target.toUri()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
+                // A deep link only ever opens inside the host app (see RichPushUrls.tapUrl).
+                val view = if (RichPushUrls.isWebUrl(target)) Intent(Intent.ACTION_VIEW, target.toUri())
+                else RichPushUrls.hostViewIntent(activity, target.toUri())
+                activity.startActivity(view.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 return
             } catch (_: ActivityNotFoundException) {
                 Log.w(TAG, "No app handles the card target; opening the host app")
@@ -375,10 +419,25 @@ internal object RichNotificationBuilder {
         }
         val manager = NotificationManagerCompat.from(context)
         if (!manager.areNotificationsEnabled()) return false
-        val notification = build(context, data, notificationId, cardIndex, whenMs, firstRender, viewedMask)
+        val channelId = resolveChannel(context)
+        if (!channelCanShow(context, channelId)) {
+            Log.i(TAG, "Notification channel blocked; rich notification skipped")
+            return false
+        }
+        val notification = build(context, data, notificationId, cardIndex, whenMs, firstRender, viewedMask, channelId)
             ?: return false
-        manager.notify(notificationId, notification)
+        manager.notify(NOTIFICATION_TAG, notificationId, notification)
+        // System UI holds its own copy now; page turns read the files.
+        RichMediaCache.releaseMemoryBackedByDisk(RichMediaCache.dir(context))
         return true
+    }
+
+    /** False when the user turned the channel off (API 26+): nothing would show. */
+    private fun channelCanShow(context: Context, channelId: String): Boolean {
+        if (Build.VERSION.SDK_INT < 26) return true
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return true
+        val channel = manager.getNotificationChannel(channelId) ?: return true
+        return channel.importance != NotificationManager.IMPORTANCE_NONE
     }
 
     internal fun build(
@@ -388,7 +447,8 @@ internal object RichNotificationBuilder {
         cardIndex: Int,
         whenMs: Long,
         firstRender: Boolean,
-        viewedMask: Int = 0
+        viewedMask: Int = 0,
+        channelId: String = resolveChannel(context)
     ): Notification? {
         val title = data[KEY_TITLE].orEmpty()
         val body = data[KEY_BODY].orEmpty()
@@ -396,8 +456,10 @@ internal object RichNotificationBuilder {
         val marker = PushMarker.parse(data[KEY_MARKER])
         val dataBundle = mapToBundle(data)
         val cacheDir = RichMediaCache.dir(context)
+        val startedAt = System.currentTimeMillis()
+        val imageDeadline = startedAt + downloadBudgetMs
 
-        val builder = NotificationCompat.Builder(context, resolveChannel(context))
+        val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(resolveSmallIcon(context))
             .setContentTitle(title)
             .setContentText(body)
@@ -414,7 +476,9 @@ internal object RichNotificationBuilder {
             if (videoUrl != null) {
                 return tapIntent(context, dataBundle, notificationId, "card$index", null, videoUrl)
             }
-            val target = payload?.let { RichPushUrls.tapUrl(it.cards[index].url, index, marker) }
+            val target = payload?.let {
+                RichPushUrls.tapUrl(it.cards[index].url, index, marker) { url -> RichPushUrls.resolvesInHost(context, url) }
+            }
             return tapIntent(context, dataBundle, notificationId, "card$index", target, null)
         }
 
@@ -431,8 +495,10 @@ internal object RichNotificationBuilder {
                 .build()
         }
 
-        fun bigPicture(picture: Bitmap, content: PendingIntent): Notification {
-            val thumb = RichBitmaps.render(picture, THUMB_SPEC)
+        fun bigPicture(source: Bitmap, content: PendingIntent): Notification {
+            // An opaque picture (any photo) goes out as RGB_565: half the bytes.
+            val picture = RichBitmaps.opaqueAsRgb565(source)
+            val thumb = RichBitmaps.render(source, THUMB_SPEC)
             logBytes(payload?.format, "bigPicture", RichBitmaps.remoteViewsBytes(listOf(picture)), RichBitmaps.remoteViewsBytes(listOf(thumb)))
             return builder
                 .setLargeIcon(thumb)
@@ -465,14 +531,14 @@ internal object RichNotificationBuilder {
 
         return when (payload.format) {
             RichFormat.IMAGE -> {
-                val loaded = loadCards(cacheDir, payload, listOf(0), marker, IMAGE_SPEC, setOf(0))
+                val loaded = loadCards(cacheDir, payload, listOf(0), marker, IMAGE_SPEC, setOf(0), imageDeadline)
                 val bitmap = loaded[0].bitmap ?: return plain()
                 reportViews(loaded, listOf(0))
                 bigPicture(bitmap, cardIntent(0))
             }
 
             RichFormat.TWO_IMAGES -> {
-                val loaded = loadCards(cacheDir, payload, listOf(0, 1), marker, CARD_SPEC, setOf(0, 1))
+                val loaded = loadCards(cacheDir, payload, listOf(0, 1), marker, CARD_SPEC, setOf(0, 1), imageDeadline)
                 if (loaded.any { it.bitmap == null }) return plain()
                 reportViews(loaded, listOf(0, 1))
                 val expanded = RemoteViews(context.packageName, R.layout.bearound_notification_two_images)
@@ -496,8 +562,11 @@ internal object RichNotificationBuilder {
                 val count = payload.cards.size
                 // First render: prefetch every card, so page turns never wait on the network.
                 // Later renders read the cache (the network is only a fallback for a miss).
-                val indices = if (firstRender) (0 until count).toList() else listOf(index)
-                val loaded = loadCards(cacheDir, payload, indices, marker, CAROUSEL_SPEC, setOf(index))
+                // On a metered network or with Data Saver only the shown card is fetched; the
+                // others load on their page turn.
+                val prefetch = firstRender && !networkConstrained(context)
+                val indices = if (prefetch) (0 until count).toList() else listOf(index)
+                val loaded = loadCards(cacheDir, payload, indices, marker, CAROUSEL_SPEC, setOf(index), imageDeadline)
                 val bitmap = loaded.first { it.index == index }.bitmap
                 if (bitmap == null && firstRender) return plain()
                 reportViews(loaded, listOf(index), viewedMask)
@@ -537,24 +606,30 @@ internal object RichNotificationBuilder {
             RichFormat.PLAY -> {
                 // The poster fetch (push:view, idx 0) is the view and the fallback; it runs
                 // alongside the video download.
-                var posterLoaded: List<LoadedCard>? = null
+                val posterLoaded = AtomicReference<List<LoadedCard>?>(null)
                 val posterWorker = thread(name = "bearound-rich-poster") {
-                    posterLoaded = loadCards(cacheDir, payload, listOf(0), marker, IMAGE_SPEC, setOf(0))
+                    posterLoaded.set(loadCards(cacheDir, payload, listOf(0), marker, IMAGE_SPEC, setOf(0), imageDeadline))
                 }
-                val deadline = System.currentTimeMillis() + VIDEO_BUDGET_MS
-                val frames = if (videoUrl == null) emptyList() else try {
-                    videoFrameSource.frames(context, videoUrl, FRAME_COUNT, FRAME_SPEC, deadline)
+                // Metered network or Data Saver: no automatic video download. The poster shows
+                // (no play glyph) and a tap still opens the player, which streams on demand.
+                val skipVideo = videoUrl != null && networkConstrained(context)
+                if (skipVideo) Log.i(TAG, "PLAY video not downloaded on a metered network or with Data Saver")
+                val frames = if (videoUrl == null || skipVideo) emptyList() else try {
+                    videoFrameSource.frames(
+                        context, videoUrl, FRAME_COUNT, FRAME_SPEC,
+                        startedAt + VIDEO_DOWNLOAD_BUDGET_MS, startedAt + RENDER_BUDGET_MS
+                    )
                 } catch (_: Throwable) {
                     emptyList()
                 }
-                posterWorker.join((deadline - System.currentTimeMillis()).coerceAtLeast(1))
-                val poster = posterLoaded
+                posterWorker.join((imageDeadline - System.currentTimeMillis()).coerceAtLeast(1))
+                val poster = posterLoaded.get()
                 poster?.let { reportViews(it, listOf(0)) }
 
                 if (frames.size >= 2) {
                     playNotification(builder, context, title, body, frames, cardIntent(0))
                 } else {
-                    if (videoUrl != null) Log.w(TAG, "PLAY video unavailable; showing the poster")
+                    if (videoUrl != null && !skipVideo) Log.w(TAG, "PLAY video unavailable; showing the poster")
                     val cover = poster?.firstOrNull()?.bitmap ?: return plain()
                     bigPicture(cover, cardIntent(0))
                 }
@@ -676,11 +751,12 @@ internal object RichNotificationBuilder {
     internal class LoadedCard(val index: Int, val bitmap: Bitmap?, val fetchedAsView: Boolean)
 
     /**
-     * Loads [indices] in parallel within [DOWNLOAD_BUDGET_MS]: cache first (memory, then
-     * `cacheDir`), network on a miss. A displayed card ([displayed]) is fetched through the
-     * tracker view endpoint (that fetch IS the view); a prefetched card is fetched from the raw
-     * media URL, so prefetching never counts a view. A displayed card served from the cache
-     * gets its view reported by the caller instead.
+     * Loads [indices] in parallel, all of them bound by one [deadlineMs]: cache first (memory,
+     * then `cacheDir`), network on a miss. A card not loaded by the deadline counts as failed,
+     * even when its loader ignores the deadline. A displayed card ([displayed]) is fetched
+     * through the tracker view endpoint (that fetch IS the view); a prefetched card is fetched
+     * from the raw media URL, so prefetching never counts a view. A displayed card served from
+     * the cache gets its view reported by the caller instead.
      */
     private fun loadCards(
         cacheDir: File,
@@ -688,7 +764,8 @@ internal object RichNotificationBuilder {
         indices: List<Int>,
         marker: PushMarker?,
         spec: RichImageSpec,
-        displayed: Set<Int>
+        displayed: Set<Int>,
+        deadlineMs: Long
     ): List<LoadedCard> {
         fun loadOne(index: Int): LoadedCard {
             val key = payload.imageUrl(index)
@@ -696,21 +773,19 @@ internal object RichNotificationBuilder {
             val asView = index in displayed && marker != null
             val url = if (index in displayed) RichPushUrls.imageFetchUrl(payload, index, marker) else key
             val bitmap = try {
-                imageLoader.load(url, spec)
+                imageLoader.load(url, spec, deadlineMs)
             } catch (_: Throwable) {
                 null
             } ?: return LoadedCard(index, null, false)
             RichMediaCache.put(cacheDir, key, spec, bitmap)
             return LoadedCard(index, bitmap, asView)
         }
-        if (indices.size == 1) return listOf(loadOne(indices[0]))
-        val results = arrayOfNulls<LoadedCard>(indices.size)
+        val results = java.util.concurrent.atomic.AtomicReferenceArray<LoadedCard?>(indices.size)
         val workers = indices.mapIndexed { pos, index ->
-            thread(name = "bearound-rich-image-$pos") { results[pos] = loadOne(index) }
+            thread(name = "bearound-rich-image-$pos") { results.set(pos, loadOne(index)) }
         }
-        val deadline = System.currentTimeMillis() + DOWNLOAD_BUDGET_MS
-        workers.forEach { it.join((deadline - System.currentTimeMillis()).coerceAtLeast(1)) }
-        return indices.mapIndexed { pos, index -> results[pos] ?: LoadedCard(index, null, false) }
+        workers.forEach { it.join((deadlineMs - System.currentTimeMillis()).coerceAtLeast(1)) }
+        return indices.mapIndexed { pos, index -> results.get(pos) ?: LoadedCard(index, null, false) }
     }
 
     /** The host's channel from the standard FCM meta-data when it exists, else the SDK's own. */

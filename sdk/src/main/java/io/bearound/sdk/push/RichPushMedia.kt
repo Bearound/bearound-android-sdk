@@ -1,5 +1,6 @@
 package io.bearound.sdk.push
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -7,6 +8,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
 import android.media.MediaMetadataRetriever
+import android.net.ConnectivityManager
 import android.os.Build
 import android.util.Log
 import android.util.LruCache
@@ -123,12 +125,26 @@ internal object RichBitmaps {
             source.config == spec.config
         ) return source
         val out = createBitmap(fit.outWidth, fit.outHeight, spec.config)
+        // A new ARGB_8888 bitmap claims alpha; a crop of an opaque source (any photo) is opaque,
+        // which is what lets it go out as RGB_565 and be cached as JPEG.
+        if (!source.hasAlpha()) out.setHasAlpha(false)
         Canvas(out).drawBitmap(
             source,
             Rect(fit.cropLeft, fit.cropTop, fit.cropLeft + fit.cropWidth, fit.cropTop + fit.cropHeight),
             Rect(0, 0, fit.outWidth, fit.outHeight),
             Paint(Paint.FILTER_BITMAP_FLAG)
         )
+        return out
+    }
+
+    /**
+     * A copy of [bitmap] in RGB_565 when it has no alpha (half the bytes of ARGB_8888 and no
+     * visible loss on a photo), else [bitmap] itself.
+     */
+    fun opaqueAsRgb565(bitmap: Bitmap): Bitmap {
+        if (bitmap.hasAlpha() || bitmap.config == Bitmap.Config.RGB_565) return bitmap
+        val out = createBitmap(bitmap.width, bitmap.height, Bitmap.Config.RGB_565)
+        Canvas(out).drawBitmap(bitmap, 0f, 0f, Paint(Paint.FILTER_BITMAP_FLAG))
         return out
     }
 
@@ -175,15 +191,21 @@ internal object RichFrameTimes {
 }
 
 /**
- * Two-level cache of prepared notification media: an in-memory LRU for the running process
- * and files in `cacheDir` that survive it (a carousel page turn often lands in a fresh
- * process). Files are keyed by a hash of the media URL, never by the tracker URL.
+ * Two-level cache of prepared notification media: a small in-memory LRU that holds the bitmaps
+ * of a render in progress, and files in `cacheDir` that survive the process (a carousel page
+ * turn often lands in a fresh process). Once a notification is posted, the memory entries
+ * already backed by a file are released ([releaseMemoryBackedByDisk]): page turns decode the
+ * file, which is fast enough to stay instant. Files are keyed by a hash of the media URL, never
+ * by the tracker URL, and capped by age and by total size ([prune]).
  */
 internal object RichMediaCache {
     private const val DIR_NAME = "bearound_rich_push"
     private const val MAX_FILE_AGE_MS = 48L * 60 * 60 * 1000
+    internal const val MAX_DISK_BYTES = 40L * 1024 * 1024
+    internal const val MAX_MEMORY_BYTES = 4 * 1024 * 1024
+    private const val TMP_MARKER = ".tmp-"
 
-    private val memory = object : LruCache<String, Bitmap>(8 * 1024 * 1024) {
+    private val memory = object : LruCache<String, Bitmap>(MAX_MEMORY_BYTES) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount
     }
 
@@ -221,7 +243,7 @@ internal object RichMediaCache {
             // Parallel card loads race here: mkdirs() is false for the loser, so check the result.
             if (!dir.isDirectory) dir.mkdirs()
             if (!dir.isDirectory) return
-            val tmp = File(dir, "$key.tmp-${Thread.currentThread().id}")
+            val tmp = File(dir, "$key$TMP_MARKER${Thread.currentThread().id}")
             FileOutputStream(tmp).use { out ->
                 if (bitmap.hasAlpha()) bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
                 else bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
@@ -232,13 +254,40 @@ internal object RichMediaCache {
         }
     }
 
-    /** Drops files older than two days. Cheap: one directory listing per push. */
-    fun prune(dir: File, nowMs: Long = System.currentTimeMillis()) {
+    /**
+     * Drops files older than two days, then the oldest files until the rest fits [maxBytes].
+     * A download in progress (a `.tmp-` file) is never dropped for size, only for age. Cheap:
+     * one directory listing per push and per player close.
+     */
+    fun prune(dir: File, nowMs: Long = System.currentTimeMillis(), maxBytes: Long = MAX_DISK_BYTES) {
         try {
-            dir.listFiles()?.forEach { if (nowMs - it.lastModified() > MAX_FILE_AGE_MS) it.delete() }
+            val kept = mutableListOf<File>()
+            dir.listFiles()?.forEach {
+                if (nowMs - it.lastModified() > MAX_FILE_AGE_MS) it.delete()
+                else if (it.isFile && !it.name.contains(TMP_MARKER)) kept += it
+            }
+            var total = kept.sumOf { it.length() }
+            if (total <= maxBytes) return
+            for (file in kept.sortedBy { it.lastModified() }) {
+                if (total <= maxBytes) break
+                val size = file.length()
+                if (file.delete()) total -= size
+            }
         } catch (_: Throwable) {
         }
     }
+
+    /**
+     * Releases the memory entries whose file exists on disk. Called after a notification is
+     * posted: System UI holds its own copy, and a page turn reads the file.
+     */
+    fun releaseMemoryBackedByDisk(dir: File) {
+        for (key in memory.snapshot().keys) {
+            if (File(dir, "$key.img").isFile) memory.remove(key)
+        }
+    }
+
+    fun memoryKeys(): Set<String> = memory.snapshot().keys
 
     fun clearMemory() = memory.evictAll()
 
@@ -249,29 +298,37 @@ internal object RichMediaCache {
 
 /** Fetches and prepares one image. Abstracted so tests never hit the network. */
 internal fun interface RichImageLoader {
-    fun load(url: String, spec: RichImageSpec): Bitmap?
+    /** The prepared image, or null on any failure or when [deadlineMs] (wall clock) passes. */
+    fun load(url: String, spec: RichImageSpec, deadlineMs: Long): Bitmap?
 }
 
-/** Default loader: short-timeout GET, capped body size, sampled decode, then [RichBitmaps.render]. */
+/** Connect/read timeout for one blocking step: the default, never past the deadline. */
+internal fun timeoutUntil(deadlineMs: Long, defaultMs: Int, nowMs: Long = System.currentTimeMillis()): Int =
+    (deadlineMs - nowMs).coerceIn(1L, defaultMs.toLong()).toInt()
+
+/**
+ * Default loader: GET with one overall deadline (timeouts clamped to it, checked between
+ * reads), capped body size, sampled decode, then [RichBitmaps.render].
+ */
 internal object HttpRichImageLoader : RichImageLoader {
     private const val CONNECT_TIMEOUT_MS = 3_000
     private const val READ_TIMEOUT_MS = 4_000
     private const val MAX_BYTES = 5 * 1024 * 1024
 
-    override fun load(url: String, spec: RichImageSpec): Bitmap? {
+    override fun load(url: String, spec: RichImageSpec, deadlineMs: Long): Bitmap? {
         var connection: HttpURLConnection? = null
         return try {
             connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = CONNECT_TIMEOUT_MS
-                readTimeout = READ_TIMEOUT_MS
+                connectTimeout = timeoutUntil(deadlineMs, CONNECT_TIMEOUT_MS)
+                readTimeout = timeoutUntil(deadlineMs, READ_TIMEOUT_MS)
                 instanceFollowRedirects = true
             }
             if (connection.responseCode !in 200..299) {
                 Log.w(MEDIA_TAG, "Image fetch failed (HTTP ${connection.responseCode})")
                 return null
             }
-            val bytes = connection.inputStream.use { readCapped(it) } ?: return null
+            val bytes = connection.inputStream.use { readCapped(it, deadlineMs) } ?: return null
             RichBitmaps.decode(bytes, spec)
         } catch (t: Throwable) {
             Log.w(MEDIA_TAG, "Image fetch failed: ${t.message}")
@@ -281,7 +338,7 @@ internal object HttpRichImageLoader : RichImageLoader {
         }
     }
 
-    private fun readCapped(input: InputStream): ByteArray? {
+    private fun readCapped(input: InputStream, deadlineMs: Long): ByteArray? {
         val out = ByteArrayOutputStream()
         val buffer = ByteArray(16 * 1024)
         var total = 0
@@ -290,6 +347,10 @@ internal object HttpRichImageLoader : RichImageLoader {
             if (n < 0) break
             total += n
             if (total > MAX_BYTES) return null
+            if (System.currentTimeMillis() > deadlineMs) {
+                Log.w(MEDIA_TAG, "Image skipped: download over the time budget")
+                return null
+            }
             out.write(buffer, 0, n)
         }
         return out.toByteArray()
@@ -298,8 +359,18 @@ internal object HttpRichImageLoader : RichImageLoader {
 
 /** Produces the preview frames of a PLAY push. Abstracted so tests never hit the network. */
 internal fun interface RichVideoFrameSource {
-    /** Up to [count] frames of the video at [url], prepared with [spec]; empty on any failure. */
-    fun frames(context: Context, url: String, count: Int, spec: RichImageSpec, deadlineMs: Long): List<Bitmap>
+    /**
+     * Up to [count] frames of the video at [url], prepared with [spec]; empty on any failure.
+     * The download must end by [downloadDeadlineMs] and the extraction by [deadlineMs].
+     */
+    fun frames(
+        context: Context,
+        url: String,
+        count: Int,
+        spec: RichImageSpec,
+        downloadDeadlineMs: Long,
+        deadlineMs: Long
+    ): List<Bitmap>
 }
 
 /**
@@ -316,9 +387,10 @@ internal object HttpRichVideoFrameSource : RichVideoFrameSource {
         url: String,
         count: Int,
         spec: RichImageSpec,
+        downloadDeadlineMs: Long,
         deadlineMs: Long
     ): List<Bitmap> {
-        val file = download(RichMediaCache.dir(context), url, deadlineMs) ?: return emptyList()
+        val file = download(RichMediaCache.dir(context), url, downloadDeadlineMs) ?: return emptyList()
         return extract(file, count, spec, deadlineMs)
     }
 
@@ -333,8 +405,8 @@ internal object HttpRichVideoFrameSource : RichVideoFrameSource {
         try {
             connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = CONNECT_TIMEOUT_MS
-                readTimeout = READ_TIMEOUT_MS
+                connectTimeout = timeoutUntil(deadlineMs, CONNECT_TIMEOUT_MS)
+                readTimeout = timeoutUntil(deadlineMs, READ_TIMEOUT_MS)
                 instanceFollowRedirects = true
             }
             if (connection.responseCode !in 200..299) {
@@ -446,5 +518,30 @@ internal object HttpRichHitSender : RichHitSender {
                 connection?.disconnect()
             }
         }
+    }
+}
+
+/**
+ * Whether the device is on a network where the SDK must not download large media on its own:
+ * a metered connection, or Data Saver on for this app. Images still load (they are small and
+ * they are the notification); the PLAY video is skipped and the carousel stops prefetching.
+ */
+internal object RichNetworkPolicy {
+
+    /** Pure decision: [restrictBackgroundStatus] is `ConnectivityManager.RESTRICT_BACKGROUND_STATUS_*`, or null below API 24. */
+    @SuppressLint("InlinedApi") // a compile-time constant; the status itself is only read on API 24+
+    fun isConstrained(metered: Boolean, restrictBackgroundStatus: Int?): Boolean =
+        metered || restrictBackgroundStatus == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED
+
+    /** Reads the current state. Unknown (no service, or a failure) counts as constrained. */
+    fun isConstrained(context: Context): Boolean = try {
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        if (cm == null) true
+        else isConstrained(
+            cm.isActiveNetworkMetered,
+            if (Build.VERSION.SDK_INT >= 24) cm.restrictBackgroundStatus else null
+        )
+    } catch (_: Throwable) {
+        true
     }
 }
