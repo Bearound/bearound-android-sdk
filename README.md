@@ -149,14 +149,14 @@ allprojects {
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("com.github.Bearound:bearound-android-sdk:3.13.0")
+    implementation("com.github.Bearound:bearound-android-sdk:3.14.0")
 }
 ```
 
 ```gradle
 // build.gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:3.13.0'
+    implementation 'com.github.Bearound:bearound-android-sdk:3.14.0'
 }
 ```
 
@@ -166,7 +166,7 @@ for how they wire together with one line):
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:3.13.0'
+    implementation 'com.github.Bearound:bearound-android-sdk:3.14.0'
     implementation 'com.github.Bearound:bearound-telemetry-android-sdk:v0.1.2'
 }
 ```
@@ -374,6 +374,26 @@ addresses that Android returns when a permission is missing are discarded rather
 
 > **Migration note:** `network.apId` joins `network.wifiSSID` — a stable, hashed identity for
 > the access point, reported next to the name rather than instead of it.
+
+#### Wi-Fi visit matching
+
+From 3.14.0 the SDK also recognises a place by its Wi-Fi. When the places configuration lists
+known access points for a place (`knownApIds`, hashed like `apId`), the SDK matches what the
+device sees against that list and reports an arrival and a departure, with the same dwell
+rule as the GPS visit. It is switched by the same controls as visit detection: the remote
+`visit_detection_enabled`, `collectWifi` and `collectLocation`.
+
+- **One stop per place.** When GPS and Wi-Fi both see the same place, the SDK keeps a single
+  stop: one arrival and one departure, carrying the fix and the matched access points.
+- **Events without a location.** A stop opened only by Wi-Fi is sent without a location; the
+  matched access point goes first in `wifis[]`, with the time it was seen.
+- **Scans.** On the native geofence path, entering a place that has known access points asks
+  the system for one scan (inside Android's scan throttle); the soft fence path only reads the
+  cached results at its existing wakeups, and never asks for a scan. Matching reads every
+  cached access point, not only the 25 reported in `wifis[]`.
+- **Background.** Without `ACCESS_BACKGROUND_LOCATION` the scan list is empty in the
+  background (see above), so Wi-Fi matching only works while the app is in the foreground.
+  No new permission is declared or requested.
 
 ### Encounter layer (device-to-device)
 
