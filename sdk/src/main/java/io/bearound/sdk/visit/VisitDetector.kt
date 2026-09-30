@@ -140,8 +140,8 @@ internal data class VisitEvent(
 
 /**
  * The `wifis[]` of a Wi-Fi visit event: [matched] first, then [others], up to
- * [WifiCollector.MAX_OBSERVATIONS]. The ingest dates a location-less event by `wifis[0]`, so
- * the lead entry carries [leadAt], the time the matcher decided the event is about.
+ * [WifiCollector.MAX_OBSERVATIONS]. A location-less event is dated by `wifis[0]`, so the lead
+ * entry carries [leadAt], the time the matcher decided the event is about.
  */
 internal fun visitWifis(
     matched: List<WifiObservation>,
@@ -322,7 +322,7 @@ internal class VisitStopTracker(
 
     /**
      * Drops a stop only the Wi-Fi matcher holds, with no departure event: the matcher is off
-     * and nothing will ever close it (REQ-019). A stop the GPS detector also sees stays.
+     * and nothing will ever close it. A stop the GPS detector also sees stays.
      */
     fun discardWifiStop() {
         val open = store.openStop ?: return
@@ -348,7 +348,7 @@ internal fun interface WifiCacheReader {
  * through the [VisitStopTracker], so a Wi-Fi stop and a GPS stop are the same stop.
  *
  * Active only while the places config has `visit_detection_enabled` and the host allows both
- * location and Wi-Fi collection (REQ-019); otherwise the matcher state and a Wi-Fi-only open
+ * location and Wi-Fi collection; otherwise the matcher state and a Wi-Fi-only open
  * stop are discarded, with no invented departure. Reads only [reader] (cached scan results):
  * it never starts a scan.
  */

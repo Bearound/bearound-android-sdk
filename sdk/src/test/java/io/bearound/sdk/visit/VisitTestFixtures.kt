@@ -19,7 +19,7 @@ internal object VisitTestFixtures {
     /** Meters along a meridian to degrees of latitude, with the same Earth radius as [Geo]. */
     fun metersToLatDegrees(meters: Double) = Math.toDegrees(meters / 6_371_000.0)
 
-    /** A place that carries the `knownApIds` field the server sends for Wi-Fi visit matching. */
+    /** A place that carries the `knownApIds` field used for Wi-Fi visit matching. */
     private const val WIFI_PLACE_JSON = """
             {
               "environmentId": "$WIFI_ENV_ID",
