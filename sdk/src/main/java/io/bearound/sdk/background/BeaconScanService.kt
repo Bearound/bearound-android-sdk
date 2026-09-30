@@ -10,7 +10,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import io.bearound.sdk.models.ForegroundScanConfig
 
@@ -88,26 +90,75 @@ class BeaconScanService : Service() {
             context.stopService(Intent(context, BeaconScanService::class.java))
         }
 
+        /** Everything the rendered foreground notification carries; equality drives dedupe. */
+        internal data class FgsNotificationContent(
+            val title: String,
+            val text: String,
+            val icon: Int?,
+            val channelId: String?,
+            val channelName: String
+        )
+
+        private val notificationThrottle = NotificationUpdateThrottle<FgsNotificationContent>()
+        private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+        private val trailingUpdate = Runnable { postTrailingNotification() }
+
+        @Volatile
+        private var appContext: Context? = null
+
         fun updateNotification(context: Context, title: String, text: String) {
             if (!isRunning) return
-            // The service is ALREADY foreground — a notification refresh only needs
-            // NotificationManager.notify. The old path re-delivered an intent through
-            // startForegroundService, a heavier mechanism subject to FGS-start policy.
+            // The service is ALREADY foreground: a notification refresh only needs
+            // NotificationManager.notify. Refreshes are deduped and throttled (see
+            // NotificationUpdateThrottle): the scan callback fires several times per
+            // second, and re-posting at that rate makes Android shed the app's other
+            // notifications, rich pushes included.
             try {
+                appContext = context.applicationContext
                 val cfg = io.bearound.sdk.utilities.SDKConfigStorage.loadForegroundScanConfig(context)
-                val notification = buildNotification(
-                    context,
-                    title.ifEmpty { resolveAppName(context) },
-                    text,
-                    cfg?.notificationIcon,
-                    cfg?.notificationChannelId,
-                    cfg?.notificationChannelName ?: "Region monitoring service"
+                val content = FgsNotificationContent(
+                    title = title.ifEmpty { resolveAppName(context) },
+                    text = text,
+                    icon = cfg?.notificationIcon,
+                    channelId = cfg?.notificationChannelId,
+                    channelName = cfg?.notificationChannelName ?: "Region monitoring service"
                 )
-                context.getSystemService(NotificationManager::class.java)
-                    .notify(NOTIFICATION_ID, notification)
+                when (val decision = notificationThrottle.offer(content)) {
+                    NotificationUpdateThrottle.Decision.PostNow -> postNotification(context, content)
+                    NotificationUpdateThrottle.Decision.Skip -> Unit
+                    is NotificationUpdateThrottle.Decision.ScheduleTrailing ->
+                        mainHandler.postDelayed(trailingUpdate, decision.delayMs)
+                }
             } catch (e: Exception) {
-                Log.w(TAG, "Could not update foreground service notification — skipping", e)
+                Log.w(TAG, "Could not update foreground service notification, skipping", e)
             }
+        }
+
+        private fun postTrailingNotification() {
+            val context = appContext
+            if (!isRunning || context == null) {
+                notificationThrottle.reset()
+                return
+            }
+            val content = notificationThrottle.onTrailingDue() ?: return
+            try {
+                postNotification(context, content)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not update foreground service notification, skipping", e)
+            }
+        }
+
+        private fun postNotification(context: Context, content: FgsNotificationContent) {
+            val notification = buildNotification(
+                context,
+                content.title,
+                content.text,
+                content.icon,
+                content.channelId,
+                content.channelName
+            )
+            context.getSystemService(NotificationManager::class.java)
+                .notify(NOTIFICATION_ID, notification)
         }
 
         private fun resolveAppName(context: Context): String {
@@ -222,12 +273,17 @@ class BeaconScanService : Service() {
             return START_NOT_STICKY
         }
 
+        notificationThrottle.recordPosted(
+            FgsNotificationContent(title, text, icon, channelId, channelName)
+        )
         Log.d(TAG, "BeaconScanService started in foreground")
         return START_STICKY
     }
 
     override fun onDestroy() {
         isRunning = false
+        mainHandler.removeCallbacks(trailingUpdate)
+        notificationThrottle.reset()
         Log.d(TAG, "BeaconScanService destroyed")
         super.onDestroy()
     }

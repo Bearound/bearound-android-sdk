@@ -66,6 +66,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sdkVersion` next to `pushToken`, so the backend can tell which devices render rich push.
   After an SDK upgrade the token is re-sent once so the new version is reported.
 
+### Fixed
+- **The foreground-service notification no longer floods the NotificationManager.** With
+  `onProvideNotificationContent` implemented, the scan notification (id 19850) was re-posted on
+  every background scan callback, several times per second while beacons were in range. Android
+  then throttled the app ("Package enqueue rate ... Shedding") and dropped its other
+  notifications, rich pushes included, besides spending battery. Refreshes are now deduplicated
+  (content equal to what is shown is never re-posted) and throttled to at most one post every
+  5 s; changes inside the window are coalesced and the latest one is posted when it ends.
+
 ## [3.12.0] - 2026-09-28
 
 ### Added
