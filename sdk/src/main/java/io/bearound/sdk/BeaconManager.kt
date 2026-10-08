@@ -474,7 +474,7 @@ class BeaconManager(private val context: Context) {
         stopRegionCleanupTimer()
 
         if (isRanging) {
-            bluetoothLeScanner?.stopScan(scanCallback)
+            stopRegularScan()
             isRanging = false
         }
         stopSlowBeaconBatchScan()
@@ -577,12 +577,21 @@ class BeaconManager(private val context: Context) {
         Log.d(TAG, "stopRanging() called - isRanging: $isRanging, isInForeground: $isInForeground")
         if (!isRanging) return
 
-        bluetoothLeScanner?.stopScan(scanCallback)
+        stopRegularScan()
         isRanging = false
         stopWatchdog()
         
         if (isInForeground) {
             stopRangingRefreshTimer()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopRegularScan() {
+        try {
+            bluetoothLeScanner?.stopScan(scanCallback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to stop ranging: ${e.message}")
         }
     }
 
@@ -1076,8 +1085,10 @@ class BeaconManager(private val context: Context) {
         if (!ScanStartBudget.tryAcquire("ranging-restart")) return
 
         if (isRanging) {
-            bluetoothLeScanner?.stopScan(scanCallback)
+            stopRegularScan()
         }
+        // REQ-007: the delayed start must see the old registration as stopped.
+        isRanging = false
 
         val backoffDelay = minOf(500L * rangingRestartCount, 5000L)
 

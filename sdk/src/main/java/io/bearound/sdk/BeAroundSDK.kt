@@ -48,6 +48,7 @@ import io.bearound.sdk.utilities.StoredBatchDrain
 import io.bearound.sdk.utilities.PushTokenStore
 import io.bearound.sdk.utilities.RegisterStore
 import io.bearound.sdk.utilities.SDKConfigStorage
+import io.bearound.sdk.utilities.ScanLogThrottle
 import io.bearound.sdk.utilities.SecureStorage
 import io.bearound.sdk.utilities.LocationCollector
 import io.bearound.sdk.visit.GeofenceSignal
@@ -80,9 +81,6 @@ import kotlin.math.pow
 class BeAroundSDK private constructor() {
     companion object {
         private const val TAG = "BeAroundSDK"
-
-        /** Scan-log throttle window — same 10 s the iOS SDK uses. */
-        private const val SCAN_LOG_THROTTLE_MS = 10_000L
 
         /**
          * Statuses where an identical retry fails identically: the payload/credential is
@@ -238,9 +236,7 @@ class BeAroundSDK private constructor() {
         }
     }
 
-    /** Scan-log throttle state — mirrors iOS `lastScanLogSignature`/`lastScanLogAt`. */
-    private var lastScanLogSignature: String? = null
-    private var lastScanLogAt: Long = 0L
+    private val scanLogThrottle = ScanLogThrottle()
 
     private var syncRunnable: Runnable? = null
     private var scanRefreshRunnable: Runnable? = null
@@ -394,18 +390,14 @@ class BeAroundSDK private constructor() {
             dispatchToListener { it.onBeaconsUpdated(beaconsForListener) }
 
             // Ranged-scan log (diagnostic, persisted): one entry per composition
-            // change or every 10 s — same contract and format as iOS, so the same
+            // change or every 10 s, same contract and format as iOS, so the same
             // host UI reads both platforms identically.
-            if (enrichedBeacons.isNotEmpty()) {
-                val signature = enrichedBeacons.joinToString(", ") {
+            scanLogThrottle.detailIfDue(enrichedBeacons) {
+                enrichedBeacons.joinToString(", ") {
                     "${it.major}.${it.minor} rssi=${it.rssi}"
                 }
-                val now = System.currentTimeMillis()
-                if (signature != lastScanLogSignature || now - lastScanLogAt > SCAN_LOG_THROTTLE_MS) {
-                    lastScanLogSignature = signature
-                    lastScanLogAt = now
-                    DetectionLogStore.append(context, type = "Scan", detail = signature)
-                }
+            }?.let { detail ->
+                DetectionLogStore.append(context, type = "Scan", detail = detail)
             }
 
             // Notify if beacons detected in background
