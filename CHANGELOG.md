@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.0] - 2026-10-09
+
+### Added
+- **Operator codes in the device payload.** `device.network` may now carry three optional
+  fields: `simMccMnc` (MCC+MNC of the SIM), `simOperatorName` and `networkMccMnc` (MCC+MNC of
+  the registered network). Each is omitted when the SIM is not ready or the value is not
+  available.
+
+No new permission is declared or requested.
+
 ## [3.14.0] - 2026-09-30
 
 ### Added
