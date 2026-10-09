@@ -83,6 +83,12 @@ data class UserDevice(
      * True when the user asked apps not to track them. Reported alongside [advertisingId]
      * so an opt-out is distinguishable from Play Services simply being unavailable.
      */
-    val limitAdTracking: Boolean? = null
+    val limitAdTracking: Boolean? = null,
+    /** Operator code (MCC+MNC) of the SIM. Null when the SIM is not ready or the value is malformed. */
+    val simMccMnc: String? = null,
+    /** Operator name of the SIM, trimmed and capped at 64 characters. */
+    val simOperatorName: String? = null,
+    /** Operator code (MCC+MNC) of the registered network. Null when not registered. */
+    val networkMccMnc: String? = null
 )
 
