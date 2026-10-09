@@ -310,7 +310,7 @@ class APIClient(private val configuration: SDKConfiguration) {
         return payload
     }
 
-    private fun buildDevicePayload(device: UserDevice): JSONObject {
+    internal fun buildDevicePayload(device: UserDevice): JSONObject {
         val payload = JSONObject()
 
         payload.put("deviceId", device.deviceId)
@@ -350,6 +350,10 @@ class APIClient(private val configuration: SDKConfiguration) {
         val network = JSONObject().apply {
             put("type", device.networkType)
             device.cellularGeneration?.let { put("cellularGeneration", it) }
+            // Operator codes of the SIM and of the registered network.
+            device.simMccMnc?.let { put("simMccMnc", it) }
+            device.simOperatorName?.let { put("simOperatorName", it) }
+            device.networkMccMnc?.let { put("networkMccMnc", it) }
             device.apId?.let { put("apId", it) }
             // Network name — part of the contract, see WifiObservation.ssid.
             device.wifiSSID?.let { put("wifiSSID", it) }
