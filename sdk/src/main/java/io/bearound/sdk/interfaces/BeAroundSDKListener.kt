@@ -1,5 +1,6 @@
 package io.bearound.sdk.interfaces
 
+import io.bearound.sdk.models.AppPresenceSnapshot
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.NotificationContent
 
@@ -100,6 +101,18 @@ interface BeAroundSDKListener {
      * @param isActive true when active scanning is running, false when paused
      */
     fun onActiveScanStateChanged(isActive: Boolean) {}
+
+    // endregion
+
+    // region App presence
+
+    /**
+     * Called with every completed app presence round, and once with the last compatible
+     * snapshot (`cached = true`, original ids and times) when this listener is assigned.
+     * A snapshot id is delivered at most once per listener assignment. Results stay local:
+     * the SDK never uploads them. Main thread.
+     */
+    fun onAppPresenceUpdated(snapshot: AppPresenceSnapshot) {}
 
     // endregion
 }
