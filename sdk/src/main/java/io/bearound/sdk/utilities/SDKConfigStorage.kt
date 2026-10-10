@@ -2,6 +2,8 @@ package io.bearound.sdk.utilities
 
 import android.content.Context
 import android.content.SharedPreferences
+import io.bearound.sdk.models.AppPresenceConfiguration
+import io.bearound.sdk.models.AppPresenceValidator
 import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.PeriodicReconciliationDefaults
@@ -39,6 +41,8 @@ object SDKConfigStorage {
     private const val KEY_COLLECT_ADVERTISING_ID = "collect_advertising_id"
     private const val KEY_COLLECT_LOCATION = "collect_location"
     private const val KEY_COLLECT_WIFI = "collect_wifi"
+    // App presence configuration, stored as JSON (see AppPresenceConfiguration.toJson)
+    private const val KEY_APP_PRESENCE = "app_presence_configuration"
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -56,6 +60,7 @@ object SDKConfigStorage {
             putBoolean(KEY_COLLECT_ADVERTISING_ID, config.collectAdvertisingId)
             putBoolean(KEY_COLLECT_LOCATION, config.collectLocation)
             putBoolean(KEY_COLLECT_WIFI, config.collectWifi)
+            putString(KEY_APP_PRESENCE, encodeAppPresence(config.appPresence))
             putBoolean(KEY_IS_CONFIGURED, true)
             // Remove legacy keys if they exist
             remove(KEY_FOREGROUND_INTERVAL)
@@ -125,8 +130,47 @@ object SDKConfigStorage {
             periodicScanDurationMillis = periodicScanDuration,
             collectAdvertisingId = collectAdvertisingId,
             collectLocation = collectLocation,
-            collectWifi = collectWifi
+            collectWifi = collectWifi,
+            appPresence = decodeAppPresence(prefs.getString(KEY_APP_PRESENCE, null))
         )
+    }
+
+    /**
+     * Persists only the app presence configuration, leaving the rest of the stored SDK
+     * configuration untouched. An invalid configuration is stored as the disabled default.
+     */
+    fun saveAppPresenceConfiguration(context: Context, config: AppPresenceConfiguration) {
+        getPrefs(context).edit().apply {
+            putString(KEY_APP_PRESENCE, encodeAppPresence(config))
+            apply()
+        }
+    }
+
+    /**
+     * The stored app presence configuration. Absent (configs persisted before the feature
+     * existed), corrupted or invalid values all restore the disabled default: fail closed.
+     */
+    fun loadAppPresenceConfiguration(context: Context): AppPresenceConfiguration =
+        decodeAppPresence(getPrefs(context).getString(KEY_APP_PRESENCE, null))
+
+    private fun encodeAppPresence(config: AppPresenceConfiguration): String {
+        val safe = if (config.validationError() == null) {
+            AppPresenceValidator.normalize(config)
+        } else {
+            AppPresenceConfiguration.DISABLED
+        }
+        return safe.toJson().toString()
+    }
+
+    private fun decodeAppPresence(raw: String?): AppPresenceConfiguration {
+        if (raw == null) return AppPresenceConfiguration.DISABLED
+        return try {
+            val config = AppPresenceConfiguration.fromJson(raw)
+            if (config.validationError() == null) AppPresenceValidator.normalize(config)
+            else AppPresenceConfiguration.DISABLED
+        } catch (_: Exception) {
+            AppPresenceConfiguration.DISABLED
+        }
     }
 
     /**

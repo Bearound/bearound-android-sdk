@@ -182,7 +182,15 @@ data class SDKConfiguration(
      *
      * Default: `true`.
      */
-    val collectWifi: Boolean = true
+    val collectWifi: Boolean = true,
+    /**
+     * Local check of whether declared apps are installed on this device.
+     *
+     * Opt-in: disabled with no targets by default, and a configuration persisted before this
+     * field existed restores that default. Results stay on the device (callbacks only);
+     * nothing is uploaded.
+     */
+    val appPresence: AppPresenceConfiguration = AppPresenceConfiguration()
 ) {
     /** The three switches above as one value, for the collectors. */
     val dataCollectionPolicy: DataCollectionPolicy
