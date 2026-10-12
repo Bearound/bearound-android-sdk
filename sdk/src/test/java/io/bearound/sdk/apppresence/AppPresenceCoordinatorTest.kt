@@ -596,6 +596,18 @@ class AppPresenceCoordinatorTest {
     }
 
     @Test
+    fun `a round completing before the queued replay reaches the listener as a new round`() {
+        // Listener assigned right before startScanning: its replay is queued on the main
+        // thread while the round completes on the executor (seen on a Galaxy A16).
+        val poster = QueuedPoster()
+        val (_, listener) = started(poster = poster)
+        poster.drain()
+
+        val delivered = listener.snapshots.single()
+        assertFalse(delivered.cached)
+    }
+
+    @Test
     fun `persisted snapshot replays after relaunch without querying`() {
         started()
         val original = storedRecord().lastSnapshot!!

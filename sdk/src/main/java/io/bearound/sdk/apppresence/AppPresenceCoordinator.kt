@@ -154,6 +154,9 @@ internal class AppPresenceCoordinator(
     private var listenerEpoch = 0L
     private var deliveredEpoch = -1L
     private var deliveredSnapshotId: String? = null
+    // Snapshot of a completed round whose live delivery is still queued. A replay must not
+    // deliver it first: it is a new round and reaches listeners with cached = false.
+    private var pendingLiveSnapshotId: String? = null
     // endregion
 
     private fun isOn(config: AppPresenceConfiguration) = config.enabled && config.targets.isNotEmpty()
@@ -322,6 +325,7 @@ internal class AppPresenceCoordinator(
             if (generation != input.generation) return
             cacheNamespace = input.namespace
             cachedSnapshot = snapshot
+            pendingLiveSnapshotId = snapshot.snapshotId
         }
         mainPoster(Runnable { deliverLive(snapshot, input.generation) })
     }
@@ -425,6 +429,7 @@ internal class AppPresenceCoordinator(
 
     private fun deliverLive(snapshot: AppPresenceSnapshot, roundGeneration: Long) {
         val (target, epoch) = synchronized(lock) {
+            if (pendingLiveSnapshotId == snapshot.snapshotId) pendingLiveSnapshotId = null
             if (generation != roundGeneration || !active) return
             val current = listener ?: return
             if (deliveredEpoch == listenerEpoch && deliveredSnapshotId == snapshot.snapshotId) return
@@ -440,6 +445,7 @@ internal class AppPresenceCoordinator(
             if (epoch != listenerEpoch) return
             val current = listener ?: return
             val cached = compatibleSnapshotLocked() ?: return
+            if (cached.snapshotId == pendingLiveSnapshotId) return
             if (deliveredEpoch == epoch && deliveredSnapshotId == cached.snapshotId) return
             deliveredEpoch = epoch
             deliveredSnapshotId = cached.snapshotId
