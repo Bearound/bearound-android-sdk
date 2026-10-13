@@ -15,12 +15,16 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import io.bearound.sdk.apppresence.AppPresenceCoordinator
 import io.bearound.sdk.background.BackgroundScanManager
 import io.bearound.sdk.background.BackgroundScheduler
 import io.bearound.sdk.background.BeaconScanService
 import io.bearound.sdk.background.ImmediateSyncWorker
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.interfaces.BluetoothManagerListener
+import io.bearound.sdk.models.AppPresenceConfiguration
+import io.bearound.sdk.models.AppPresenceSnapshot
+import io.bearound.sdk.models.AppPresenceValidator
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.BeAroundDiagnostics
 import io.bearound.sdk.models.BeaconMetadata
@@ -134,6 +138,14 @@ class BeAroundSDK private constructor() {
     }
 
     var listener: BeAroundSDKListener? = null
+        set(value) {
+            field = value
+            // A new assignment gets the cached app presence snapshot replayed (cached = true).
+            if (::appPresenceCoordinator.isInitialized) appPresenceCoordinator.setListener(value)
+        }
+
+    /** Local app presence feature (see [configureAppPresence]). Internal for tests. */
+    internal lateinit var appPresenceCoordinator: AppPresenceCoordinator
 
     private lateinit var context: Context
     private var configuration: SDKConfiguration? = null
@@ -315,6 +327,7 @@ class BeAroundSDK private constructor() {
             offlineBatchStorage.maxBatchCount = savedConfig.maxQueuedPayloads.value
             // Same tenant gate as configure() — restored sessions read only their own queue.
             offlineBatchStorage.currentTenantId = tenantFingerprint(savedConfig.businessToken)
+            appPresenceCoordinator.setBusinessToken(savedConfig.businessToken)
 
             SDKConfigStorage.loadInternalId(context)?.let { savedId ->
                 if (userProperties?.internalId == null) {
@@ -348,6 +361,13 @@ class BeAroundSDK private constructor() {
 
         // Restore foreground scan config if previously set
         foregroundScanConfig = SDKConfigStorage.loadForegroundScanConfig(context)
+
+        // App presence: restores the persisted opt-in only; nothing is queried until
+        // startScanning() activates it.
+        appPresenceCoordinator = AppPresenceCoordinator.create(context, handler) { error ->
+            dispatchToListener { it.onError(error) }
+        }
+        appPresenceCoordinator.configure(SDKConfigStorage.loadAppPresenceConfiguration(context))
 
         setupCallbacks()
         setupLifecycleObserver()
@@ -572,6 +592,9 @@ class BeAroundSDK private constructor() {
         // Foreground is where the soft fence can see at all: evaluate right away.
         tickVisitDetection("foreground", force = true)
 
+        // App presence: foreground is one of its two triggers (no-op unless active+eligible).
+        appPresenceCoordinator.tryRun()
+
         dispatchToListener { it.onAppStateChanged(isInBackground = false) }
     }
 
@@ -649,7 +672,10 @@ class BeAroundSDK private constructor() {
                 PresenceHeartbeatDefaults.sanitizedInterval(presenceHeartbeatIntervalMillis),
             collectAdvertisingId = collectAdvertisingId,
             collectLocation = collectLocation,
-            collectWifi = collectWifi
+            collectWifi = collectWifi,
+            // Carried over: configure() persists the whole configuration, and app presence
+            // is set through configureAppPresence(), not through this call.
+            appPresence = SDKConfigStorage.loadAppPresenceConfiguration(context)
         )
 
         // Applied FIRST: everything below (telemetry install, the advertising-ID fetch, the
@@ -675,6 +701,10 @@ class BeAroundSDK private constructor() {
         // collected for — a configure() with a DIFFERENT client's token must never drain
         // the previous client's queue through the new credential.
         offlineBatchStorage.currentTenantId = tenantFingerprint(businessToken)
+
+        // App presence is isolated per client: a token switch moves to that client's
+        // reservation and snapshot (never configures queries by itself).
+        appPresenceCoordinator.setBusinessToken(businessToken)
 
         SDKConfigStorage.saveConfiguration(context, config)
 
@@ -1041,6 +1071,44 @@ class BeAroundSDK private constructor() {
         return true
     }
 
+    // region App presence
+
+    /**
+     * Configures the local app presence check (opt-in; disabled with no targets by default).
+     *
+     * Invalid configurations are rejected: [BeAroundSDKListener.onError] receives an
+     * [io.bearound.sdk.models.AppPresenceConfigurationException] with code
+     * `app_presence_invalid_configuration`, only this feature is disabled and its cached
+     * snapshot is dropped; the rest of the SDK is unaffected. Disabling or emptying the
+     * targets deletes the snapshot but keeps the hourly cooldown.
+     *
+     * This call never queries by itself: rounds run while scanning is active (started by
+     * [startScanning]), on foreground and on the sync timer, at most once per hour per
+     * client. Results are delivered only to [BeAroundSDKListener.onAppPresenceUpdated];
+     * nothing is uploaded.
+     */
+    fun configureAppPresence(configuration: AppPresenceConfiguration): BeAroundSDK {
+        val error = appPresenceCoordinator.configure(configuration)
+        val effective = if (error == null) AppPresenceValidator.normalize(configuration)
+        else AppPresenceConfiguration.DISABLED
+        SDKConfigStorage.saveAppPresenceConfiguration(context, effective)
+        this.configuration = this.configuration?.copy(appPresence = effective)
+        if (error != null) {
+            // Not reported to error telemetry: a host configuration problem, local only.
+            Log.w(TAG, "App presence configuration rejected, feature disabled")
+            dispatchToListener { it.onError(error) }
+        }
+        return this
+    }
+
+    /**
+     * The last app presence snapshot compatible with the current configuration and client,
+     * with `cached = true` and its original ids and times, or null. Never queries any app.
+     */
+    fun getLastAppPresenceSnapshot(): AppPresenceSnapshot? = appPresenceCoordinator.lastSnapshot()
+
+    // endregion
+
     /** Clears all user properties, including the persisted internalId. */
     fun clearUserProperties() {
         userProperties = null
@@ -1145,6 +1213,10 @@ class BeAroundSDK private constructor() {
             dispatchToListener { it.onError(error) }
             return
         }
+
+        // App presence does not depend on Bluetooth, location permission or beacons:
+        // activated before anything below can fail on them.
+        appPresenceCoordinator.activate()
 
         // Enable foreground service if config provided
         if (foregroundScanConfig != null) {
@@ -1266,6 +1338,8 @@ class BeAroundSDK private constructor() {
     }
 
     fun stopScanning() {
+        // App presence pauses with the session: no new round, pending deliveries dropped.
+        appPresenceCoordinator.pause()
         // Saved first: visit work queued before this call re-checks the flag under the visit
         // controller's mutex, so it cannot re-arm geofences after the stop below.
         SDKConfigStorage.saveScanningEnabled(context, false)
@@ -1444,7 +1518,7 @@ class BeAroundSDK private constructor() {
 
         syncRunnable = object : Runnable {
             override fun run() {
-                syncBeacons()
+                onSyncTimerTick()
                 handler.postDelayed(this, config.syncInterval)
             }
         }
@@ -1484,11 +1558,17 @@ class BeAroundSDK private constructor() {
 
         syncRunnable = object : Runnable {
             override fun run() {
-                syncBeacons()
+                onSyncTimerTick()
                 handler.postDelayed(this, config.syncInterval)
             }
         }
         handler.postDelayed(syncRunnable!!, config.syncInterval)
+    }
+
+    /** One tick of the active sync timer: beacon sync, plus the app presence trigger. */
+    private fun onSyncTimerTick() {
+        syncBeacons()
+        appPresenceCoordinator.tryRun()
     }
 
     private fun restartSyncTimer() {
@@ -1507,7 +1587,7 @@ class BeAroundSDK private constructor() {
         if (syncRunnable != null) return
         syncRunnable = object : Runnable {
             override fun run() {
-                syncBeacons()
+                onSyncTimerTick()
                 handler.postDelayed(this, config.syncInterval)
             }
         }

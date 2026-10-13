@@ -1098,6 +1098,146 @@ worker never registers scanners, PendingIntents, or foreground services of its o
 runs without any network constraint — offline it persists and completes, leaving
 delivery to the retry pipeline.
 
+### App presence (local, opt-in)
+
+Checks whether specific apps, chosen by you and declared in your app's build, are
+installed on the device. Results are delivered **only** to your listener: the SDK never
+uploads them, never adds them to payloads, telemetry or retry queues, and never shows any
+UI. Read the store policy notes below before enabling it in a published app.
+
+**Off by default.** A new or upgraded integration has `enabled = false` and no targets:
+nothing is queried and no callback fires until you opt in.
+
+```kotlin
+sdk.configureAppPresence(
+    AppPresenceConfiguration(
+        enabled = true,
+        targets = listOf(
+            // Your own targets. id: [A-Za-z0-9._-], 1-64 chars, unique; at most 50 targets.
+            AppPresenceTarget(id = "fixture", androidPackageName = "io.bearound.fixture.presence")
+        )
+    )
+)
+
+sdk.listener = object : BeAroundSDKListener {
+    override fun onBeaconsUpdated(beacons: List<Beacon>) {}
+
+    override fun onAppPresenceUpdated(snapshot: AppPresenceSnapshot) {
+        snapshot.results.forEach { result ->
+            // result.state: PRESENT | ABSENT | UNKNOWN; result.present: true | false | null
+            // result.reason: null when known, else why it is unknown
+        }
+    }
+}
+
+sdk.getLastAppPresenceSnapshot() // last compatible snapshot (cached = true) or null; never queries
+```
+
+An invalid configuration (duplicated ids, malformed ids or package names, more than 50
+targets) disables **only this feature** and reaches `onError` with an
+`AppPresenceConfigurationException` (`code = "app_presence_invalid_configuration"`); the
+rest of the SDK keeps working. If the private storage is unavailable, the round is cancelled
+before any app is checked and `onError` receives an `AppPresenceStorageException`
+(`code = "app_presence_storage_unavailable"`).
+
+#### 1. Declare the targets in your manifest
+
+Android 11+ hides packages your app did not declare. Add each target package to the
+`<queries>` of **your app's** manifest. The SDK never requests `QUERY_ALL_PACKAGES` and
+never enumerates installed apps: it makes one `getPackageInfo(package, 0)` call per
+declared target.
+
+```xml
+<queries>
+    <package android:name="io.bearound.fixture.presence" />
+</queries>
+```
+
+#### 2. Generate and verify the build evidence
+
+Because package visibility silently filters undeclared packages, "not found" only means
+"absent" when the SDK can prove the package is declared in your **final** merged manifest.
+That proof is an asset generated at build time. Apply the script shipped in this repo in
+your **app** module, after the Android application plugin:
+
+```groovy
+apply from: "<path-to>/scripts/app-presence-evidence.gradle"
+
+// Fail the build when the evidence diverges from the final manifest:
+tasks.named("check") { dependsOn("verifyAppPresenceArtifactRelease") }
+```
+
+It generates `bearound_app_presence_declarations.json` (applicationId + the exact
+`<queries><package>` set) for every variant, and registers
+`verifyAppPresenceArtifact<Variant>` (final APK, uses `aapt2`) and
+`verifyAppPresenceBundle<Variant>` (final AAB, needs `bundletool`). Both run
+`scripts/verify_app_presence_artifact.py` (`python3` on PATH) and fail when the asset is
+missing or its package set differs from the final manifest. Wire them into your release
+build and CI: removing the hook leaves the integration non-conformant. The evidence is a
+verifiable build product, not a cryptographic authorization.
+
+#### What each result means (Android)
+
+| Situation | `state` | `present` | `reason` |
+|---|---|---|---|
+| Declared, evidence valid, package installed | `PRESENT` | `true` | `null` |
+| Declared, evidence valid, `NameNotFoundException` | `ABSENT` | `false` | `null` |
+| Evidence asset missing, malformed or for another applicationId (PackageManager not called) | `UNKNOWN` | `null` | `DECLARATION_UNVERIFIED` |
+| Package not in the evidence | `UNKNOWN` | `null` | `NOT_DECLARED` |
+| `SecurityException` or any other lookup error | `UNKNOWN` | `null` | `QUERY_FAILED` |
+| Target has no `androidPackageName` | `UNKNOWN` | `null` | `UNSUPPORTED_PLATFORM` |
+
+Every round delivers a **complete** snapshot: each target once, in the configured order,
+even when nothing changed. A snapshot carries `snapshotId` (new per round),
+`configurationFingerprint` (SHA-256 of the targets), `checkedAt` (ISO 8601 UTC) and
+`cached`; each result also has its own `checkedAt` and `detectionMethod`. Assigning a
+listener replays the last compatible snapshot once with `cached = true` and its original
+ids and times; a snapshot id reaches the same listener assignment at most once. Changing
+the targets or the client hides an incompatible snapshot; only the latest snapshot per
+client is kept (no history).
+
+#### When it runs
+
+- `startScanning()` starts it **before** any Bluetooth or location check: missing
+  permissions, Bluetooth off, no beacons or no network do not block it. `configure(...)` or
+  `configureAppPresence(...)` alone never queries.
+- Then it is tried on app foreground and on the active sync timer, at most **once every
+  3600 s per client and host app**. The window is reserved durably on disk before any app
+  is checked; a crash after that still consumes the window.
+- Restarting the app does not bring the next round forward. Within the same boot the
+  persisted interval is reused (`elapsedRealtime` + `Settings.Global.BOOT_COUNT`); the wall
+  clock never releases or delays the window. After a reboot, a corrupt record, or on API 23
+  (no boot count), the first round waits one full interval from process launch; on API 23
+  that happens in every new process, so short sessions there may never refresh.
+- There is no worker, alarm, service or push of its own: while the app is suspended or
+  killed nothing runs, and hourly updates are **not** guaranteed.
+- `stopScanning()` pauses it and drops pending deliveries; a new `startScanning()` respects
+  the reservation. `enabled = false` or an empty target list deletes the snapshot but keeps
+  the cooldown, so switching settings or clients back and forth never re-opens the window.
+- Only the host's main process runs it. The business token never appears in file names,
+  logs or callbacks.
+
+#### Store policies: technical support is not publication approval
+
+This feature exists for a commercial use case. That a check works technically does **not**
+mean a store will accept it, and nothing in this SDK bypasses store review.
+
+- **Google Play**: the Package Visibility policy only allows querying installed apps when
+  it is tied to a core, user-facing function of your app, and the User Data policy forbids
+  selling or sharing that inventory for advertising or analytics monetization. Limiting the
+  number of queried apps does not remove those obligations. Declare it as required by the
+  Data safety form.
+- **Apple App Store** (iOS SDK): guideline 5.1.2(iv) forbids collecting installed-app
+  information for analytics, advertising or marketing. On iOS the check uses `canOpenURL`
+  with schemes from `LSApplicationQueriesSchemes`, bounded by a budget shared with the
+  whole host app (25 schemes by default, 50 only with build evidence of a pre-27 linked
+  SDK); `true` there means "a handler exists", not the app's identity.
+- **Consent is not an exception**: user consent or an ATT prompt does not make a forbidden
+  purpose acceptable, and another product on the market offering similar detection is not
+  evidence of authorization.
+- The absence of UI in this feature does not exempt your app from the transparency and
+  privacy disclosures that apply to it.
+
 ## API Reference
 
 ### BeAroundSDK
@@ -1132,6 +1272,10 @@ sdk.disableForegroundScanning()
 sdk.setUserProperties(properties: UserProperties)   // merges; internalId is persisted
 sdk.clearUserProperties()
 sdk.setPushToken(token: String)                     // re-registers immediately if configured
+
+// App presence (local only, opt-in; see "App presence")
+sdk.configureAppPresence(configuration: AppPresenceConfiguration): BeAroundSDK
+sdk.getLastAppPresenceSnapshot(): AppPresenceSnapshot?  // cached = true, never queries
 
 // Background reliability (Doze / OEM killers)
 sdk.reliabilityStatus(): ReliabilityStatus          // OEM ROM + aggressiveness + recommendsUserAction
@@ -1182,6 +1326,9 @@ interface BeAroundSDKListener {
     fun onEnterBeaconRegion() {}                                // rising edge: first beacon
     fun onExitBeaconRegion() {}                                 // falling edge: zone silent
     fun onActiveScanStateChanged(isActive: Boolean) {}          // duty cycle on/off
+
+    // App presence: every round + one cached replay per listener assignment
+    fun onAppPresenceUpdated(snapshot: AppPresenceSnapshot) {}
 
     // Foreground-service notification (v2.4+)
     fun onProvideNotificationContent(beacons: List<Beacon>): NotificationContent? = null
