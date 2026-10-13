@@ -172,9 +172,14 @@ internal class AppPresenceCoordinator(
         else AppPresenceConfiguration.DISABLED
         val newFingerprint = if (isOn(effective)) AppPresenceValidator.fingerprint(effective.targets) else null
         val (ns, wasActive) = synchronized(lock) {
+            // A host repeating the configuration it already applied must not discard a round
+            // in flight: its reservation is already consumed and the queued tryRun below is a
+            // no-op, so the window would be lost. Only a change the round depends on (on/off,
+            // targets) invalidates it.
+            val changed = isOn(this.configuration) != isOn(effective) || this.fingerprint != newFingerprint
             this.configuration = effective
             this.fingerprint = newFingerprint
-            generation++
+            if (changed) generation++
             if (newFingerprint == null || cachedSnapshot?.configurationFingerprint != newFingerprint) {
                 cachedSnapshot = null
             }

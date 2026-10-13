@@ -517,6 +517,24 @@ class AppPresenceCoordinatorTest {
     }
 
     @Test
+    fun `repeating the same configuration during a round keeps the round`() {
+        lateinit var coordinator: AppPresenceCoordinator
+        lookupHook = { coordinator.configure(config) }
+        coordinator = coordinator()
+        val listener = RecordingListener()
+        coordinator.configure(config)
+        coordinator.setBusinessToken("token-A")
+        coordinator.setListener(listener)
+        coordinator.activate()
+        lookupHook = {}
+
+        val delivered = listener.snapshots.single()
+        assertFalse(delivered.cached)
+        assertEquals(delivered.snapshotId, storedRecord().lastSnapshot?.snapshotId)
+        assertEquals(delivered.snapshotId, coordinator.lastSnapshot()?.snapshotId)
+    }
+
+    @Test
     fun `stop cancels pending deliveries and restart respects the reservation`() {
         val poster = QueuedPoster()
         val (coordinator, listener) = started(poster = poster)
