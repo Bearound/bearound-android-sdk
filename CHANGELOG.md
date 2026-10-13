@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-10-13
+
+### Added
+- **App presence (local, opt-in).** Checks whether a short list of target packages that the
+  integrator configures and declares in the app's own manifest `<queries>` is present on the
+  device, verified against the build's declaration asset. Off by default, no UI, no new
+  permission, and `QUERY_ALL_PACKAGES` is never requested. Results are delivered to the host
+  app only and never enter the beacon payload, the offline queue or the error telemetry. Read
+  the Google Play policy note in the README before shipping: package visibility must serve
+  user-facing core functionality and the data cannot be sold or shared for analytics or ads.
+
 ## [3.15.0] - 2026-10-09
 
 ### Added
