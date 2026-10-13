@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.1] - 2026-10-13
+
+### Fixed
+- **Scan diagnostics throttle.** RSSI changes no longer bypass the Scan diagnostic throttle; the
+  history (up to 500 entries) is serialized only when a new beacon composition is admitted, so
+  idle periods stop paying that cost. Every beacon callback still reaches the listener.
+- **Recovery after a Bluetooth shutdown.** An uncaught `BluetoothLeScanner` failure while the radio
+  was turned off no longer breaks ranging recovery when the radio comes back.
+
 ## [3.16.0] - 2026-10-13
 
 ### Added
