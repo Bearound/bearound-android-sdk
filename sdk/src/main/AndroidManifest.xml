@@ -99,6 +99,10 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <application>
+        <receiver
+            android:name="io.bearound.sdk.sampling.MotionTransitionReceiver"
+            android:exported="false" />
+
         <!-- BroadcastReceiver for PendingIntent-based BLE scan (API 26+) -->
         <receiver
             android:name="io.bearound.sdk.background.BluetoothScanReceiver"
