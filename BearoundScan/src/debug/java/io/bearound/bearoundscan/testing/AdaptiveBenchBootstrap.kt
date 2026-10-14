@@ -4,11 +4,16 @@ import android.content.ContentProvider
 import android.content.ContentValues
 import android.database.Cursor
 import android.net.Uri
+import android.os.Binder
+import android.os.Bundle
 import android.util.Log
 import io.bearound.bearoundscan.BuildConfig
+import io.bearound.sdk.models.AdaptiveSamplingDiagnostics
 import io.bearound.sdk.telemetry.ErrorReporter
 import io.bearound.sdk.testing.AdaptiveSamplingBench
+import io.bearound.sdk.utilities.DiagnosticsStore
 import io.bearound.sdk.utilities.SDKConfigStorage
+import org.json.JSONObject
 import java.net.URI
 
 /** Initializes explicit local transport before the host Application can restore tracking. */
@@ -38,9 +43,62 @@ class AdaptiveBenchBootstrap : ContentProvider() {
         Log.i("AdaptiveBench", "Frozen source fingerprint: $identity; adaptive=${BuildConfig.BENCH_ADAPTIVE}")
         return true
     }
+
+    override fun call(method: String, arg: String?, extras: Bundle?): Bundle {
+        val applicationUid = requireNotNull(context).applicationInfo.uid
+        return AdaptiveBenchDiagnosticCall.snapshot(method, arg, extras,
+            BuildConfig.DEBUG && BuildConfig.ADAPTIVE_BENCH, Binder.getCallingUid(), applicationUid,
+            DiagnosticsStore::sampling)
+    }
+
     override fun query(uri: Uri, projection: Array<out String>?, selection: String?, selectionArgs: Array<out String>?, sortOrder: String?): Cursor? = null
     override fun getType(uri: Uri): String? = null
     override fun insert(uri: Uri, values: ContentValues?): Uri? = null
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
+}
+
+internal object AdaptiveBenchDiagnosticCall {
+    fun snapshot(method: String, argument: String?, extras: Bundle?, benchEnabled: Boolean,
+                 callingUid: Int, applicationUid: Int, readSampling: () -> AdaptiveSamplingDiagnostics): Bundle {
+        if (!benchEnabled || callingUid != applicationUid) {
+            throw SecurityException("Bench diagnostics are unavailable for this caller")
+        }
+        require(method == "sampling-diagnostics" && argument == null && (extras == null || extras.isEmpty)) {
+            "Only a sampling diagnostic snapshot without inputs is supported"
+        }
+        val sampling = readSampling()
+        val json = JSONObject().apply {
+            put("state", sampling.state)
+            put("source", sampling.source)
+            put("confidence", sampling.confidence)
+            put("reason", sampling.reason)
+            put("evidenceAgeMs", sampling.evidenceAgeMs ?: JSONObject.NULL)
+            put("contextStable", sampling.contextStable)
+            put("capabilityStatus", sampling.capabilityStatus)
+            put("contextIntervalMs", sampling.contextIntervalMs ?: JSONObject.NULL)
+            put("summaryIntervalMs", sampling.summaryIntervalMs ?: JSONObject.NULL)
+            put("liveIntervalMs", sampling.liveIntervalMs ?: JSONObject.NULL)
+            put("uniqueSamples", sampling.uniqueSamples)
+            put("cachedObservations", sampling.cachedObservations)
+            put("contextReads", sampling.contextReads)
+            put("bucketCount", sampling.bucketCount)
+            put("gapCount", sampling.gapCount)
+            put("liveAttempts", sampling.liveAttempts)
+            put("summaryAttempts", sampling.summaryAttempts)
+            put("transitionAttempts", sampling.transitionAttempts)
+            put("serializedBytes", sampling.serializedBytes)
+            put("failures", sampling.failures)
+            put("retryLagMs", sampling.retryLagMs)
+            put("archiveOnlyCount", sampling.archiveOnlyCount)
+            put("policyDenials", sampling.policyDenials)
+            put("clockUncertaintyMs", sampling.clockUncertaintyMs ?: JSONObject.NULL)
+            put("mode", sampling.mode)
+            put("nextContextReadElapsedMs", sampling.nextContextReadElapsedMs ?: JSONObject.NULL)
+            put("nextSummaryElapsedMs", sampling.nextSummaryElapsedMs ?: JSONObject.NULL)
+            put("nextLiveAttemptElapsedMs", sampling.nextLiveAttemptElapsedMs ?: JSONObject.NULL)
+            put("manifestGapCount", sampling.manifestGapCount)
+        }
+        return Bundle().apply { putString("json", json.toString()) }
+    }
 }
