@@ -14,11 +14,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
+import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.zip.GZIPOutputStream
 
 /**
  * Thrown when the backend responds with a non-2xx status. Carries the HTTP [statusCode] and
@@ -45,10 +44,26 @@ internal data class NegotiatedSamplingCapability(
     val offsetUncertaintyMs: Double,
     val synchronizedAtElapsedMs: Long,
     val deviceId: String,
-    val synchronizedAtWallMs: Long
+    val synchronizedAtWallMs: Long,
+    val requestGzipEnabled: Boolean = false
 )
 
 internal data class SamplingAcknowledgment(val batchId: String, val projection: String, val invalidatedCapability: Boolean)
+
+internal data class EncodedRequestBody(val data: ByteArray, val contentType: String,
+    val contentEncoding: String?, val originalJsonBytes: Int)
+
+internal fun encodeRequestBody(json: ByteArray, gzipAllowed: Boolean,
+    compressor: (ByteArray) -> ByteArray = { original ->
+        ByteArrayOutputStream().also { output -> GZIPOutputStream(output).use { it.write(original) } }.toByteArray()
+    }): EncodedRequestBody {
+    if (gzipAllowed) {
+        val compressed = runCatching { compressor(json) }.getOrNull()
+        if (compressed != null && compressed.size < json.size)
+            return EncodedRequestBody(compressed, "application/octet-stream", "gzip", json.size)
+    }
+    return EncodedRequestBody(json, "application/json", null, json.size)
+}
 
 class APIClient(
     private val configuration: SDKConfiguration,
@@ -65,6 +80,11 @@ class APIClient(
     }
 
     @Volatile private var negotiated: NegotiatedSamplingCapability? = null
+    @Volatile private var generationGuard: () -> Boolean = { true }
+    private val gzipSuppression = mutableMapOf<String, Long>()
+    private data class IngestResponse(val payload: JSONObject, val body: String, val status: Int)
+
+    internal fun bindGeneration(guard: () -> Boolean) { generationGuard = guard }
 
     internal fun withEndpoint(value: String): APIClient =
         APIClient(configuration, value, policyProvider, nativeActivityAllowed, elapsedRealtime, clock)
@@ -121,7 +141,8 @@ class APIClient(
         }
         negotiated = NegotiatedSamplingCapability(SamplingCapability(session, services, mapTtl), maxAge,
             maxBytes.toInt(), now + lease, serverTime - (requestWall + roundTrip / 2.0),
-            roundTrip / 2.0 + 1.0, now, deviceId, clock())
+            roundTrip / 2.0 + 1.0, now, deviceId, clock(),
+            value.optJSONArray("requestContentEncodings")?.let { it.length() == 1 && it.opt(0) == "gzip" } == true)
     }
 
     internal fun filterPayload(original: JSONObject): JSONObject {
@@ -152,44 +173,11 @@ class APIClient(
 
     /** Sends frozen original context; the caller removes only a matching durable ACK. */
     internal suspend fun sendStoredPayload(payloadJson: String, onSerializedAttempt: (Int) -> Unit = {}): Result<SamplingAcknowledgment?> = withContext(Dispatchers.IO) {
-        var connection: HttpURLConnection? = null
         try {
-            val payload = filterPayload(JSONObject(payloadJson))
-            val sampling = payload.optJSONObject("sampling")
-            val deviceId = payload.getJSONObject("device").getString("deviceId")
-            if (payload.getJSONObject("sdk").getString("appId") != configuration.appId) {
-                return@withContext Result.failure(IllegalStateException("Captured application binding does not match configuration"))
-            }
-            if (sampling != null && samplingCapability(deviceId) == null) {
-                return@withContext Result.failure(IllegalStateException("Sampling capability unavailable for historical delivery"))
-            }
-            val bytes = payload.toString().toByteArray(Charsets.UTF_8)
-            val limit = samplingCapability(deviceId)?.maxPayloadBytes ?: 524_288
-            if (bytes.size > limit) {
-                invalidateSamplingCapability()
-                return@withContext Result.failure(IllegalStateException("Captured payload exceeds the negotiated budget"))
-            }
-            onSerializedAttempt(bytes.size)
-            val requestWall = clock()
-            val requestElapsed = elapsedRealtime()
-            connection = URL("$endpoint/ingest").openConnection() as HttpURLConnection
-            connection.requestMethod = "POST"
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.setRequestProperty("Authorization", configuration.businessToken)
-            connection.connectTimeout = CONNECT_TIMEOUT
-            connection.readTimeout = READ_TIMEOUT
-            connection.doOutput = true
-            connection.outputStream.use { it.write(bytes) }
-            val status = connection.responseCode
-            val body = runCatching { (if (status in 200..299) connection.inputStream else connection.errorStream)
-                .bufferedReader().use { it.readText() } }.getOrDefault("")
-            if (status !in 200..299) {
-                if (status in setOf(400, 401, 413, 422, 503)) invalidateSamplingCapability()
-                return@withContext Result.failure(HttpException(status, body))
-            }
-            observeResponse(body, deviceId, requestWall, requestElapsed)
+            val response = postPayload(JSONObject(payloadJson), true, onSerializedAttempt)
+            val sampling = response.payload.optJSONObject("sampling")
             if (sampling == null) return@withContext Result.success(null)
-            val ack = JSONObject(body).optJSONObject("samplingAck")
+            val ack = JSONObject(response.body).optJSONObject("samplingAck")
                 ?: return@withContext Result.failure(IllegalStateException("Missing sampling acknowledgment"))
             val expected = sampling.getString("batchId")
             if (ack.optString("batchId") != expected || ack.optString("archive") != "durable") {
@@ -198,9 +186,95 @@ class APIClient(
             Result.success(SamplingAcknowledgment(expected, ack.optString("projection"), ack.optBoolean("invalidateCapability")))
         } catch (error: Exception) {
             Result.failure(error)
-        } finally {
-            connection?.disconnect()
         }
+    }
+
+    private fun postPayload(original: JSONObject, enforceCapturedBudget: Boolean = false,
+                            onSerializedAttempt: (Int) -> Unit = {}): IngestResponse {
+        var authorized = original
+        var forceIdentity = false
+        var originalBudget: Int? = null
+        repeat(2) {
+            checkGeneration()
+            authorized = filterPayload(authorized)
+            val deviceId = authorized.getJSONObject("device").getString("deviceId")
+            val capability = samplingCapability(deviceId)
+            if (enforceCapturedBudget) {
+                check(authorized.getJSONObject("sdk").getString("appId") == configuration.appId) {
+                    "Captured application binding does not match configuration"
+                }
+                check(forceIdentity || authorized.optJSONObject("sampling") == null || capability != null) {
+                    "Sampling capability unavailable for historical delivery"
+                }
+            }
+            val json = authorized.toString().toByteArray(Charsets.UTF_8)
+            val limit = capability?.maxPayloadBytes ?: originalBudget ?: 524_288
+            if (originalBudget == null) originalBudget = limit
+            if (enforceCapturedBudget && json.size > limit) {
+                invalidateSamplingCapability()
+                error("Captured payload exceeds the negotiated budget")
+            }
+            val suppressed = synchronized(gzipSuppression) {
+                val now = elapsedRealtime()
+                gzipSuppression.entries.removeAll { now >= it.value }
+                now < (gzipSuppression[deviceId] ?: Long.MIN_VALUE)
+            }
+            val encoded = encodeRequestBody(json, !forceIdentity && !suppressed && capability?.requestGzipEnabled == true &&
+                json.size <= limit && json.size <= 524_288)
+            checkGeneration()
+            val requestWall = clock()
+            val requestElapsed = elapsedRealtime()
+            val connection = URL("$endpoint/ingest").openConnection() as HttpURLConnection
+            try {
+                connection.requestMethod = "POST"
+                connection.setRequestProperty("Content-Type", encoded.contentType)
+                encoded.contentEncoding?.let { connection.setRequestProperty("Content-Encoding", it) }
+                connection.setRequestProperty("Authorization", configuration.businessToken)
+                connection.connectTimeout = CONNECT_TIMEOUT
+                connection.readTimeout = READ_TIMEOUT
+                connection.doOutput = true
+                val output = connection.outputStream
+                checkGeneration()
+                val currentPayload = filterPayload(authorized)
+                if (currentPayload.toString() != authorized.toString()) {
+                    authorized = currentPayload
+                    forceIdentity = true
+                    return@repeat
+                }
+                if (encoded.contentEncoding == "gzip" && samplingCapability(deviceId) !== capability) {
+                    forceIdentity = true
+                    return@repeat
+                }
+                output.use {
+                    onSerializedAttempt(encoded.data.size)
+                    it.write(encoded.data)
+                }
+                val status = connection.responseCode
+                val body = runCatching { (if (status in 200..299) connection.inputStream else connection.errorStream)
+                    .bufferedReader(Charsets.UTF_8).use { it.readText() } }.getOrDefault("")
+                if (status == 415 && encoded.contentEncoding == "gzip") {
+                    synchronized(gzipSuppression) {
+                        val previous = gzipSuppression[deviceId] ?: Long.MIN_VALUE
+                        gzipSuppression[deviceId] = maxOf(previous, capability!!.expiresAtElapsedMs)
+                    }
+                    forceIdentity = true
+                } else {
+                    if (status !in 200..299) {
+                        if (enforceCapturedBudget && status in setOf(400, 401, 413, 422, 503)) invalidateSamplingCapability()
+                        throw HttpException(status, body)
+                    }
+                    observeResponse(body, deviceId, requestWall, requestElapsed)
+                    return IngestResponse(authorized, body, status)
+                }
+            } finally {
+                connection.disconnect()
+            }
+        }
+        error("Encoding fallback exhausted")
+    }
+
+    private fun checkGeneration() {
+        if (!generationGuard()) throw kotlinx.coroutines.CancellationException("Upload generation changed")
     }
 
     /**
@@ -217,49 +291,14 @@ class APIClient(
     ) {
         withContext(Dispatchers.IO) {
             try {
-                val requestWall = clock()
-                val requestElapsed = elapsedRealtime()
-                val url = URL("$endpoint/ingest")
-                val connection = url.openConnection() as HttpURLConnection
-
-                connection.requestMethod = "POST"
-                connection.setRequestProperty("Content-Type", "application/json")
-                connection.setRequestProperty("Authorization", configuration.businessToken)
-                connection.connectTimeout = CONNECT_TIMEOUT
-                connection.readTimeout = READ_TIMEOUT
-                connection.doOutput = true
-
-                // beacons=[] + syncTrigger="register" (iOS parity)
                 val payload = buildPayload(emptyList(), sdkInfo, userDevice, userProperties, "register")
-
-                Log.d(TAG, "Sending register event to $url")
-
-                OutputStreamWriter(connection.outputStream).use { writer ->
-                    writer.write(payload.toString())
-                    writer.flush()
-                }
-
-                val responseCode = connection.responseCode
-
-                if (responseCode in 200..299) {
-                    val body = runCatching { connection.inputStream.bufferedReader().use { it.readText() } }.getOrDefault("")
-                    observeResponse(body, userDevice.deviceId, requestWall, requestElapsed)
-                    Log.d(TAG, "Register succeeded (HTTP $responseCode)")
-                    onComplete(Result.success(Unit))
-                } else {
-                    val errorBody = try {
-                        BufferedReader(InputStreamReader(connection.errorStream)).use { it.readText() }
-                    } catch (e: Exception) {
-                        ""
-                    }
-                    Log.e(TAG, "Register failed: HTTP $responseCode - $errorBody")
-                    onComplete(Result.failure(HttpException(responseCode, errorBody)))
-                }
-
-                connection.disconnect()
-
+                Log.d(TAG, "Sending register event to $endpoint/ingest")
+                val response = postPayload(payload)
+                Log.d(TAG, "Register succeeded (HTTP ${response.status})")
+                onComplete(Result.success(Unit))
             } catch (e: Exception) {
-                Log.e(TAG, "Register request failed: ${e.message}")
+                if (e is HttpException) Log.e(TAG, "Register failed: HTTP ${e.statusCode} - ${e.body}")
+                else Log.e(TAG, "Register request failed: ${e.message}")
                 onComplete(Result.failure(e))
             }
         }
@@ -296,55 +335,14 @@ class APIClient(
 
         withContext(Dispatchers.IO) {
             try {
-                val requestWall = clock()
-                val requestElapsed = elapsedRealtime()
-                val url = URL("$endpoint/ingest")
-                val connection = url.openConnection() as HttpURLConnection
-
-                connection.requestMethod = "POST"
-                connection.setRequestProperty("Content-Type", "application/json")
-                connection.setRequestProperty("Authorization", configuration.businessToken)
-                connection.connectTimeout = CONNECT_TIMEOUT
-                connection.readTimeout = READ_TIMEOUT
-                connection.doOutput = true
-
-                // Build JSON payload
                 val payload = buildPayload(beacons, sdkInfo, userDevice, userProperties, syncTrigger)
-
-                // Send request
-                Log.d(TAG, "Sending ${beacons.size} beacon(s) to $url")
-
-                OutputStreamWriter(connection.outputStream).use { writer ->
-                    writer.write(payload.toString())
-                    writer.flush()
-                }
-
-                // Read response
-                val responseCode = connection.responseCode
-                
-                if (responseCode in 200..299) {
-                    val responseBody = try {
-                        BufferedReader(InputStreamReader(connection.inputStream)).use { it.readText() }
-                    } catch (e: Exception) {
-                        ""
-                    }
-                    Log.d(TAG, "Successfully sent ${beacons.size} beacon(s)")
-                    observeResponse(responseBody, userDevice.deviceId, requestWall, requestElapsed)
-                    onComplete(Result.success(Unit))
-                } else {
-                    val errorBody = try {
-                        BufferedReader(InputStreamReader(connection.errorStream)).use { it.readText() }
-                    } catch (e: Exception) {
-                        ""
-                    }
-                    Log.e(TAG, "API error: HTTP $responseCode - $errorBody")
-                    onComplete(Result.failure(HttpException(responseCode, errorBody)))
-                }
-
-                connection.disconnect()
-                
+                Log.d(TAG, "Sending ${beacons.size} beacon(s) to $endpoint/ingest")
+                postPayload(payload)
+                Log.d(TAG, "Successfully sent ${beacons.size} beacon(s)")
+                onComplete(Result.success(Unit))
             } catch (e: Exception) {
-                Log.e(TAG, "Request failed: ${e.message}")
+                if (e is HttpException) Log.e(TAG, "API error: HTTP ${e.statusCode} - ${e.body}")
+                else Log.e(TAG, "Request failed: ${e.message}")
                 onComplete(Result.failure(e))
             }
         }

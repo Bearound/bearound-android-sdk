@@ -137,4 +137,16 @@ class DiagnosticsStoreTest {
         assertEquals(350L, snapshot.serializedBytes)
     }
 
+    @Test fun `sampling HTTP attempts count submitted bodies separately from logical outcomes`() {
+        DiagnosticsStore.recordSamplingAttempt("live", 900, true, httpAttempts = 2)
+        DiagnosticsStore.recordSamplingAttempt("summary", 0, false, httpAttempts = 0)
+        val snapshot = DiagnosticsStore.sampling()
+        assertEquals(1L, snapshot.liveAttempts); assertEquals(1L, snapshot.summaryAttempts)
+        assertEquals(2L, snapshot.httpAttempts); assertEquals(900L, snapshot.serializedBytes)
+        assertEquals(1L, snapshot.failures)
+        DiagnosticsStore.reset()
+        assertEquals(0L, DiagnosticsStore.sampling().httpAttempts)
+        assertEquals(2L, snapshot.httpAttempts)
+    }
+
 }

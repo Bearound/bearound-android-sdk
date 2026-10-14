@@ -90,6 +90,7 @@ internal object AdaptiveBenchDiagnosticCall {
             put("summaryAttempts", sampling.summaryAttempts)
             put("transitionAttempts", sampling.transitionAttempts)
             put("serializedBytes", sampling.serializedBytes)
+            put("httpAttempts", sampling.httpAttempts)
             put("failures", sampling.failures)
             put("retryLagMs", sampling.retryLagMs)
             put("archiveOnlyCount", sampling.archiveOnlyCount)

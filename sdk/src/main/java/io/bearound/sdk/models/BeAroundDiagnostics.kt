@@ -29,7 +29,9 @@ data class AdaptiveSamplingDiagnostics(
     val nextContextReadElapsedMs: Long? = null,
     val nextSummaryElapsedMs: Long? = null,
     val nextLiveAttemptElapsedMs: Long? = null,
-    val manifestGapCount: Long = 0
+    val manifestGapCount: Long = 0,
+    /** HTTP bodies submitted for sampling envelopes; logical kind counters stay unchanged. */
+    val httpAttempts: Long = 0
 )
 
 /** Point-in-time snapshot of SDK state, produced by `BeAroundSDK.diagnostics()`. */

@@ -227,7 +227,10 @@ class BeAroundSDK private constructor() {
 
     private fun newAPIClient(config: SDKConfiguration) = APIClient(config,
         policyProvider = ::effectiveCollectionPolicy,
-        nativeActivityAllowed = { runCatching { PlayServicesMotionRegistrar(context).availability() == MotionAvailability.AUTHORIZED }.getOrDefault(false) })
+        nativeActivityAllowed = { runCatching { PlayServicesMotionRegistrar(context).availability() == MotionAvailability.AUTHORIZED }.getOrDefault(false) }).also { client ->
+        val generation = samplingGeneration
+        client.bindGeneration { generation == samplingGeneration && apiClient === client }
+    }
 
     private fun resetAdaptiveSampling() = synchronized(adaptiveLock) {
         closeSamplingWindow()?.let { persistObservation(it) }
@@ -456,7 +459,8 @@ class BeAroundSDK private constructor() {
             val beaconCount = JSONObject(observation.payloadJson).getJSONArray("beacons").length()
             dispatchToListener { it.onSyncStarted(beaconCount) }
             var serializedAttemptBytes = 0
-            val result = client.sendStoredPayload(observation.payloadJson) { serializedAttemptBytes = it }
+            var httpAttempts = 0
+            val result = client.sendStoredPayload(observation.payloadJson) { serializedAttemptBytes += it; httpAttempts++ }
             if (generation != samplingGeneration) return false
             DiagnosticsStore.recordSync(result.isSuccess, beaconCount)
             dispatchToListener { it.onSyncCompleted(beaconCount, result.isSuccess, result.exceptionOrNull() as? Exception) }
@@ -466,7 +470,7 @@ class BeAroundSDK private constructor() {
             else { consecutiveFailures++; lastFailureTime = System.currentTimeMillis() }
             DiagnosticsStore.recordSamplingAttempt(observation.kind, serializedAttemptBytes,
                 result.isSuccess, archiveOnly = result.getOrNull()?.projection == "archive_only",
-                manifestGap = result.getOrNull()?.projection == "pending_history")
+                manifestGap = result.getOrNull()?.projection == "pending_history", httpAttempts = httpAttempts)
             DiagnosticsStore.recordObservation(buckets = observation.bucketCount, gaps = observation.gapCount)
         }
         // Current live attempts precede archival backlog, while the visit outbox drains independently.
@@ -2278,13 +2282,15 @@ class BeAroundSDK private constructor() {
                     val original = JSONObject(record.requestJson ?: error("Missing captured payload"))
                     val sampling = original.optJSONObject("sampling")
                     if (sampling != null && manifest != null) sampling.put("replay", manifest)
-                    val result = client.sendStoredPayload(original.toString())
+                    var serializedAttemptBytes = 0
+                    var httpAttempts = 0
+                    val result = client.sendStoredPayload(original.toString()) { serializedAttemptBytes += it; httpAttempts++ }
                     if (generation != samplingGeneration) return@captured Result.failure(kotlinx.coroutines.CancellationException("Sampling generation changed"))
                     if (sampling != null) DiagnosticsStore.recordSamplingAttempt(sampling.getString("kind"),
-                        client.filterPayload(original).toString().toByteArray(Charsets.UTF_8).size, result.isSuccess,
+                        serializedAttemptBytes, result.isSuccess,
                         lagMs = (System.currentTimeMillis() - sampling.getLong("observedTo")).coerceAtLeast(0L),
                         archiveOnly = result.getOrNull()?.projection == "archive_only",
-                        manifestGap = result.getOrNull()?.projection == "pending_history")
+                        manifestGap = result.getOrNull()?.projection == "pending_history", httpAttempts = httpAttempts)
                     if (result.isSuccess) PushTokenStore.markSent(original.optJSONObject("device")?.optString("pushToken")?.takeIf { it.isNotBlank() })
                     result.map { Unit }
                 }

@@ -43,20 +43,21 @@ class AdaptiveBenchBootstrapTest {
             confidence = "medium", reason = "context_stable", evidenceAgeMs = 9000, contextStable = true,
             capabilityStatus = "active", contextIntervalMs = 300000, summaryIntervalMs = 300000,
             liveIntervalMs = 5000, uniqueSamples = 3000000000, contextReads = 12,
-            clockUncertaintyMs = 1.5, mode = "separated", nextContextReadElapsedMs = 400000)
+            clockUncertaintyMs = 1.5, mode = "separated", nextContextReadElapsedMs = 400000, httpAttempts = 2)
         val result = call(read = { reads++; expected })
 
         val keys = result.keys().asSequence().toSet()
         assertEquals(setOf("state", "source", "confidence", "reason", "evidenceAgeMs", "contextStable",
             "capabilityStatus", "contextIntervalMs", "summaryIntervalMs", "liveIntervalMs", "uniqueSamples",
             "cachedObservations", "contextReads", "bucketCount", "gapCount", "liveAttempts", "summaryAttempts",
-            "transitionAttempts", "serializedBytes", "failures", "retryLagMs", "archiveOnlyCount", "policyDenials",
+            "transitionAttempts", "serializedBytes", "httpAttempts", "failures", "retryLagMs", "archiveOnlyCount", "policyDenials",
             "clockUncertaintyMs", "mode", "nextContextReadElapsedMs", "nextSummaryElapsedMs",
             "nextLiveAttemptElapsedMs", "manifestGapCount"), keys)
         assertEquals(1, reads)
         assertEquals("stationary_inferred", result.getString("state"))
         assertEquals(3000000000L, result.getLong("uniqueSamples"))
         assertEquals(12L, result.getLong("contextReads"))
+        assertEquals(2L, result.getLong("httpAttempts"))
         assertEquals(1.5, result.getDouble("clockUncertaintyMs"), 0.0)
         assertEquals(400000L, result.getLong("nextContextReadElapsedMs"))
         assertTrue(result.getBoolean("contextStable"))

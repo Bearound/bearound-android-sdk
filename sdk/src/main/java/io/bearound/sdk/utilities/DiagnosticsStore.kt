@@ -43,13 +43,14 @@ object DiagnosticsStore {
     }
 
     internal fun recordSamplingAttempt(kind: String, bytes: Int, success: Boolean, lagMs: Long = 0,
-                                       archiveOnly: Boolean = false, manifestGap: Boolean = false) = synchronized(lock) {
+                                       archiveOnly: Boolean = false, manifestGap: Boolean = false, httpAttempts: Int = 1) = synchronized(lock) {
         sampling = sampling.copy(liveAttempts = sampling.liveAttempts + if (kind == "live") 1 else 0,
             summaryAttempts = sampling.summaryAttempts + if (kind == "summary") 1 else 0,
             transitionAttempts = sampling.transitionAttempts + if (kind == "transition") 1 else 0,
             serializedBytes = sampling.serializedBytes + bytes, failures = sampling.failures + if (success) 0 else 1,
             retryLagMs = maxOf(sampling.retryLagMs, lagMs), archiveOnlyCount = sampling.archiveOnlyCount + if (archiveOnly) 1 else 0,
-            manifestGapCount = sampling.manifestGapCount + if (manifestGap) 1 else 0)
+            manifestGapCount = sampling.manifestGapCount + if (manifestGap) 1 else 0,
+            httpAttempts = sampling.httpAttempts + httpAttempts)
     }
 
     fun sampling(): AdaptiveSamplingDiagnostics = synchronized(lock) { sampling }
