@@ -151,7 +151,7 @@ class APIClient(
     }
 
     /** Sends frozen original context; the caller removes only a matching durable ACK. */
-    internal suspend fun sendStoredPayload(payloadJson: String): Result<SamplingAcknowledgment?> = withContext(Dispatchers.IO) {
+    internal suspend fun sendStoredPayload(payloadJson: String, onSerializedAttempt: (Int) -> Unit = {}): Result<SamplingAcknowledgment?> = withContext(Dispatchers.IO) {
         var connection: HttpURLConnection? = null
         try {
             val payload = filterPayload(JSONObject(payloadJson))
@@ -169,6 +169,7 @@ class APIClient(
                 invalidateSamplingCapability()
                 return@withContext Result.failure(IllegalStateException("Captured payload exceeds the negotiated budget"))
             }
+            onSerializedAttempt(bytes.size)
             val requestWall = clock()
             val requestElapsed = elapsedRealtime()
             connection = URL("$endpoint/ingest").openConnection() as HttpURLConnection

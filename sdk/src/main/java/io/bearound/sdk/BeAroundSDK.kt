@@ -455,7 +455,8 @@ class BeAroundSDK private constructor() {
             if (observation.batchId !in alreadyDurable && !persistObservation(observation)) { ok = false; continue }
             val beaconCount = JSONObject(observation.payloadJson).getJSONArray("beacons").length()
             dispatchToListener { it.onSyncStarted(beaconCount) }
-            val result = client.sendStoredPayload(observation.payloadJson)
+            var serializedAttemptBytes = 0
+            val result = client.sendStoredPayload(observation.payloadJson) { serializedAttemptBytes = it }
             if (generation != samplingGeneration) return false
             DiagnosticsStore.recordSync(result.isSuccess, beaconCount)
             dispatchToListener { it.onSyncCompleted(beaconCount, result.isSuccess, result.exceptionOrNull() as? Exception) }
@@ -463,7 +464,7 @@ class BeAroundSDK private constructor() {
             if (result.isSuccess) offlineBatchStorage.removeBatch(observation.batchId) else ok = false
             if (result.isSuccess) { consecutiveFailures = 0; lastFailureTime = null }
             else { consecutiveFailures++; lastFailureTime = System.currentTimeMillis() }
-            DiagnosticsStore.recordSamplingAttempt(observation.kind, observation.payloadJson.toByteArray(Charsets.UTF_8).size,
+            DiagnosticsStore.recordSamplingAttempt(observation.kind, serializedAttemptBytes,
                 result.isSuccess, archiveOnly = result.getOrNull()?.projection == "archive_only",
                 manifestGap = result.getOrNull()?.projection == "pending_history")
             DiagnosticsStore.recordObservation(buckets = observation.bucketCount, gaps = observation.gapCount)

@@ -56,7 +56,8 @@ class APIClientSamplingTest {
         put("clock", JSONObject().put("wallTimeMs", wall - 1_000L).put("monotonicTimeMs", elapsed - 1_000L))
         put("motion", JSONObject().put("state", "unknown").put("source", "none"))
     })
-    private fun withServer(respond: (JSONObject) -> String, block: suspend (String, MutableList<JSONObject>) -> Unit) = runBlocking {
+    private fun withServer(respond: (JSONObject) -> String, onRawRequest: (ByteArray) -> Unit = {},
+                           block: suspend (String, MutableList<JSONObject>) -> Unit) = runBlocking {
         val requests = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
         val server = ServerSocket(0, 10, java.net.InetAddress.getByName("127.0.0.1"))
         val errors = java.util.concurrent.atomic.AtomicReference<Throwable?>()
@@ -79,6 +80,7 @@ class APIClientSamplingTest {
                     val raw = ByteArray(length)
                     var offset = 0
                     while (offset < length) { val read = input.read(raw, offset, length - offset); check(read > 0); offset += read }
+                    onRawRequest(raw)
                     val request = JSONObject(String(raw, Charsets.UTF_8)); requests += request
                     val response = respond(request).toByteArray(Charsets.UTF_8)
                     socket.getOutputStream().use { output ->
@@ -337,6 +339,132 @@ class APIClientSamplingTest {
         assertEquals(live[0].getJSONArray("beacons").getJSONObject(0).getString("sampleId"),
             archived.getJSONArray("beacons").getJSONObject(0).getJSONArray("temporalBuckets").getJSONObject(0).getString("lastSampleId"))
         assertEquals(0, storage.getBatchCount())
+    }
+
+    @Test fun `fresh diagnostic bytes match filtered HTTP bodies for Gson doubles and slash escaping`() {
+        val wireBytes = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
+        withServer({ request ->
+            JSONObject().put("samplingAck", JSONObject().put("batchId", request.getJSONObject("sampling").getString("batchId"))
+                .put("archive", "durable").put("projection", "applied").put("fallback", "keep")).toString()
+        }, onRawRequest = { wireBytes += it }) { endpoint, requests ->
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            SecureStorage.initialize(context)
+            File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
+            val sdk = BeAroundSDK::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+            fun field(name: String) = BeAroundSDK::class.java.getDeclaredField(name).apply { isAccessible = true }
+            field("context").set(sdk, context)
+            val device = VisitTestFixtures.device().copy(deviceId = sdk.deviceId, timestamp = System.currentTimeMillis())
+            val storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
+            wall = System.currentTimeMillis(); elapsed = android.os.SystemClock.elapsedRealtime()
+            val client = APIClient(config, endpoint, { DataCollectionPolicy(false, false, false) }, { true },
+                android.os.SystemClock::elapsedRealtime, { wall })
+            client.observeResponse(response(), device.deviceId, wall, elapsed)
+            val info = SDKInfo(appId = config.appId, build = 1)
+            val originalContext = client.buildPayload(emptyList(), info, device,
+                UserProperties(internalId = "fixture/path")).put("location", JSONObject().put("latitude", 1.0))
+                .put("wifis", JSONArray().put(JSONObject().put("apId", "fixture-ap"))).apply {
+                    getJSONObject("device").getJSONObject("network").put("apId", "fixture-ap").put("wifiSSID", "fixture-network")
+                    getJSONObject("device").getJSONObject("permissions").put("advertisingId", "fixture-ad").put("limitAdTracking", false)
+                }.toString()
+            val engine = ObservationSummary({ wall }, android.os.SystemClock::elapsedRealtime)
+            engine.synchronizeClock(0.0, 1.0, elapsed)
+            val evidence = MotionEvidence(MotionState.UNKNOWN, MotionSource.NONE, MotionConfidence.NONE,
+                MotionReason.STARTUP, null, null, false)
+            val beacon = Beacon(UUID.randomUUID(), 1, 1, -60, Beacon.Proximity.NEAR, 1.0, Date(wall))
+            engine.capture(listOf(beacon), originalContext, evidence)
+            val originalLive = engine.live(30_000L, evidence)!!
+            assertTrue(originalLive.payloadJson.contains("\"serverOffsetMs\":0.0"))
+            assertTrue(originalLive.payloadJson.contains("fixture/path"))
+            field("configuration").set(sdk, config); field("apiClient").set(sdk, client); field("sdkInfo").set(sdk, info)
+            field("samplingDevice").set(sdk, device); field("offlineBatchStorage").set(sdk, storage); field("observationSummary").set(sdk, engine)
+            field("lastSummaryElapsed").set(sdk, elapsed - 300_000L)
+            SDKConfigStorage.saveScanningEnabled(context, true)
+            BeAroundSDK::class.java.getDeclaredMethod("queuePreparedLive", PreparedObservation::class.java)
+                .apply { isAccessible = true }.invoke(sdk, originalLive)
+            DiagnosticsStore.reset()
+            val method = BeAroundSDK::class.java.getDeclaredMethod("performAdaptiveSync", APIClient::class.java,
+                Boolean::class.javaPrimitiveType, kotlin.coroutines.Continuation::class.java).apply { isAccessible = true }
+            val result = suspendCoroutine<Boolean> { continuation ->
+                val value = method.invoke(sdk, client, false, continuation)
+                if (value != kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) continuation.resume(value as Boolean)
+            }
+            assertTrue(result)
+            assertEquals(listOf("live", "summary"), requests.map { it.getJSONObject("sampling").getString("kind") })
+            requests.forEach {
+                assertFalse(it.has("location")); assertFalse(it.has("wifis"))
+                assertFalse(it.getJSONObject("device").getJSONObject("network").has("apId"))
+                assertFalse(it.getJSONObject("device").getJSONObject("network").has("wifiSSID"))
+                assertFalse(it.getJSONObject("device").getJSONObject("permissions").has("advertisingId"))
+                assertFalse(it.getJSONObject("device").getJSONObject("permissions").has("limitAdTracking"))
+            }
+            val firstWire = String(wireBytes.first(), Charsets.UTF_8)
+            assertTrue(firstWire.contains("\"serverOffsetMs\":0"))
+            assertFalse(firstWire.contains("\"serverOffsetMs\":0.0"))
+            assertTrue(firstWire.contains("fixture\\/path"))
+            val diagnostics = DiagnosticsStore.sampling()
+            assertEquals(1L, diagnostics.liveAttempts); assertEquals(1L, diagnostics.summaryAttempts)
+            assertEquals(0L, diagnostics.failures)
+            assertEquals(wireBytes.sumOf { it.size.toLong() }, diagnostics.serializedBytes)
+            assertEquals(0, storage.getBatchCount())
+            assertTrue(JSONObject(originalLive.payloadJson).has("location"))
+            assertEquals(0L, diagnostics.contextReads)
+        }
+    }
+
+    @Test fun `serialization observer reports each attempted body once even when its acknowledgment fails`() {
+        val wireSizes = java.util.Collections.synchronizedList(mutableListOf<Int>())
+        var policy = DataCollectionPolicy(false, false, false)
+        var policyReads = 0
+        withServer({ request ->
+            policy = DataCollectionPolicy.ALL_ENABLED
+            if (request.getJSONObject("sampling").getString("kind") == "live") "{}" else
+                JSONObject().put("samplingAck", JSONObject().put("batchId", request.getJSONObject("sampling").getString("batchId"))
+                    .put("archive", "durable").put("projection", "applied")).toString()
+        }, onRawRequest = { wireSizes += it.size }) { endpoint, requests ->
+            val client = client(endpoint) { policyReads++; policy }
+            negotiate(client)
+            val attempts = mutableListOf<Int>()
+            val original = captured(client).put("location", JSONObject().put("latitude", 1.0))
+                .put("wifis", JSONArray().put(JSONObject().put("apId", "fixture-ap"))).toString()
+            policyReads = 0
+            assertTrue(client.sendStoredPayload(original) { attempts += it }.isSuccess)
+            assertEquals(1, policyReads)
+            assertFalse(requests.first().has("location")); assertFalse(requests.first().has("wifis"))
+            val unconfirmed = JSONObject(original).apply { getJSONObject("sampling").put("kind", "live") }.toString()
+            assertTrue(client.sendStoredPayload(unconfirmed) { attempts += it }.isFailure)
+            assertEquals(2, policyReads)
+            assertEquals(wireSizes, attempts)
+            assertEquals(2, attempts.size)
+            assertTrue(JSONObject(original).has("location"))
+        }
+    }
+
+    @Test fun `serialization observer skips denied malformed unbound and over budget payloads`() = withServer({ response() }) { endpoint, requests ->
+        val attempts = mutableListOf<Int>()
+        val original = captured(client()).toString()
+        val unavailable = client(endpoint)
+        assertTrue(unavailable.sendStoredPayload(original) { attempts += it }.isFailure)
+        val denied = client(endpoint) { throw SecurityException("Fixture collection policy denied") }
+        negotiate(denied)
+        assertTrue(denied.sendStoredPayload(original) { attempts += it }.isFailure)
+        val client = client(endpoint)
+        negotiate(client)
+        assertTrue(client.sendStoredPayload("invalid-json") { attempts += it }.isFailure)
+        val unbound = JSONObject(original).apply { getJSONObject("sdk").put("appId", "other-app") }.toString()
+        assertTrue(client.sendStoredPayload(unbound) { attempts += it }.isFailure)
+        client.observeResponse(response(capability().put("maxPayloadBytes", 100)), "device-1", wall, elapsed)
+        assertTrue(client.sendStoredPayload(original) { attempts += it }.isFailure)
+        assertTrue(attempts.isEmpty()); assertTrue(requests.isEmpty())
+    }
+
+    @Test fun `transport failure still reports the body prepared for its network attempt`() = runBlocking {
+        val client = client()
+        negotiate(client)
+        val original = captured(client).toString()
+        val attempts = mutableListOf<Int>()
+        val result = client.sendStoredPayload(original) { attempts += it }
+        assertTrue(result.isFailure)
+        assertEquals(listOf(client.filterPayload(JSONObject(original)).toString().toByteArray(Charsets.UTF_8).size), attempts)
     }
 
 }
