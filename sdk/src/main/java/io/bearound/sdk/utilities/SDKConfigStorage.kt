@@ -39,6 +39,9 @@ object SDKConfigStorage {
     private const val KEY_COLLECT_ADVERTISING_ID = "collect_advertising_id"
     private const val KEY_COLLECT_LOCATION = "collect_location"
     private const val KEY_COLLECT_WIFI = "collect_wifi"
+    private const val KEY_ADAPTIVE_SAMPLING = "adaptive_sampling_enabled"
+    private const val KEY_HEARTBEAT_INTERVAL = "presence_heartbeat_interval_ms"
+    private const val KEY_BASE_INTERVAL = "sampling_base_interval_ms"
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -56,6 +59,9 @@ object SDKConfigStorage {
             putBoolean(KEY_COLLECT_ADVERTISING_ID, config.collectAdvertisingId)
             putBoolean(KEY_COLLECT_LOCATION, config.collectLocation)
             putBoolean(KEY_COLLECT_WIFI, config.collectWifi)
+            putBoolean(KEY_ADAPTIVE_SAMPLING, config.adaptiveSamplingEnabled)
+            putLong(KEY_HEARTBEAT_INTERVAL, config.presenceHeartbeatIntervalMillis)
+            putLong(KEY_BASE_INTERVAL, config.syncInterval)
             putBoolean(KEY_IS_CONFIGURED, true)
             // Remove legacy keys if they exist
             remove(KEY_FOREGROUND_INTERVAL)
@@ -125,7 +131,13 @@ object SDKConfigStorage {
             periodicScanDurationMillis = periodicScanDuration,
             collectAdvertisingId = collectAdvertisingId,
             collectLocation = collectLocation,
-            collectWifi = collectWifi
+            collectWifi = collectWifi,
+            adaptiveSamplingEnabled = prefs.getBoolean(KEY_ADAPTIVE_SAMPLING, true),
+            restoredSyncIntervalMillis = prefs.getLong(KEY_BASE_INTERVAL, prefs.getLong(KEY_SYNC_INTERVAL, -1L))
+                .takeIf { it in 1_000L..300_000L },
+            presenceHeartbeatIntervalMillis = io.bearound.sdk.models.PresenceHeartbeatDefaults.sanitizedInterval(
+                prefs.getLong(KEY_HEARTBEAT_INTERVAL, io.bearound.sdk.models.PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS)
+            )
         )
     }
 

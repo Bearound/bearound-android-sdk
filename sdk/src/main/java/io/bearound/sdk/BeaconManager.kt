@@ -139,6 +139,7 @@ class BeaconManager(private val context: Context) {
 
     // Callbacks
     var onBeaconsUpdated: ((List<Beacon>) -> Unit)? = null
+    internal var onPhysicalBeacon: ((Beacon, Long?) -> Unit)? = null
     var onError: ((Exception) -> Unit)? = null
     var onScanningStateChanged: ((Boolean) -> Unit)? = null
 
@@ -715,7 +716,8 @@ class BeaconManager(private val context: Context) {
         // ever produced pairs in the field.
         encounterMesh?.let { mesh ->
             IBeaconParser.parseVirtualEncounterFrame(scanRecord, result.rssi)?.let { virtual ->
-                mesh.handleVirtualBeacon(virtual.minor, virtual.rssi)
+                mesh.handleVirtualBeacon(virtual.minor, virtual.rssi,
+                    (result.timestampNanos / 1_000_000L).takeIf { result.timestampNanos > 0 })
                 return
             }
         }
@@ -769,6 +771,10 @@ class BeaconManager(private val context: Context) {
             rssiSamples = statsSnapshot,
             isStale = false
         )
+        val observedElapsed = (result.timestampNanos / 1_000_000L).takeIf { result.timestampNanos > 0 }
+        val sourceAge = observedElapsed?.let { android.os.SystemClock.elapsedRealtime() - it }
+        val physical = beacon.copy(timestamp = Date(nowMs - (sourceAge ?: 0L)))
+        onPhysicalBeacon?.invoke(physical, observedElapsed)
         processBeacon(beacon)
     }
 

@@ -76,36 +76,43 @@ internal class ObservationSummary(
             offsetUncertaintyMs.isFinite() && offsetUncertaintyMs in 0.0..5_000.0 &&
             synchronizedAtElapsedMs >= 0L && elapsed >= synchronizedAtElapsedMs && elapsed - synchronizedAtElapsedMs <= LEASE_MS
         ) ClockSynchronization(serverOffsetMs, offsetUncertaintyMs, synchronizedAtElapsedMs) else null
-        if (value == null) clearClockSynchronization() else synchronization = value
+        if (value == null) clearClockSynchronization() else {
+            if (synchronization == null) synchronizationGeneration++
+            synchronization = value
+        }
     }
 
     @Synchronized
     fun clearClockSynchronization() { synchronization = null; synchronizationGeneration++ }
 
     @Synchronized
-    fun capture(beacons: List<Beacon>, contextJson: String, motion: MotionEvidence, sourceElapsedByBeacon: Map<String, Long> = emptyMap()): List<PreparedObservation> {
+    fun capture(beacons: List<Beacon>, contextJson: String, motion: MotionEvidence, sourceElapsedByBeacon: Map<String, Long> = emptyMap(), closeLiveMaxAgeMs: Long? = null): List<PreparedObservation> {
         val wall = clock()
         val elapsed = elapsedRealtime()
         val closed = mutableListOf<PreparedObservation>()
+        fun sealCurrent() {
+            closeLiveMaxAgeMs?.let { maxAge -> live(maxAge, motion)?.let(closed::add) }
+            close()?.let(closed::add)
+        }
         val context = JsonParser.parseString(contextJson).asJsonObject.deepCopy().apply { remove("beacons"); remove("sampling") }
         val contextBytes = gson.toJson(context).toByteArray(Charsets.UTF_8).size
         require(contextBytes + ENVELOPE_BYTES < PAYLOAD_BYTES) { "Observation context exceeds payload limit" }
         val previousPair = lastClockPair
         if (previousPair != null && (elapsed < previousPair.elapsed || abs((wall - previousPair.wall).toDouble() - (elapsed - previousPair.elapsed)) > 120_000.0)) {
             clearClockSynchronization()
-            close()?.let(closed::add)
+            sealCurrent()
             watermarks.clear()
             minimumSourceElapsed = if (elapsed >= previousPair.elapsed) previousPair.elapsed else Long.MIN_VALUE
         }
         lastClockPair = Watermark(wall, elapsed)
         watermarks.entries.removeAll { elapsed >= it.value.elapsed && elapsed - it.value.elapsed > WATERMARK_TTL_MS }
-        if (current?.let { it.context != context || it.synchronizationGeneration != synchronizationGeneration } == true) close()?.let(closed::add)
+        if (current?.let { it.context != context || it.synchronizationGeneration != synchronizationGeneration } == true) sealCurrent()
 
         for (beacon in beacons.sortedBy { it.timestamp.time }) {
             val observed = beacon.timestamp.time
             val rawRssi = beacon.rssiRaw ?: beacon.rssi
-            if (beacon.isStale || rawRssi !in -127..-1 || beacon.rssi !in -127..-1 || observed <= 0L || observed > wall ||
-                !beacon.accuracy.isFinite() || beacon.accuracy < 0.0 || beacon.major !in 0..65535 || beacon.minor !in 0..65535) continue
+            if (beacon.isStale || rawRssi !in -127..0 || beacon.rssi !in -127..0 || observed <= 0L || observed > wall ||
+                !beacon.accuracy.isFinite() || beacon.accuracy < -1.0 || beacon.major !in 0..65535 || beacon.minor !in 0..65535) continue
             val age = wall - observed
             val sourceElapsed = sourceElapsedByBeacon[beacon.identifier] ?: (elapsed - age)
             if (sourceElapsed <= minimumSourceElapsed || sourceElapsed < 0L || sourceElapsed > elapsed || elapsed - sourceElapsed > WATERMARK_TTL_MS) continue
@@ -122,7 +129,7 @@ internal class ObservationSummary(
             if (existing != null && (existing.context != context || maxOf(existing.last, observed) - minOf(existing.first, observed) >= WINDOW_MS ||
                     sourceElapsed - existing.firstElapsed >= WINDOW_MS || gap)) {
                 if (gap) existing.gapCount++
-                close()?.let(closed::add)
+                sealCurrent()
             }
             var window = current ?: Window(UUID.randomUUID().toString(), context.deepCopy(), contextBytes, motion.copy(), validSynchronization(synchronization, elapsed), synchronizationGeneration).also { current = it }
             val bucketIndex = observed / BUCKET_MS
@@ -132,7 +139,7 @@ internal class ObservationSummary(
             val totalEstimate = estimate + if (addedBucket) BUCKET_BYTES else 0
             if ((signal == null && window.signals.size >= MAX_BEACONS) || (addedBucket && (signal?.buckets?.size ?: 0) >= MAX_BUCKETS) ||
                 window.sampleCount >= MAX_SAMPLES || totalEstimate > PAYLOAD_BYTES) {
-                close()?.let(closed::add)
+                sealCurrent()
                 window = Window(UUID.randomUUID().toString(), context.deepCopy(), contextBytes, motion.copy(), validSynchronization(synchronization, elapsed), synchronizationGeneration).also { current = it }
             }
             val target = window.signals.getOrPut(key) { Signal() }
@@ -162,7 +169,7 @@ internal class ObservationSummary(
     }
 
     @Synchronized
-    fun live(maxAgeMs: Long = 30_000L): PreparedObservation? {
+    fun live(maxAgeMs: Long = 30_000L, motion: MotionEvidence? = null): PreparedObservation? {
         val window = current ?: return null
         val elapsed = elapsedRealtime()
         if (window.synchronizationGeneration != synchronizationGeneration || maxAgeMs <= 0L) return null
@@ -173,7 +180,7 @@ internal class ObservationSummary(
         samples.forEach { sample ->
             beacons.add(sample.beacon.deepCopy().apply { addProperty("sampleId", sample.id); addProperty("bucketId", sample.bucketId); addProperty("sampleOrdinal", sample.ordinal) })
         }
-        val observation = prepare(window, "live", null, beacons, samples.minOf { it.wall }, samples.maxOf { it.wall }, samples.size, samples.map { it.bucketId }.distinct().size)
+        val observation = prepare(window, "live", null, beacons, samples.minOf { it.wall }, samples.maxOf { it.wall }, samples.size, samples.map { it.bucketId }.distinct().size, motion)
         samples.forEach { it.emitted = true }
         return observation
     }
@@ -208,7 +215,7 @@ internal class ObservationSummary(
     private fun validSynchronization(value: ClockSynchronization?, elapsed: Long): ClockSynchronization? =
         value?.takeIf { elapsed >= it.synchronizedAt && elapsed - it.synchronizedAt <= LEASE_MS }
 
-    private fun prepare(window: Window, kind: String, transitionReason: String?, beacons: JsonArray, first: Long, last: Long, samples: Int, buckets: Int): PreparedObservation {
+    private fun prepare(window: Window, kind: String, transitionReason: String?, beacons: JsonArray, first: Long, last: Long, samples: Int, buckets: Int, liveMotion: MotionEvidence? = null): PreparedObservation {
         val emissionWall = clock()
         val emissionElapsed = elapsedRealtime()
         val regressedWall = emissionWall < window.last - 120_000L
@@ -226,7 +233,7 @@ internal class ObservationSummary(
             addProperty("version", 1); addProperty("kind", kind); addProperty("batchId", batchId)
             addProperty("captureStreamId", captureStreamId); addProperty("windowId", window.id)
             addProperty("observedFrom", first); addProperty("observedTo", last); addProperty("sentAt", wall)
-            add("motion", gson.toJsonTree(window.motion)); add("clock", clockJson)
+            add("motion", gson.toJsonTree(liveMotion ?: window.motion)); add("clock", clockJson)
             transitionReason?.let { addProperty("transitionReason", it) }
         }
         val payload = window.context.deepCopy().apply { add("beacons", beacons); add("sampling", sampling) }

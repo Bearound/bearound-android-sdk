@@ -4,6 +4,7 @@ import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.DataCollectionPolicy
 import io.bearound.sdk.models.UserDevice
 import io.bearound.sdk.network.HttpException
+import org.json.JSONObject
 
 /**
  * Sends the batches persisted in [OfflineBatchStorage].
@@ -23,7 +24,8 @@ internal class StoredBatchDrain(
     private val permanentHttpCodes: Set<Int>,
     private val send: suspend (beacons: List<Beacon>, device: UserDevice, syncTrigger: String?) -> Result<Unit>,
     private val observer: Observer = Observer.NONE,
-    private val clock: () -> Long = System::currentTimeMillis
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val sendCaptured: (suspend (OfflineBatchStorage.StoredBatchRecord, JSONObject?) -> Result<Unit>)? = null
 ) {
     /** Side effects the SDK attaches to the drain (listener, diagnostics, backoff). */
     interface Observer {
@@ -81,10 +83,14 @@ internal class StoredBatchDrain(
             fresh: UserDevice,
             policy: DataCollectionPolicy
         ): UserDevice {
-            val context = record.context ?: return fresh
+            val context = record.context
             return fresh.copy(
-                location = if (policy.location) context.location else null,
-                wifis = if (policy.wifi) context.wifis ?: fresh.wifis else emptyList()
+                timestamp = record.beacons.maxOfOrNull { it.timestamp.time } ?: context?.location?.timestamp ?: fresh.timestamp,
+                location = if (policy.location) context?.location else null,
+                wifis = if (policy.wifi) context?.wifis.orEmpty() else emptyList(),
+                apId = if (policy.wifi) context?.wifis?.firstOrNull { it.connected }?.apId else null,
+                wifiSSID = if (policy.wifi) context?.wifis?.firstOrNull { it.connected }?.ssid else null,
+                encounters = emptyList(), encounterIds = emptyList(), advertisingId = null, limitAdTracking = null
             )
         }
     }
@@ -109,11 +115,16 @@ internal class StoredBatchDrain(
             }
         }
 
-        for (request in plan(live)) {
+        val ordered = live.sortedByDescending { it.priority }
+        val manifests = if (sendCaptured != null) storage.sealReplay(ordered) else emptyMap()
+        for (request in plan(ordered)) {
             val head = request.first()
             val beaconCount = request.sumOf { it.beacons.size }
             observer.onRequestStarted(beaconCount)
-            val result = send(request.flatMap { it.beacons }, deviceFor(head, fresh, policy), head.syncTrigger)
+            val result = if (head.requestJson != null) {
+                if (sendCaptured == null) Result.failure(IllegalStateException("Captured payload sender is unavailable"))
+                else sendCaptured.invoke(head, manifests[head.id])
+            } else send(request.flatMap { it.beacons }, deviceFor(head, fresh, policy), head.syncTrigger)
 
             if (result.isSuccess) {
                 storage.removeBatches(request.map { it.id })

@@ -1,0 +1,342 @@
+package io.bearound.sdk.network
+
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
+import io.bearound.sdk.BeAroundSDK
+import io.bearound.sdk.models.Beacon
+import io.bearound.sdk.models.UserProperties
+import io.bearound.sdk.sampling.*
+import io.bearound.sdk.utilities.OfflineBatchStorage
+import io.bearound.sdk.utilities.SecureStorage
+import io.bearound.sdk.utilities.SDKConfigStorage
+import io.bearound.sdk.utilities.DiagnosticsStore
+import java.util.Date
+import java.io.File
+import java.net.ServerSocket
+import java.io.ByteArrayOutputStream
+import kotlin.concurrent.thread
+import io.bearound.sdk.models.DataCollectionPolicy
+import io.bearound.sdk.models.SDKConfiguration
+import io.bearound.sdk.models.SDKInfo
+import io.bearound.sdk.visit.VisitTestFixtures
+import java.net.InetSocketAddress
+import java.util.UUID
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineStart
+import kotlin.coroutines.suspendCoroutine
+import kotlin.coroutines.resume
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.Assert.*
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+
+@RunWith(RobolectricTestRunner::class)
+class APIClientSamplingTest {
+    private var elapsed = 1_000_000L
+    private var wall = 1_800_000_000_000L
+    private val config = SDKConfiguration("fixture-token", "io.fixture")
+    private fun client(endpoint: String = "http://127.0.0.1:1", policy: () -> DataCollectionPolicy = { DataCollectionPolicy.ALL_ENABLED }) =
+        APIClient(config, endpoint, policy, { true }, { elapsed }, { wall })
+    private fun capability() = JSONObject().apply {
+        put("version", 1); put("modes", JSONArray(listOf("live", "summary", "transition")))
+        put("leaseMs", 300_000L); put("serverTimeMs", wall); put("servicesCadenceMs", 5_000L)
+        put("mapTtlMs", 300_000L); put("sessionTimeoutMs", 1_800_000L)
+        put("liveEvidenceMaxAgeMs", 30_000L); put("clockSkewToleranceMs", 120_000L); put("maxPayloadBytes", 524_288)
+    }
+    private fun response(cap: JSONObject = capability()) = JSONObject().put("capabilities", JSONObject().put("adaptiveSampling", cap)).toString()
+    private fun negotiate(client: APIClient) = client.observeResponse(response(), "device-1", wall, elapsed)
+    private fun captured(client: APIClient, batch: String = UUID.randomUUID().toString()) = client.buildPayload(
+        emptyList(), SDKInfo(appId = config.appId, build = 1), VisitTestFixtures.device().copy(deviceId = "device-1"), null
+    ).put("sampling", JSONObject().apply {
+        put("version", 1); put("kind", "summary"); put("batchId", batch)
+        put("sentAt", wall - 1_000L); put("observedFrom", wall - 60_000L); put("observedTo", wall - 1_000L)
+        put("clock", JSONObject().put("wallTimeMs", wall - 1_000L).put("monotonicTimeMs", elapsed - 1_000L))
+        put("motion", JSONObject().put("state", "unknown").put("source", "none"))
+    })
+    private fun withServer(respond: (JSONObject) -> String, block: suspend (String, MutableList<JSONObject>) -> Unit) = runBlocking {
+        val requests = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+        val server = ServerSocket(0, 10, java.net.InetAddress.getByName("127.0.0.1"))
+        val errors = java.util.concurrent.atomic.AtomicReference<Throwable?>()
+        val worker = thread(isDaemon = true) {
+            try {
+                while (!server.isClosed) server.accept().use { socket ->
+                    socket.soTimeout = 10_000
+                    val input = socket.getInputStream().buffered()
+                    fun line(): String {
+                        val bytes = ByteArrayOutputStream()
+                        while (true) { val value = input.read(); if (value == -1 || value == 10) break; if (value != 13) bytes.write(value) }
+                        return bytes.toString("UTF-8")
+                    }
+                    line()
+                    var length = 0
+                    while (true) {
+                        val header = line(); if (header.isEmpty()) break
+                        if (header.startsWith("Content-Length:", true)) length = header.substringAfter(':').trim().toInt()
+                    }
+                    val raw = ByteArray(length)
+                    var offset = 0
+                    while (offset < length) { val read = input.read(raw, offset, length - offset); check(read > 0); offset += read }
+                    val request = JSONObject(String(raw, Charsets.UTF_8)); requests += request
+                    val response = respond(request).toByteArray(Charsets.UTF_8)
+                    socket.getOutputStream().use { output ->
+                        output.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${response.size}\r\nConnection: close\r\n\r\n".toByteArray())
+                        output.write(response); output.flush()
+                    }
+                }
+            } catch (error: Throwable) { if (!server.isClosed) errors.set(error) }
+        }
+        try { block("http://127.0.0.1:${server.localPort}", requests) } finally {
+            server.close(); worker.join(1_000); errors.get()?.let { throw it }
+        }
+    }
+
+    @Test fun `normal registration negotiates capability without another discovery call`() = withServer({ response() }) { endpoint, requests ->
+        val client = client(endpoint)
+        var success = false
+        client.sendRegister(SDKInfo(appId = config.appId, build = 1), VisitTestFixtures.device().copy(deviceId = "device-1"), null) { success = it.isSuccess }
+        assertTrue(success)
+        assertEquals(1, requests.size)
+        assertEquals("register", requests.single().getString("syncTrigger"))
+        assertFalse(requests.single().has("sampling"))
+        assertEquals(5_000L, client.samplingCapability("device-1")!!.policy.advertisedServicesCadenceMs)
+    }
+
+    @Test fun `capability is bound to device expires monotonically and rejects incompatible contracts`() {
+        val client = client()
+        negotiate(client)
+        assertNull(client.samplingCapability("other-device"))
+        negotiate(client)
+        elapsed += 300_000L
+        assertNull(client.samplingCapability("device-1"))
+        listOf(capability().put("version", 1.5), capability().put("version", 2), capability().put("modes", JSONArray(listOf("live"))),
+            capability().put("sessionTimeoutMs", 1L), capability().put("mapTtlMs", 0),
+            capability().put("maxPayloadBytes", 524_289L), capability().put("leaseMs", 300_001L)).forEach {
+            client.observeResponse(response(it), "device-1", wall, elapsed)
+            assertNull(client.samplingCapability("device-1"))
+        }
+    }
+
+    @Test fun `large round trip uncertainty and clock regression disable separation`() {
+        val client = client()
+        client.observeResponse(response(), "device-1", wall, elapsed - 10_001L)
+        assertNull(client.samplingCapability("device-1"))
+        negotiate(client)
+        elapsed--
+        assertNull(client.samplingCapability("device-1"))
+    }
+
+    @Test fun `matching durable acknowledgment preserves original retry clock and context`() = withServer({ request ->
+        JSONObject().put("samplingAck", JSONObject().put("batchId", request.getJSONObject("sampling").getString("batchId"))
+            .put("archive", "durable").put("projection", "duplicate").put("fallback", "keep")).toString()
+    }) { endpoint, requests ->
+        val client = client(endpoint)
+        negotiate(client)
+        val original = captured(client)
+        val before = original.toString()
+        wall += 120_000L; elapsed += 120_000L
+        val result = client.sendStoredPayload(before)
+        assertTrue(result.isSuccess)
+        assertEquals(original.getJSONObject("sampling").getLong("sentAt"), requests.single().getJSONObject("sampling").getLong("sentAt"))
+        assertEquals(original.getJSONObject("sampling").getJSONObject("clock").toString(), requests.single().getJSONObject("sampling").getJSONObject("clock").toString())
+        assertEquals(before, original.toString())
+    }
+
+    @Test fun `HTTP success without a matching durable acknowledgment leaves the batch unconfirmed`() = withServer({
+        JSONObject().put("samplingAck", JSONObject().put("batchId", UUID.randomUUID().toString()).put("archive", "durable")).toString()
+    }) { endpoint, _ ->
+        val client = client(endpoint)
+        negotiate(client)
+        assertTrue(client.sendStoredPayload(captured(client).toString()).isFailure)
+    }
+
+    @Test fun `degraded acknowledgment invalidates capability immediately and retains original batch identity`() = withServer({ request ->
+        JSONObject(response()).put("samplingAck", JSONObject().put("batchId", request.getJSONObject("sampling").getString("batchId"))
+            .put("archive", "durable").put("projection", "archive_only").put("fallback", "legacy_now")
+            .put("invalidateCapability", true)).toString()
+    }) { endpoint, _ ->
+        val client = client(endpoint)
+        negotiate(client)
+        assertTrue(client.sendStoredPayload(captured(client).toString()).isSuccess)
+        assertNull(client.samplingCapability("device-1"))
+    }
+
+    @Test fun `historical sampling requires capability and cannot be silently resent as legacy`() = withServer({ response() }) { endpoint, requests ->
+        val client = client(endpoint)
+        assertTrue(client.sendStoredPayload(captured(client).toString()).isFailure)
+        assertTrue(requests.isEmpty())
+    }
+
+    @Test fun `current collection policy strips recorded sensitive fields without reading replacement context`() {
+        var policy = DataCollectionPolicy.ALL_ENABLED
+        val client = client(policy = { policy })
+        val original = captured(client).put("location", JSONObject().put("latitude", 1.0))
+            .put("wifis", JSONArray().put(JSONObject().put("apId", "old-ap")))
+        original.getJSONObject("device").getJSONObject("network").put("apId", "old-ap").put("wifiSSID", "old-network")
+        original.getJSONObject("device").getJSONObject("permissions").put("advertisingId", "old-ad").put("limitAdTracking", false)
+        original.getJSONObject("sampling").put("motion", JSONObject().put("source", "context_fusion").put("state", "stationary_inferred"))
+        policy = DataCollectionPolicy(false, false, false)
+        val filtered = client.filterPayload(original)
+        assertFalse(filtered.has("location")); assertFalse(filtered.has("wifis"))
+        assertFalse(filtered.getJSONObject("device").getJSONObject("network").has("apId"))
+        assertFalse(filtered.getJSONObject("device").getJSONObject("network").has("wifiSSID"))
+        assertFalse(filtered.getJSONObject("device").getJSONObject("permissions").has("advertisingId"))
+        assertEquals("source_disabled", filtered.getJSONObject("sampling").getJSONObject("motion").getString("reason"))
+        assertTrue(original.has("location"))
+    }
+    @Test fun `identity and push setters close original windows and refresh cached current context`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        SecureStorage.initialize(context)
+        val sdk = BeAroundSDK::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+        fun field(name: String) = BeAroundSDK::class.java.getDeclaredField(name).apply { isAccessible = true }
+        File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
+        val storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
+        val client = client()
+        val device = VisitTestFixtures.device().copy(deviceId = "device-1")
+        val info = SDKInfo(appId = config.appId, build = 1)
+        val engine = ObservationSummary({ wall }, { elapsed })
+        val evidence = MotionEvidence(MotionState.UNKNOWN, MotionSource.NONE, MotionConfidence.NONE,
+            MotionReason.STARTUP, null, null, false)
+        field("context").set(sdk, context); field("offlineBatchStorage").set(sdk, storage)
+        field("apiClient").set(sdk, client); field("sdkInfo").set(sdk, info)
+        field("samplingDevice").set(sdk, device); field("observationSummary").set(sdk, engine)
+        sdk.setUserProperties(UserProperties(internalId = "original-user"))
+        val oldContext = field("samplingContextJson").get(sdk) as String
+        val oldGeneration = field("samplingContextId").get(sdk)
+        val beacon = Beacon(UUID.randomUUID(), 1, 1, -60, Beacon.Proximity.NEAR, 1.0, Date(wall))
+        engine.capture(listOf(beacon), oldContext, evidence)
+        sdk.setUserProperties(UserProperties(internalId = "changed-user"))
+        val newContext = field("samplingContextJson").get(sdk) as String
+        assertEquals("original-user", JSONObject(storage.loadAllRecords().single().requestJson!!).getJSONObject("userProperties").getString("internalId"))
+        assertEquals("changed-user", JSONObject(newContext).getJSONObject("userProperties").getString("internalId"))
+        assertNotEquals(oldGeneration, field("samplingContextId").get(sdk))
+        assertEquals(oldGeneration, storage.loadAllRecords().single().captureContextId)
+        wall++; elapsed++; engine.capture(listOf(beacon.copy(timestamp = Date(wall))), newContext, evidence)
+        sdk.setPushToken("fixture-push-token")
+        val pushContext = JSONObject(field("samplingContextJson").get(sdk) as String)
+        assertEquals("fixture-push-token", pushContext.getJSONObject("device").getString("pushToken"))
+        assertFalse(JSONObject(storage.loadAllRecords().last().requestJson!!).getJSONObject("device").has("pushToken"))
+        assertEquals(device.timestamp, pushContext.getJSONObject("device").getLong("timestamp"))
+        sdk.clearUserProperties()
+        assertFalse(JSONObject(field("samplingContextJson").get(sdk) as String).has("userProperties"))
+    }
+
+    @Test fun `wall clock jumps invalidate the live lease without rebasing old payloads`() {
+        val client = client()
+        negotiate(client)
+        val original = captured(client).toString()
+        wall -= 120_001L
+        assertNull(client.samplingCapability("device-1"))
+        assertTrue(JSONObject(original).getJSONObject("sampling").getLong("sentAt") > wall)
+    }
+
+    @Test fun `smaller advertised budget preserves queued evidence and disables adaptive emission`() = withServer({ response() }) { endpoint, requests ->
+        val client = client(endpoint)
+        client.observeResponse(response(capability().put("maxPayloadBytes", 100)), "device-1", wall, elapsed)
+        val body = captured(client).toString()
+        val result = client.sendStoredPayload(body)
+        assertTrue(result.isFailure); assertFalse(result.exceptionOrNull() is HttpException)
+        assertTrue(requests.isEmpty()); assertNull(client.samplingCapability("device-1"))
+    }
+
+    @Test fun `restored callback captured before the active generation never reads current collection sources`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val sdk = BeAroundSDK::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+        fun field(name: String) = BeAroundSDK::class.java.getDeclaredField(name).apply { isAccessible = true }
+        field("context").set(sdk, context); field("configuration").set(sdk, config)
+        SDKConfigStorage.saveScanningEnabled(context, true)
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(60))
+        val now = android.os.SystemClock.elapsedRealtime()
+        field("samplingGenerationStartedAtElapsed").set(sdk, now)
+        DiagnosticsStore.reset()
+        val beacon = Beacon(UUID.randomUUID(), 1, 1, -60, Beacon.Proximity.NEAR, 1.0, Date())
+        BeAroundSDK::class.java.getDeclaredMethod("capturePhysicalObservation", Beacon::class.java, java.lang.Long::class.java)
+            .apply { isAccessible = true }.invoke(sdk, beacon, now - 1L)
+        assertEquals(0L, DiagnosticsStore.sampling().uniqueSamples)
+        assertEquals(1L, DiagnosticsStore.sampling().cachedObservations)
+        assertEquals(0L, DiagnosticsStore.sampling().contextReads)
+    }
+
+    @Test fun `drain waiting for its lock cannot pair new tenant rows with an earlier client`() = withServer({ "{}" }) { endpoint, requests ->
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
+        val storage = OfflineBatchStorage(context).also { it.currentTenantId = "old-tenant" }
+        val sdk = BeAroundSDK::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+        fun field(name: String) = BeAroundSDK::class.java.getDeclaredField(name).apply { isAccessible = true }
+        field("context").set(sdk, context); field("apiClient").set(sdk, client(endpoint))
+        field("sdkInfo").set(sdk, SDKInfo(appId = config.appId, build = 1)); field("offlineBatchStorage").set(sdk, storage)
+        field("samplingDevice").set(sdk, VisitTestFixtures.device().copy(deviceId = "device-1"))
+        val mutex = field("drainMutex").get(sdk) as kotlinx.coroutines.sync.Mutex
+        mutex.lock()
+        val method = BeAroundSDK::class.java.getDeclaredMethod("drainStoredBatches", Boolean::class.javaPrimitiveType,
+            String::class.java, kotlin.coroutines.Continuation::class.java).apply { isAccessible = true }
+        val operation = kotlinx.coroutines.coroutineScope {
+            val deferred = async(start = CoroutineStart.UNDISPATCHED) {
+                suspendCoroutine<Boolean?> { continuation ->
+                    val result = method.invoke(sdk, false, null, continuation)
+                    if (result != kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) continuation.resume(result as Boolean?)
+                }
+            }
+            field("samplingGeneration").set(sdk, 1L)
+            storage.currentTenantId = "new-tenant"
+            val original = client(endpoint).buildPayload(emptyList(), SDKInfo(appId = config.appId, build = 1),
+                VisitTestFixtures.device().copy(deviceId = "device-1", timestamp = System.currentTimeMillis()), null).toString()
+            val id = storage.saveRequestReturningId(original)!!
+            mutex.unlock()
+            assertNull(deferred.await()); assertEquals(id, storage.loadAllRecords().single().id)
+            deferred
+        }
+        assertTrue(operation.isCompleted); assertTrue(requests.isEmpty())
+    }
+
+    @Test fun `fresh boundary live pages are delivered before archival backlog with shared physical IDs`() = withServer({ request ->
+        JSONObject().put("samplingAck", JSONObject().put("batchId", request.getJSONObject("sampling").getString("batchId"))
+            .put("archive", "durable").put("projection", "applied").put("fallback", "keep")).toString()
+    }) { endpoint, requests ->
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        SecureStorage.initialize(context)
+        File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
+        val sdk = BeAroundSDK::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+        fun field(name: String) = BeAroundSDK::class.java.getDeclaredField(name).apply { isAccessible = true }
+        field("context").set(sdk, context)
+        val device = VisitTestFixtures.device().copy(deviceId = sdk.deviceId, timestamp = System.currentTimeMillis())
+        val storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
+        wall = System.currentTimeMillis(); elapsed = android.os.SystemClock.elapsedRealtime()
+        val client = APIClient(config, endpoint, { DataCollectionPolicy.ALL_ENABLED }, { true },
+            android.os.SystemClock::elapsedRealtime, { wall })
+        client.observeResponse(response(), device.deviceId, wall, elapsed)
+        val info = SDKInfo(appId = config.appId, build = 1)
+        val originalContext = client.buildPayload(emptyList(), info, device, null).toString()
+        val engine = ObservationSummary({ wall }, android.os.SystemClock::elapsedRealtime)
+        engine.synchronizeClock(0.0, 1.0, elapsed)
+        val evidence = MotionEvidence(MotionState.UNKNOWN, MotionSource.NONE, MotionConfidence.NONE, MotionReason.STARTUP, null, null, false)
+        val uuid = UUID.randomUUID()
+        fun beacon(minor: Int) = Beacon(uuid, 1, minor, -60, Beacon.Proximity.NEAR, 1.0, Date(wall))
+        engine.capture((1..100).map(::beacon), originalContext, evidence)
+        val closed = engine.capture(listOf(beacon(101)), originalContext, evidence, closeLiveMaxAgeMs = 30_000L)
+        field("configuration").set(sdk, config); field("apiClient").set(sdk, client); field("sdkInfo").set(sdk, info)
+        field("samplingDevice").set(sdk, device); field("offlineBatchStorage").set(sdk, storage); field("observationSummary").set(sdk, engine)
+        SDKConfigStorage.saveScanningEnabled(context, true)
+        storage.saveRequestReturningId(closed[1].payloadJson, captureContextId = "context")
+        BeAroundSDK::class.java.getDeclaredMethod("queuePreparedLive", PreparedObservation::class.java)
+            .apply { isAccessible = true }.invoke(sdk, closed[0])
+        val method = BeAroundSDK::class.java.getDeclaredMethod("performAdaptiveSync", APIClient::class.java,
+            Boolean::class.javaPrimitiveType, kotlin.coroutines.Continuation::class.java).apply { isAccessible = true }
+        val result = suspendCoroutine<Boolean> { continuation ->
+            val value = method.invoke(sdk, client, false, continuation)
+            if (value != kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) continuation.resume(value as Boolean)
+        }
+        assertTrue(result)
+        val live = requests.filter { it.getJSONObject("sampling").getString("kind") == "live" && !it.getJSONObject("sampling").has("replay") }
+        assertEquals(listOf(100, 1), live.map { it.getJSONArray("beacons").length() })
+        assertEquals("live", requests.first().getJSONObject("sampling").getString("kind"))
+        val archived = requests.single { it.getJSONObject("sampling").getString("batchId") == closed[1].batchId }
+        assertTrue(archived.getJSONObject("sampling").has("replay"))
+        assertEquals(live[0].getJSONArray("beacons").getJSONObject(0).getString("sampleId"),
+            archived.getJSONArray("beacons").getJSONObject(0).getJSONArray("temporalBuckets").getJSONObject(0).getString("lastSampleId"))
+        assertEquals(0, storage.getBatchCount())
+    }
+
+}

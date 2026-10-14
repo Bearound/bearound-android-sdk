@@ -1,11 +1,15 @@
 package io.bearound.sdk.network
 
 import android.util.Log
+import android.os.SystemClock
+import io.bearound.sdk.models.DataCollectionPolicy
+import io.bearound.sdk.models.DataCollectionPolicyStore
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.UserDevice
 import io.bearound.sdk.models.UserProperties
+import io.bearound.sdk.sampling.SamplingCapability
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -32,11 +36,170 @@ class HttpException(
 /**
  * API client for sending beacon data to the backend
  */
-class APIClient(private val configuration: SDKConfiguration) {
+internal data class NegotiatedSamplingCapability(
+    val policy: SamplingCapability,
+    val liveEvidenceMaxAgeMs: Long,
+    val maxPayloadBytes: Int,
+    val expiresAtElapsedMs: Long,
+    val serverOffsetMs: Double,
+    val offsetUncertaintyMs: Double,
+    val synchronizedAtElapsedMs: Long,
+    val deviceId: String,
+    val synchronizedAtWallMs: Long
+)
+
+internal data class SamplingAcknowledgment(val batchId: String, val projection: String, val invalidatedCapability: Boolean)
+
+class APIClient(
+    private val configuration: SDKConfiguration,
+    private val endpoint: String = configuration.apiBaseURL,
+    private val policyProvider: () -> DataCollectionPolicy = { DataCollectionPolicyStore.current },
+    private val nativeActivityAllowed: () -> Boolean = { true },
+    private val elapsedRealtime: () -> Long = SystemClock::elapsedRealtime,
+    private val clock: () -> Long = System::currentTimeMillis
+) {
     companion object {
         private const val TAG = "BeAroundSDK-APIClient"
         private const val CONNECT_TIMEOUT = 30000
         private const val READ_TIMEOUT = 60000
+    }
+
+    @Volatile private var negotiated: NegotiatedSamplingCapability? = null
+
+    internal fun withEndpoint(value: String): APIClient =
+        APIClient(configuration, value, policyProvider, nativeActivityAllowed, elapsedRealtime, clock)
+
+    internal fun invalidateSamplingCapability() { negotiated = null }
+
+    internal fun samplingCapability(deviceId: String): NegotiatedSamplingCapability? {
+        val current = negotiated ?: return null
+        val now = elapsedRealtime()
+        if (current.deviceId != deviceId || now < current.synchronizedAtElapsedMs || now >= current.expiresAtElapsedMs ||
+            kotlin.math.abs(clock().toDouble() - (current.synchronizedAtWallMs.toDouble() + now - current.synchronizedAtElapsedMs)) > 120_000.0) {
+            negotiated = null
+            return null
+        }
+        return current
+    }
+
+    internal fun observeResponse(body: String, deviceId: String, requestWall: Long, requestElapsed: Long) {
+        val response = runCatching { JSONObject(body) }.getOrNull() ?: return
+        val ack = response.optJSONObject("samplingAck")
+        if (ack?.optBoolean("invalidateCapability") == true || ack?.optString("fallback") == "legacy_now") {
+            invalidateSamplingCapability()
+            return
+        }
+        val value = response.optJSONObject("capabilities")?.optJSONObject("adaptiveSampling") ?: return
+        fun positive(key: String): Long? {
+            val number = value.opt(key) as? Number ?: return null
+            val double = number.toDouble()
+            return number.toLong().takeIf { double.isFinite() && double > 0 && double == it.toDouble() }
+        }
+        val now = elapsedRealtime()
+        val roundTrip = now - requestElapsed
+        val lease = positive("leaseMs")
+        val serverTime = positive("serverTimeMs")
+        val services = positive("servicesCadenceMs")
+        val mapTtl = positive("mapTtlMs")
+        val session = positive("sessionTimeoutMs")
+        val maxAge = positive("liveEvidenceMaxAgeMs")
+        val skew = positive("clockSkewToleranceMs")
+        val maxBytes = positive("maxPayloadBytes")
+        val modes = value.optJSONArray("modes")
+        val validModes = modes != null && (0 until modes.length()).map { modes.optString(it) }.toSet()
+            .containsAll(listOf("live", "summary", "transition"))
+        if (positive("version") != 1L || !validModes || deviceId.isBlank() ||
+            lease == null || lease > 300_000L || serverTime == null || services == null || mapTtl == null ||
+            session == null || session / 3 < configuration.syncInterval || maxAge == null || maxAge > 30_000L ||
+            skew == null || skew > 120_000L || maxBytes == null || maxBytes > 524_288L ||
+            roundTrip !in 0..9_998L || requestWall <= 0 || now > Long.MAX_VALUE - lease ||
+            kotlin.math.abs(clock().toDouble() - (requestWall.toDouble() + roundTrip)) > 120_000.0 ||
+            kotlin.math.abs(serverTime - (requestWall + roundTrip / 2.0)) > 86_400_000.0
+        ) {
+            invalidateSamplingCapability()
+            return
+        }
+        negotiated = NegotiatedSamplingCapability(SamplingCapability(session, services, mapTtl), maxAge,
+            maxBytes.toInt(), now + lease, serverTime - (requestWall + roundTrip / 2.0),
+            roundTrip / 2.0 + 1.0, now, deviceId, clock())
+    }
+
+    internal fun filterPayload(original: JSONObject): JSONObject {
+        val payload = JSONObject(original.toString())
+        val policy = policyProvider()
+        if (!policy.location) payload.remove("location")
+        if (!policy.wifi) {
+            payload.remove("wifis")
+            payload.optJSONObject("device")?.optJSONObject("network")?.apply {
+                remove("apId"); remove("wifiSSID")
+            }
+        }
+        if (!policy.advertisingId) payload.optJSONObject("device")?.optJSONObject("permissions")?.apply {
+            remove("advertisingId"); remove("limitAdTracking")
+        }
+        val motion = payload.optJSONObject("sampling")?.optJSONObject("motion")
+        val source = motion?.optString("source")
+        if ((source == "fresh_location" && !policy.location) ||
+            (source == "context_fusion" && (!policy.location || !policy.wifi)) ||
+            (source == "native_activity" && !nativeActivityAllowed())
+        ) motion?.apply {
+            put("state", "unknown"); put("source", "none"); put("confidence", "none")
+            put("reason", "source_disabled"); put("observedAtMs", JSONObject.NULL); put("ageMs", JSONObject.NULL)
+            put("contextStable", false)
+        }
+        return payload
+    }
+
+    /** Sends frozen original context; the caller removes only a matching durable ACK. */
+    internal suspend fun sendStoredPayload(payloadJson: String): Result<SamplingAcknowledgment?> = withContext(Dispatchers.IO) {
+        var connection: HttpURLConnection? = null
+        try {
+            val payload = filterPayload(JSONObject(payloadJson))
+            val sampling = payload.optJSONObject("sampling")
+            val deviceId = payload.getJSONObject("device").getString("deviceId")
+            if (payload.getJSONObject("sdk").getString("appId") != configuration.appId) {
+                return@withContext Result.failure(IllegalStateException("Captured application binding does not match configuration"))
+            }
+            if (sampling != null && samplingCapability(deviceId) == null) {
+                return@withContext Result.failure(IllegalStateException("Sampling capability unavailable for historical delivery"))
+            }
+            val bytes = payload.toString().toByteArray(Charsets.UTF_8)
+            val limit = samplingCapability(deviceId)?.maxPayloadBytes ?: 524_288
+            if (bytes.size > limit) {
+                invalidateSamplingCapability()
+                return@withContext Result.failure(IllegalStateException("Captured payload exceeds the negotiated budget"))
+            }
+            val requestWall = clock()
+            val requestElapsed = elapsedRealtime()
+            connection = URL("$endpoint/ingest").openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.setRequestProperty("Authorization", configuration.businessToken)
+            connection.connectTimeout = CONNECT_TIMEOUT
+            connection.readTimeout = READ_TIMEOUT
+            connection.doOutput = true
+            connection.outputStream.use { it.write(bytes) }
+            val status = connection.responseCode
+            val body = runCatching { (if (status in 200..299) connection.inputStream else connection.errorStream)
+                .bufferedReader().use { it.readText() } }.getOrDefault("")
+            if (status !in 200..299) {
+                if (status in setOf(400, 401, 413, 422, 503)) invalidateSamplingCapability()
+                return@withContext Result.failure(HttpException(status, body))
+            }
+            observeResponse(body, deviceId, requestWall, requestElapsed)
+            if (sampling == null) return@withContext Result.success(null)
+            val ack = JSONObject(body).optJSONObject("samplingAck")
+                ?: return@withContext Result.failure(IllegalStateException("Missing sampling acknowledgment"))
+            val expected = sampling.getString("batchId")
+            if (ack.optString("batchId") != expected || ack.optString("archive") != "durable") {
+                return@withContext Result.failure(IllegalStateException("Sampling acknowledgment does not confirm this batch"))
+            }
+            Result.success(SamplingAcknowledgment(expected, ack.optString("projection"), ack.optBoolean("invalidateCapability")))
+        } catch (error: Exception) {
+            Result.failure(error)
+        } finally {
+            connection?.disconnect()
+        }
     }
 
     /**
@@ -53,7 +216,9 @@ class APIClient(private val configuration: SDKConfiguration) {
     ) {
         withContext(Dispatchers.IO) {
             try {
-                val url = URL("${configuration.apiBaseURL}/ingest")
+                val requestWall = clock()
+                val requestElapsed = elapsedRealtime()
+                val url = URL("$endpoint/ingest")
                 val connection = url.openConnection() as HttpURLConnection
 
                 connection.requestMethod = "POST"
@@ -76,6 +241,8 @@ class APIClient(private val configuration: SDKConfiguration) {
                 val responseCode = connection.responseCode
 
                 if (responseCode in 200..299) {
+                    val body = runCatching { connection.inputStream.bufferedReader().use { it.readText() } }.getOrDefault("")
+                    observeResponse(body, userDevice.deviceId, requestWall, requestElapsed)
                     Log.d(TAG, "Register succeeded (HTTP $responseCode)")
                     onComplete(Result.success(Unit))
                 } else {
@@ -128,7 +295,9 @@ class APIClient(private val configuration: SDKConfiguration) {
 
         withContext(Dispatchers.IO) {
             try {
-                val url = URL("${configuration.apiBaseURL}/ingest")
+                val requestWall = clock()
+                val requestElapsed = elapsedRealtime()
+                val url = URL("$endpoint/ingest")
                 val connection = url.openConnection() as HttpURLConnection
 
                 connection.requestMethod = "POST"
@@ -159,6 +328,7 @@ class APIClient(private val configuration: SDKConfiguration) {
                         ""
                     }
                     Log.d(TAG, "Successfully sent ${beacons.size} beacon(s)")
+                    observeResponse(responseBody, userDevice.deviceId, requestWall, requestElapsed)
                     onComplete(Result.success(Unit))
                 } else {
                     val errorBody = try {
@@ -313,7 +483,7 @@ class APIClient(private val configuration: SDKConfiguration) {
             payload.put("userProperties", userPropsObj)
         }
 
-        return payload
+        return filterPayload(payload)
     }
 
     private fun buildDevicePayload(device: UserDevice): JSONObject {

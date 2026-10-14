@@ -105,7 +105,7 @@ class ObservationSummaryTest {
 
     @Test
     fun `invalid RSSI and beacon values never become evidence`() {
-        capture(listOf(beacon(0), beacon(127), beacon(-128), beacon().copy(accuracy = Double.NaN), beacon(major = -1), beacon(minor = 65536)))
+        capture(listOf(beacon(1), beacon(127), beacon(-128), beacon().copy(accuracy = Double.NaN), beacon(major = -1), beacon(minor = 65536)))
         assertFalse(summary.hasPending())
     }
 
@@ -279,4 +279,45 @@ class ObservationSummaryTest {
         assertEquals(1, capture().size)
         assertTrue(sampling(summary.live()!!).getAsJsonObject("clock")["serverOffsetMs"].isJsonNull)
     }
+    @Test
+    fun `unknown peer distance and zero RSSI preserve established beacon guards`() {
+        capture(listOf(beacon(0, major = 65535).copy(accuracy = -1.0)))
+        val value = summary.live()!!
+        assertEquals(-1.0, beacons(value)[0].asJsonObject["accuracy"].asDouble, 0.0)
+        assertEquals(0, beacons(value)[0].asJsonObject["rssi"].asInt)
+        assertEquals(1, summary.close()!!.uniqueSampleCount)
+    }
+
+    @Test
+    fun `live header uses current motion while summary preserves original evidence`() {
+        capture()
+        val current = motion.copy(state = MotionState.MOVING_CONFIRMED, source = MotionSource.NATIVE_ACTIVITY,
+            confidence = MotionConfidence.HIGH, reason = MotionReason.NATIVE_MOVING, observedAtMs = wall, ageMs = 0)
+        assertEquals("moving_confirmed", sampling(summary.live(motion = current)!!).getAsJsonObject("motion")["state"].asString)
+        assertEquals("unknown", sampling(summary.close()!!).getAsJsonObject("motion")["state"].asString)
+    }
+
+    @Test
+    fun `capacity boundary emits every fresh live beacon before its matching archived segment`() {
+        summary.synchronizeClock(0.0, 1.0, elapsed)
+        capture((1..100).map { beacon(minor = it) })
+        val closed = summary.capture(listOf(beacon(minor = 101)), context, motion, closeLiveMaxAgeMs = 30_000L)
+        assertEquals(listOf("live", "summary"), closed.map { it.kind })
+        assertEquals(100, beacons(closed[0]).size()); assertEquals(100, beacons(closed[1]).size())
+        for (index in 0 until 100) {
+            assertEquals(beacons(closed[0])[index].asJsonObject["sampleId"], bucket(closed[1], index)["lastSampleId"])
+            assertEquals(beacons(closed[0])[index].asJsonObject["bucketId"], bucket(closed[1], index)["bucketId"])
+        }
+        assertEquals(101, beacons(summary.live()!!)[0].asJsonObject["minor"].asInt)
+    }
+
+    @Test
+    fun `negotiating the first clock closes unsynchronized capture without changing historical clocks`() {
+        capture(); summary.synchronizeClock(0.0, 1.0, elapsed)
+        advance(1L)
+        val old = capture().single()
+        assertTrue(sampling(old).getAsJsonObject("clock")["serverOffsetMs"].isJsonNull)
+        assertEquals(0.0, sampling(summary.live()!!).getAsJsonObject("clock")["serverOffsetMs"].asDouble, 0.0)
+    }
+
 }

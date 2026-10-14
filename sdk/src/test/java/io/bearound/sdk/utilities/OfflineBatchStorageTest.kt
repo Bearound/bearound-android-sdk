@@ -5,6 +5,8 @@ import androidx.test.core.app.ApplicationProvider
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.DeviceLocation
 import io.bearound.sdk.models.WifiObservation
+import org.json.JSONObject
+import org.json.JSONArray
 import java.io.File
 import java.util.Date
 import java.util.UUID
@@ -43,7 +45,7 @@ class OfflineBatchStorageTest {
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
         storageDir().deleteRecursively()
-        storage = OfflineBatchStorage(context)
+        storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
     }
 
     @Test
@@ -95,12 +97,13 @@ class OfflineBatchStorageTest {
     }
 
     @Test
-    fun `legacy batches without tenant are treated as current`() {
+    fun `legacy batches without tenant are isolated instead of assigned to the current tenant`() {
         // Written with no tenant configured (pre-upgrade file).
-        val legacyId = storage.saveBatchReturningId(listOf(beacon(1)))!!
-
+        storage.currentTenantId = null
+        storage.saveBatchReturningId(listOf(beacon(1)))!!
         storage.currentTenantId = "tenant-a"
-        assertEquals(listOf(legacyId), storage.loadAllRecords().map { it.id })
+        assertTrue(storage.loadAllRecords().isEmpty())
+        assertTrue(storageDir().listFiles()!!.any { it.extension == "unbound" })
     }
 
     @Test
@@ -165,12 +168,12 @@ class OfflineBatchStorageTest {
 
     @Test
     fun `a batch written before the new fields decodes as legacy and is not quarantined`() {
-        // Exactly what 3.x wrote: no syncTrigger, no context, no tenant, no rssi stats; the
+        // A known-tenant legacy file has no syncTrigger, context or RSSI statistics; the
         // beacon also lacks proximity and its metadata lacks a field.
         val file = File(storageDir(), "${System.currentTimeMillis()}_legacy-1.json")
         file.writeText(
             """
-            {"id":"legacy-1","timestamp":1700000000000,"beacons":[
+            {"id":"legacy-1","tenantId":"test-tenant","timestamp":1700000000000,"beacons":[
               {"uuid":"11111111-2222-3333-4444-555555555555","major":1,"minor":7,"rssi":-61,
                "accuracy":1.5,"timestamp":1700000000000,"txPower":-59,
                "metadata":{"batteryLevel":90,"movements":1,"temperature":20}}
@@ -232,4 +235,79 @@ class OfflineBatchStorageTest {
     }
 
     // endregion
+    private fun observation(id: String = UUID.randomUUID().toString(), timestamp: Long = 1_800_000_000_000L) = JSONObject().apply {
+        put("sdk", JSONObject().put("appId", "fixture")); put("device", JSONObject().put("deviceId", "device-1").put("timestamp", timestamp))
+        put("beacons", JSONArray().put(JSONObject().put("uuid", beacon().uuid.toString()).put("major", 1).put("minor", 1)
+            .put("rssi", -60).put("accuracy", -1.0).put("timestamp", timestamp).put("sampleId", "physical-sample")))
+        put("sampling", JSONObject().put("batchId", id).put("kind", "summary").put("sentAt", timestamp)
+            .put("clock", JSONObject().put("wallTimeMs", timestamp).put("monotonicTimeMs", 1_000L)))
+    }.toString()
+
+    @Test
+    fun `version two restart preserves complete original JSON and field absence`() {
+        val body = observation()
+        val id = storage.saveRequestReturningId(body, captureContextId = "context-1")!!
+        val restored = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }.loadAllRecords().single()
+        assertEquals(id, restored.id); assertEquals(2, restored.version); assertEquals(body, restored.requestJson)
+        assertEquals(1, restored.beacons.size); assertEquals(1_800_000_000_000L, restored.beacons.single().timestamp.time)
+        assertFalse(JSONObject(restored.requestJson!!).has("location")); assertNull(restored.context)
+        assertFalse(restored.isLegacy)
+    }
+
+    @Test
+    fun `same context windows share a stable manifest across volatile metadata and partial ACK restart`() {
+        val first = storage.saveRequestReturningId(observation(), captureContextId = "context-1")!!
+        val second = storage.saveRequestReturningId(observation(timestamp = 1_800_000_030_000L), captureContextId = "context-1")!!
+        val sealed = storage.sealReplay(storage.loadAllRecords())
+        assertEquals(sealed[first]!!.getString("drainId"), sealed[second]!!.getString("drainId"))
+        assertEquals(listOf(first, second), (0 until 2).map { sealed[first]!!.getJSONArray("batchIds").getString(it) })
+        val original = storage.loadAllRecords().last().requestJson
+        storage.removeBatch(first)
+        val restored = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
+        val retry = restored.sealReplay(restored.loadAllRecords())[second]!!
+        assertEquals(sealed[second].toString(), retry.toString())
+        assertEquals(original, restored.loadAllRecords().single().requestJson)
+        assertEquals(1, retry.getInt("index")); assertEquals(2, retry.getInt("count"))
+        restored.removeBatch(second)
+        assertFalse(storageDir().listFiles()!!.any { it.extension == "replay" })
+    }
+
+    @Test
+    fun `policy or tenant context changes cannot share a replay cohort`() {
+        val first = storage.saveRequestReturningId(observation(), captureContextId = "context-1")!!
+        val second = storage.saveRequestReturningId(observation(), captureContextId = "context-2")!!
+        val manifests = storage.sealReplay(storage.loadAllRecords())
+        assertFalse(manifests[first]!!.getString("drainId") == manifests[second]!!.getString("drainId"))
+        storage.currentTenantId = "other-tenant"
+        assertTrue(storage.loadAllRecords().isEmpty())
+        assertNull(storage.saveRequestReturningId("{"))
+    }
+
+    @Test
+    fun `captured persistence is idempotent bounded and requires tenant provenance`() {
+        val body = observation()
+        val first = storage.saveRequestReturningId(body)!!
+        assertEquals(first, storage.saveRequestReturningId(body)); assertEquals(1, storage.loadAllRecords().size)
+        assertNull(storage.saveRequestReturningId(observation().dropLast(1) + ",\"padding\":\"" + "x".repeat(524_288) + "\"}"))
+        storage.currentTenantId = null
+        assertNull(storage.saveRequestReturningId(observation()))
+    }
+
+    @Test
+    fun `historical legacy segregation retains evidence without a sendable live row`() {
+        val id = storage.saveBatchReturningId(listOf(beacon()))!!
+        assertTrue(storage.segregateHistoricalBatch(id))
+        assertTrue(storage.loadAllRecords().isEmpty())
+        assertTrue(storageDir().listFiles()!!.any { it.extension == "historical" })
+    }
+
+    @Test
+    fun `FIFO limits apply after persisted sequence ordering rather than filename clock ordering`() {
+        val first = storage.saveRequestReturningId(observation())!!
+        val second = storage.saveRequestReturningId(observation())!!
+        val file = storageDir().listFiles()!!.single { it.name.endsWith("$second.json") }
+        assertTrue(file.renameTo(File(storageDir(), "1_$second.json")))
+        assertEquals(first, storage.loadOldestRecords(1).single().id)
+    }
+
 }

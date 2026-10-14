@@ -40,7 +40,7 @@ class SoftFenceVisitDetectorTest {
         context = ApplicationProvider.getApplicationContext()
         store = VisitStateStore(context)
         store.clear()
-        storage = OfflineBatchStorage(context)
+        storage = OfflineBatchStorage(context).also { it.currentTenantId = "fixture-tenant" }
         storage.clearAllBatches()
     }
 

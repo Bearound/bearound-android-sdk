@@ -3,12 +3,23 @@ package io.bearound.sdk.models
 import io.bearound.sdk.visit.PlacesConfigClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /** The SDK talks to one host, `apiBaseURL`. */
 class SDKConfigurationTest {
 
     private val config = SDKConfiguration(businessToken = "token", appId = "app")
+
+    @Test
+    fun `adaptive rollback keeps existing scan and collection defaults`() {
+        assertTrue(config.adaptiveSamplingEnabled)
+        val rollback = config.copy(adaptiveSamplingEnabled = false)
+        assertFalse(rollback.adaptiveSamplingEnabled)
+        assertEquals(config.syncInterval, rollback.syncInterval)
+        assertEquals(config.dataCollectionPolicy, rollback.dataCollectionPolicy)
+        assertEquals(config.presenceHeartbeatIntervalMillis, rollback.presenceHeartbeatIntervalMillis)
+    }
 
     @Test
     fun `apiBaseURL is the only host in the configuration`() {

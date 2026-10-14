@@ -183,8 +183,13 @@ data class SDKConfiguration(
      *
      * Default: `true`.
      */
-    val collectWifi: Boolean = true
+    val collectWifi: Boolean = true,
+    val adaptiveSamplingEnabled: Boolean = true,
+    internal val restoredSyncIntervalMillis: Long? = null
 ) {
+    companion object {
+        internal var endpointResolver: (String) -> String = { it }
+    }
     /** The three switches above as one value, for the collectors. */
     val dataCollectionPolicy: DataCollectionPolicy
         get() = DataCollectionPolicy(
@@ -198,7 +203,7 @@ data class SDKConfiguration(
      * (`GET /sdk/places/nearby`, routed by path at the ingest's load balancer to the places
      * service). One host means one domain for the client app to allow.
      */
-    val apiBaseURL: String = "https://ingest.bearound.io"
+    val apiBaseURL: String = endpointResolver("https://ingest.bearound.io")
 
     // NOTE: the old precisionScanDuration/PauseDuration/CycleCount/CycleInterval props
     // described a manual scan/pause duty cycle the SDK no longer runs — scanning is
@@ -207,7 +212,7 @@ data class SDKConfiguration(
 
     /** Sync interval: HIGH=15s, MEDIUM/LOW=60s */
     val syncInterval: Long
-        get() = when (scanPrecision) {
+        get() = restoredSyncIntervalMillis ?: when (scanPrecision) {
             ScanPrecision.HIGH -> 15_000L
             ScanPrecision.MEDIUM -> 60_000L
             ScanPrecision.LOW -> 60_000L
