@@ -1,3 +1,6 @@
+import groovy.json.JsonOutput
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -15,6 +18,39 @@ def businessToken = localProps.getProperty(
     "BUSINESS_TOKEN",
     System.getenv("BUSINESS_TOKEN") ?: "ee2ec9c46d2b2ad99bddcdd0afe224e6"
 )
+
+def benchFlag = providers.gradleProperty("adaptiveBench").getOrElse("false")
+def benchRequested = benchFlag == "true"
+def benchEndpoint = benchRequested ? providers.gradleProperty("benchEndpoint").getOrElse("") : ""
+def benchToken = benchRequested ? providers.gradleProperty("benchToken").getOrElse("") : ""
+def benchUser = benchRequested ? providers.gradleProperty("benchUser").getOrElse("") : ""
+def benchAdaptive = benchRequested ? providers.gradleProperty("benchAdaptive").getOrElse("") : "true"
+def sha256 = { byte[] bytes -> MessageDigest.getInstance("SHA-256").digest(bytes).encodeHex().toString() }
+def localFixtureHost = { String host ->
+    if (host == "localhost" || host == "[::1]" || host == "::1") return true
+    def parts = host?.split("\\.")
+    if (parts?.length != 4 || !parts.every { it ==~ /[0-9]{1,3}/ && it.toInteger() <= 255 && it == it.toInteger().toString() }) return false
+    def octets = parts.collect { it.toInteger() }
+    return octets[0] == 127 || octets[0] == 10 ||
+        (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) ||
+        (octets[0] == 192 && octets[1] == 168)
+}
+def validateBench = tasks.register("validateAdaptiveBench") {
+    doLast {
+        if (!(benchFlag in ["true", "false"])) throw new GradleException("adaptiveBench must be true or false")
+        if (!benchRequested) return
+        def uri
+        try { uri = new URI(benchEndpoint) } catch (Exception ignored) { throw new GradleException("A local trusted HTTPS fixture endpoint is required") }
+        if (uri.scheme != "https" || !localFixtureHost(uri.host) || uri.userInfo != null ||
+            uri.rawQuery != null || uri.rawFragment != null || !(uri.path in ["", "/"]) || uri.port < 1 || uri.port > 65535)
+            throw new GradleException("A local trusted HTTPS fixture endpoint with an explicit port is required")
+        if (!(benchToken ==~ /fixture-token-[A-Za-z0-9][A-Za-z0-9_-]{0,127}/))
+            throw new GradleException("An explicit synthetic fixture-token credential is required")
+        if (!(benchUser ==~ /fixture-[A-Za-z0-9][A-Za-z0-9_-]{0,127}/))
+            throw new GradleException("An explicit synthetic fixture user is required")
+        if (!(benchAdaptive in ["true", "false"])) throw new GradleException("benchAdaptive must be true or false")
+    }
+}
 
 android {
     namespace = "io.bearound.bearoundscan"
@@ -43,7 +79,23 @@ android {
     }
 
     buildTypes {
+        debug {
+            if (benchRequested) applicationIdSuffix ".adaptivebench"
+            buildConfigField "boolean", "ADAPTIVE_BENCH", benchRequested.toString()
+            buildConfigField "String", "BENCH_ENDPOINT", JsonOutput.toJson(benchEndpoint)
+            buildConfigField "String", "BENCH_TOKEN", JsonOutput.toJson(benchToken)
+            buildConfigField "String", "BENCH_USER", JsonOutput.toJson(benchUser)
+            buildConfigField "boolean", "BENCH_ADAPTIVE", (benchAdaptive == "true").toString()
+            if (benchRequested) buildConfigField "String", "BUSINESS_TOKEN", JsonOutput.toJson(benchToken)
+            manifestPlaceholders = [adaptiveBenchEnabled: benchRequested.toString(),
+                adaptiveBenchSecurityConfig: benchRequested ? "@xml/adaptive_bench_network_security" : "@null"]
+        }
         release {
+            buildConfigField "boolean", "ADAPTIVE_BENCH", "false"
+            buildConfigField "String", "BENCH_ENDPOINT", JsonOutput.toJson("")
+            buildConfigField "String", "BENCH_TOKEN", JsonOutput.toJson("")
+            buildConfigField "String", "BENCH_USER", JsonOutput.toJson("")
+            buildConfigField "boolean", "BENCH_ADAPTIVE", "true"
             minifyEnabled false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("debugRelease")
@@ -90,4 +142,53 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.1")
+}
+
+
+def benchAssetDirectory = layout.buildDirectory.dir("generated/adaptiveBench/assets")
+android.sourceSets.debug.assets.srcDir(benchAssetDirectory)
+def benchSources = rootProject.fileTree(rootProject.projectDir) {
+    include "sdk/src/**", "sdk/build.gradle", "sdk/proguard*", "BearoundScan/src/**", "BearoundScan/build.gradle"
+    include "BearoundScan/bench/**", "build.gradle", "settings.gradle", "gradle.properties", "gradle/wrapper/**"
+    exclude "**/build/**", "**/.gradle/**", "**/local.properties"
+}
+def revision = providers.provider {
+    def output = new ByteArrayOutputStream()
+    exec { workingDir rootProject.projectDir; commandLine "git", "rev-parse", "HEAD"; standardOutput = output }
+    output.toString("UTF-8").trim()
+}
+def fingerprintTask = tasks.register("generateAdaptiveBenchAsset") {
+    dependsOn(validateBench)
+    inputs.files(benchSources)
+    inputs.property("revision", revision)
+    inputs.property("enabled", benchRequested)
+    inputs.property("endpoint", benchEndpoint)
+    inputs.property("tokenFingerprint", sha256(benchToken.getBytes("UTF-8")))
+    inputs.property("userFingerprint", sha256(benchUser.getBytes("UTF-8")))
+    inputs.property("adaptive", benchAdaptive)
+    outputs.dir(benchAssetDirectory)
+    doLast {
+        def directory = benchAssetDirectory.get().asFile
+        delete(directory)
+        if (!benchRequested) return
+        directory.mkdirs()
+        def hashes = new TreeMap()
+        benchSources.files.findAll { it.isFile() }.each { source ->
+            hashes[rootProject.projectDir.toPath().relativize(source.toPath()).toString()] = sha256(source.bytes)
+        }
+        def flags = new TreeMap([configuration: "Debug", benchEnabled: true,
+            endpoint: benchEndpoint.replaceAll('/$', ''), tokenFingerprint: sha256(benchToken.getBytes("UTF-8")),
+            userFingerprint: sha256(benchUser.getBytes("UTF-8")), adaptiveSamplingEnabled: benchAdaptive == "true",
+            applicationId: "io.bearound.bearoundscan.adaptivebench", telemetryCompanionEnabled: false, userCaTrust: true])
+        def identity = new TreeMap([sourceCommit: revision.get(), files: hashes, flags: flags])
+        def fingerprint = sha256(JsonOutput.toJson(identity).getBytes("UTF-8"))
+        def manifest = new TreeMap(identity)
+        manifest.putAll([schemaVersion: 1, platform: "android", arm: benchAdaptive == "true" ? "candidate" : "compatibility_control",
+            sourceFingerprint: fingerprint, gradleVersion: gradle.gradleVersion, javaVersion: System.getProperty("java.version")])
+        new File(directory, "adaptive_sampling_bench_build.json").text = JsonOutput.prettyPrint(JsonOutput.toJson(manifest)) + "\n"
+    }
+}
+tasks.configureEach { task ->
+    if (task.name == "preDebugBuild") task.dependsOn(validateBench)
+    if (task.name == "mergeDebugAssets") task.dependsOn(fingerprintTask)
 }

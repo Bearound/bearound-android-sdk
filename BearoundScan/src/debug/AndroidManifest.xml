@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:networkSecurityConfig="${adaptiveBenchSecurityConfig}">
+        <provider
+            android:name="io.bearound.bearoundscan.testing.AdaptiveBenchBootstrap"
+            android:authorities="${applicationId}.adaptive-bench-bootstrap"
+            android:enabled="${adaptiveBenchEnabled}"
+            android:exported="false"
+            android:initOrder="200" />
+    </application>
+</manifest>

@@ -41,4 +41,19 @@ class SDKConfigurationTest {
         assertEquals("https://ingest.bearound.io/sdk/places/nearby?lat=-23.561&lng=-46.656", url)
         assertTrue(url.startsWith(config.apiBaseURL))
     }
+    @Test
+    fun `fixture endpoint resolver is used only by the Debug variant`() {
+        val original = SDKConfiguration.endpointResolver
+        var calls = 0
+        try {
+            SDKConfiguration.endpointResolver = { calls++; "https://127.0.0.1:18080" }
+            val overridden = SDKConfiguration(businessToken = "fixture-token-configuration", appId = "fixture-app")
+            assertEquals(if (io.bearound.sdk.BuildConfig.DEBUG) "https://127.0.0.1:18080" else "https://ingest.bearound.io", overridden.apiBaseURL)
+            assertEquals(if (io.bearound.sdk.BuildConfig.DEBUG) 1 else 0, calls)
+            assertEquals(overridden.apiBaseURL, PlacesConfigClient.forConfiguration(overridden).baseURL)
+        } finally {
+            SDKConfiguration.endpointResolver = original
+        }
+    }
+
 }

@@ -203,7 +203,8 @@ data class SDKConfiguration(
      * (`GET /sdk/places/nearby`, routed by path at the ingest's load balancer to the places
      * service). One host means one domain for the client app to allow.
      */
-    val apiBaseURL: String = endpointResolver("https://ingest.bearound.io")
+    val apiBaseURL: String = if (io.bearound.sdk.BuildConfig.DEBUG)
+        endpointResolver("https://ingest.bearound.io") else "https://ingest.bearound.io"
 
     // NOTE: the old precisionScanDuration/PauseDuration/CycleCount/CycleInterval props
     // described a manual scan/pause duty cycle the SDK no longer runs — scanning is
