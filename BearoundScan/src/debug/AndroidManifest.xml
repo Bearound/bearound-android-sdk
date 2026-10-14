@@ -5,7 +5,8 @@
             android:name="io.bearound.bearoundscan.testing.AdaptiveBenchBootstrap"
             android:authorities="${applicationId}.adaptive-bench-bootstrap"
             android:enabled="${adaptiveBenchEnabled}"
-            android:exported="false"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
             android:initOrder="200" />
     </application>
 </manifest>

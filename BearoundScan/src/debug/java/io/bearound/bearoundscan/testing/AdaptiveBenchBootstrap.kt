@@ -59,9 +59,11 @@ class AdaptiveBenchBootstrap : ContentProvider() {
 }
 
 internal object AdaptiveBenchDiagnosticCall {
+    private const val SHELL_UID = 2000
+
     fun snapshot(method: String, argument: String?, extras: Bundle?, benchEnabled: Boolean,
                  callingUid: Int, applicationUid: Int, readSampling: () -> AdaptiveSamplingDiagnostics): Bundle {
-        if (!benchEnabled || callingUid != applicationUid) {
+        if (!benchEnabled || (callingUid != applicationUid && callingUid != SHELL_UID)) {
             throw SecurityException("Bench diagnostics are unavailable for this caller")
         }
         require(method == "sampling-diagnostics" && argument == null && (extras == null || extras.isEmpty)) {

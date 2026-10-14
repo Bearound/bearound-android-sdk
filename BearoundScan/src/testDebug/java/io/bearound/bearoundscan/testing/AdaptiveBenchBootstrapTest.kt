@@ -68,7 +68,7 @@ class AdaptiveBenchBootstrapTest {
     @Test
     fun `another UID is rejected before accessing diagnostics`() {
         assertThrows(SecurityException::class.java) {
-            call(caller = 2000, read = { error("Diagnostics must not be read") })
+            call(caller = 20001, read = { error("Diagnostics must not be read") })
         }
     }
 
@@ -76,6 +76,20 @@ class AdaptiveBenchBootstrapTest {
     fun `disabled bench is rejected even for the application UID`() {
         assertThrows(SecurityException::class.java) {
             call(enabled = false, read = { error("Diagnostics must not be read") })
+        }
+    }
+
+    @Test
+    fun `disabled bench is rejected for the trusted ADB shell UID`() {
+        assertThrows(SecurityException::class.java) {
+            call(enabled = false, caller = 2000, read = { error("Diagnostics must not be read") })
+        }
+    }
+
+    @Test
+    fun `trusted shell cannot mutate state through unsupported calls`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            call(caller = 2000, method = "reset", read = { error("Diagnostics must not be read") })
         }
     }
 
@@ -148,6 +162,25 @@ class AdaptiveBenchBootstrapTest {
         assertEquals(47L, result.getLong("uniqueSamples"))
         assertEquals(1L, result.getLong("contextReads"))
         assertEquals(before, DiagnosticsStore.sampling())
+    }
+
+    @Test
+    fun `provider allows the actual Binder shell UID to read existing counters`() {
+        val context = RuntimeEnvironment.getApplication()
+        val provider = AdaptiveBenchBootstrap()
+        ReflectionHelpers.setField(provider, "mContext", context)
+        ShadowBinder.setCallingUid(2000)
+        DiagnosticsStore.recordObservation(unique = 11, contextRead = true)
+        val before = DiagnosticsStore.sampling()
+
+        val result = JSONObject(requireNotNull(provider.call("sampling-diagnostics", null, null).getString("json")))
+
+        assertEquals(11L, result.getLong("uniqueSamples"))
+        assertEquals(1L, result.getLong("contextReads"))
+        assertEquals(before, DiagnosticsStore.sampling())
+        assertFalse(result.has("deviceId"))
+        assertFalse(result.has("location"))
+        assertFalse(result.has("pushTokenMasked"))
     }
 
     @Test
