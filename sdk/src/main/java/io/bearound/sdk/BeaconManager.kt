@@ -1155,3 +1155,8 @@ class BeaconManager(private val context: Context) {
         }
     }
 }
+
+internal fun Beacon.withCachedMetadata(cached: io.bearound.sdk.models.BeaconMetadata?): Beacon {
+    val metadata = cached ?: this.metadata
+    return copy(metadata = metadata, txPower = metadata?.txPower ?: txPower)
+}

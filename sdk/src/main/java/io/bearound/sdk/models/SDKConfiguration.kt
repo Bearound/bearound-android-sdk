@@ -192,10 +192,46 @@ data class SDKConfiguration(
      */
     val appPresence: AppPresenceConfiguration = AppPresenceConfiguration(),
     val adaptiveSamplingEnabled: Boolean = true,
-    internal val restoredSyncIntervalMillis: Long? = null,
     /** Null follows collectLocation || collectWifi; false prevents native and raw motion access. */
     val collectMotionSensors: Boolean? = null
 ) {
+    internal var restoredSyncIntervalMillis: Long? = null
+
+    // Preserve the published constructor/default bridge and copy descriptors.
+    constructor(
+        businessToken: String,
+        appId: String,
+        scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
+        maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
+        technology: String = "android-native",
+        periodicReconciliationEnabled: Boolean = true,
+        periodicReconciliationIntervalMillis: Long = PeriodicReconciliationDefaults.DEFAULT_INTERVAL_MILLIS,
+        periodicScanDurationMillis: Long = PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS,
+        presenceHeartbeatIntervalMillis: Long = PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS,
+        collectAdvertisingId: Boolean = true,
+        collectLocation: Boolean = true,
+        collectWifi: Boolean = true,
+        appPresence: AppPresenceConfiguration = AppPresenceConfiguration()
+    ) : this(businessToken, appId, scanPrecision, maxQueuedPayloads, technology, periodicReconciliationEnabled, periodicReconciliationIntervalMillis, periodicScanDurationMillis, presenceHeartbeatIntervalMillis, collectAdvertisingId, collectLocation, collectWifi, appPresence, true, null)
+
+    fun copy(
+        businessToken: String = this.businessToken,
+        appId: String = this.appId,
+        scanPrecision: ScanPrecision = this.scanPrecision,
+        maxQueuedPayloads: MaxQueuedPayloads = this.maxQueuedPayloads,
+        technology: String = this.technology,
+        periodicReconciliationEnabled: Boolean = this.periodicReconciliationEnabled,
+        periodicReconciliationIntervalMillis: Long = this.periodicReconciliationIntervalMillis,
+        periodicScanDurationMillis: Long = this.periodicScanDurationMillis,
+        presenceHeartbeatIntervalMillis: Long = this.presenceHeartbeatIntervalMillis,
+        collectAdvertisingId: Boolean = this.collectAdvertisingId,
+        collectLocation: Boolean = this.collectLocation,
+        collectWifi: Boolean = this.collectWifi,
+        appPresence: AppPresenceConfiguration = this.appPresence
+    ): SDKConfiguration = SDKConfiguration(businessToken, appId, scanPrecision, maxQueuedPayloads, technology, periodicReconciliationEnabled, periodicReconciliationIntervalMillis, periodicScanDurationMillis, presenceHeartbeatIntervalMillis, collectAdvertisingId, collectLocation, collectWifi, appPresence, adaptiveSamplingEnabled, collectMotionSensors).also {
+        if (scanPrecision == this.scanPrecision) it.restoredSyncIntervalMillis = restoredSyncIntervalMillis
+    }
+
     companion object {
         internal var endpointResolver: (String) -> String = { it }
     }

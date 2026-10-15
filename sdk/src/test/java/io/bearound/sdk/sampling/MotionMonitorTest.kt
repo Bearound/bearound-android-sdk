@@ -138,7 +138,7 @@ class MotionMonitorTest {
         registration.event(moving(null))
         registration.event(moving(elapsed + 1L))
         assertEquals(MotionState.UNKNOWN, policy.evidence().state)
-        assertFalse(policy.plan(60_000L, SamplingCapability(900_000L, 10_000L, 90_000L)).immediateFlush)
+        assertFalse(policy.plan(60_000L, SamplingCapability(900_000L, 10_000L, 90_000L)).contextIntervalMs == 30_000L)
     }
 
     @Test
@@ -226,6 +226,26 @@ class MotionMonitorTest {
         elapsed += 10_000
         policy.observeLocation(io.bearound.sdk.models.DeviceLocation(.001, 0.0, accuracy = 10f, timestamp = 1_800_000_000_000L + elapsed, source = "fixture"))
         monitor.start(); monitor.stop(); assertEquals(MotionSource.FRESH_LOCATION, policy.evidence().source)
+    }
+
+    @Test fun `permission granted after start registers once and rejects the denied generation`() {
+        registrar.status = MotionAvailability.PERMISSION_DENIED
+        monitor.start()
+        assertTrue(registrar.registrations.isEmpty())
+        registrar.status = MotionAvailability.AUTHORIZED
+        monitor.refreshAuthorization()
+        val active = registrar.registrations.single()
+        monitor.refreshAuthorization()
+        assertEquals(1, registrar.registrations.size)
+        active.event(moving())
+        assertEquals(MotionState.MOVING_CONFIRMED, policy.evidence().state)
+        registrar.status = MotionAvailability.PERMISSION_DENIED
+        monitor.refreshAuthorization()
+        registrar.status = MotionAvailability.AUTHORIZED
+        monitor.refreshAuthorization()
+        assertEquals(2, registrar.registrations.size)
+        active.event(moving())
+        assertEquals(MotionState.UNKNOWN, policy.evidence().state)
     }
 
 }

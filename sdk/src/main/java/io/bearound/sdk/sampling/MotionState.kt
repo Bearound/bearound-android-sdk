@@ -86,6 +86,5 @@ internal data class SamplingPlan(
     val separationEnabled: Boolean,
     val contextIntervalMs: Long?,
     val summaryIntervalMs: Long,
-    val liveIntervalMs: Long,
-    val immediateFlush: Boolean = false
+    val liveIntervalMs: Long
 )

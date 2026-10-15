@@ -371,7 +371,7 @@ internal class AdaptiveSamplingPolicy(
             else -> baseIntervalMs
         }
         return SamplingPlan(true, if (novelty) 30_000L else if (evidence.isMoving()) 60_000L else if (evidence.contextStable) 300_000L else 60_000L,
-            summary, live, novelty)
+            summary, live)
     }
 
     private fun now(): Long? {

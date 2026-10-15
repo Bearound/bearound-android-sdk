@@ -170,8 +170,10 @@ def revision = providers.provider {
 }
 def fingerprintTask = tasks.register("generateAdaptiveBenchAsset") {
     dependsOn(validateBench)
-    inputs.files(benchSources)
-    inputs.property("revision", revision)
+    if (benchRequested) {
+        inputs.files(benchSources)
+        inputs.property("revision", revision)
+    }
     inputs.property("enabled", benchRequested)
     inputs.property("endpoint", benchEndpoint)
     inputs.property("tokenFingerprint", sha256(benchToken.getBytes("UTF-8")))

@@ -323,4 +323,29 @@ class ObservationSummaryTest {
         assertEquals(0.0, sampling(summary.live()!!).getAsJsonObject("clock")["serverOffsetMs"].asDouble, 0.0)
     }
 
+    @Test fun `negotiated assembly budget seals bounded summaries and leaves replay allowance`() {
+        summary.setPayloadBudget(24_000)
+        val closed = mutableListOf<PreparedObservation>()
+        repeat(120) { index ->
+            closed += capture(listOf(beacon(minor = index)))
+            advance(10)
+        }
+        summary.close()?.let(closed::add)
+        assertTrue(closed.size > 1)
+        assertEquals(120, closed.sumOf { it.uniqueSampleCount })
+        closed.forEach { assertTrue(it.payloadJson.toByteArray(Charsets.UTF_8).size <= 24_000 - 8_192) }
+    }
+
+    @Test fun `context below the negotiated assembly minimum reports a budget fallback without altering capture time`() {
+        summary.setPayloadBudget(100)
+        try {
+            capture()
+            throw AssertionError("Expected unsupported context budget")
+        } catch (_: ObservationPayloadBudgetException) { }
+        assertFalse(summary.hasPending())
+        summary.setPayloadBudget(24_000)
+        capture()
+        assertEquals(wall, summary.close()!!.observedFrom)
+    }
+
 }

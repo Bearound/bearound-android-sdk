@@ -467,14 +467,16 @@ class OfflineBatchStorage(private val context: Context) {
     }
 
     /** Version 2 preserves the complete original payload and explicit field absence. */
-    internal fun saveRequestReturningId(requestJson: String, priority: Boolean = false, captureContextId: String? = null): String? = lock.withLock {
+    internal fun saveRequestReturningId(requestJson: String, priority: Boolean = false, captureContextId: String? = null,
+                                       expectedTenantId: String? = currentTenantId): String? = lock.withLock {
         try {
             val payload = JSONObject(requestJson)
             val sampling = payload.optJSONObject("sampling")
             val batchId = sampling?.getString("batchId") ?: UUID.randomUUID().toString()
             UUID.fromString(batchId)
             val tenant = currentTenantId ?: return@withLock null
-            if (requestJson.toByteArray(Charsets.UTF_8).size > 524_288) return@withLock null
+            if (tenant != expectedTenantId) return@withLock null
+            if (sampling != null && requestJson.toByteArray(Charsets.UTF_8).size > 524_288) return@withLock null
             val existing = storageDirectory.listFiles()?.firstOrNull {
                 it.extension == "json" && it.nameWithoutExtension.endsWith(batchId)
             }
@@ -510,7 +512,12 @@ class OfflineBatchStorage(private val context: Context) {
         storageDirectory.listFiles()?.filter { it.extension == "replay" }?.forEach { file ->
             val sealed = runCatching { JSONObject(file.readText()) }.getOrNull() ?: return@forEach
             if (sealed.optString("tenantId") != currentTenantId) return@forEach
-            val ids = sealed.getJSONArray("batchIds")
+            val ids = sealed.optJSONArray("batchIds")
+            if (ids == null || (0 until ids.length()).any { ids.opt(it) !is String }) {
+                file.renameTo(File(storageDirectory, "${file.nameWithoutExtension}.corrupt"))
+                DiagnosticsStore.recordError("Corrupt replay manifest isolated")
+                return@forEach
+            }
             for (index in 0 until ids.length()) {
                 val id = ids.getString(index)
                 if (id in pendingIds) result[id] = JSONObject(sealed.toString()).apply {
@@ -610,29 +617,29 @@ class OfflineBatchStorage(private val context: Context) {
     fun loadAllRecords(): List<StoredBatchRecord> = loadOldestRecords()
 
     /** Removes the batch with exactly this id. */
-    fun removeBatch(id: String): Boolean = lock.withLock {
+    fun removeBatch(id: String): Boolean = removeBatches(listOf(id)) > 0
+
+    /** Removes selected records and prunes replay manifests using one directory snapshot. */
+    fun removeBatches(ids: List<String>): Int = lock.withLock {
         try {
-            val file = storageDirectory.listFiles()
-                ?.firstOrNull { it.extension == "json" && it.nameWithoutExtension.endsWith(id) }
-                ?: return@withLock false
-            val deleted = file.delete()
-            if (deleted) {
-                val queued = storageDirectory.listFiles().orEmpty().filter { it.extension == "json" }
-                storageDirectory.listFiles()?.filter { it.extension == "replay" }?.forEach { manifest ->
-                    val ids = runCatching { JSONObject(manifest.readText()).getJSONArray("batchIds") }.getOrNull()
-                    if (ids != null && (0 until ids.length()).none { index -> queued.any { it.nameWithoutExtension.endsWith(ids.getString(index)) } }) manifest.delete()
+            val wanted = ids.toSet()
+            val files = storageDirectory.listFiles().orEmpty()
+            val removed = files.filter { it.extension == "json" && it.nameWithoutExtension.substringAfterLast('_') in wanted }
+                .count { it.delete() }
+            if (removed > 0) {
+                val remaining = files.filter { it.extension == "json" && it.exists() }
+                    .map { it.nameWithoutExtension.substringAfterLast('_') }.toSet()
+                files.filter { it.extension == "replay" }.forEach { manifest ->
+                    val saved = runCatching { JSONObject(manifest.readText()).getJSONArray("batchIds") }.getOrNull()
+                    if (saved != null && (0 until saved.length()).none { saved.optString(it) in remaining }) manifest.delete()
                 }
             }
-            if (deleted) Log.d(TAG, "Removed batch file: ${file.name}")
-            deleted
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to remove batch $id: ${e.message}", e)
-            false
+            removed
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to remove batches: ${error.message}", error)
+            0
         }
     }
-
-    /** Removes exactly these batch ids; returns how many were deleted. */
-    fun removeBatches(ids: List<String>): Int = ids.count { removeBatch(it) }
 
     /**
      * Drops every pending visit batch (the host turned location off: a visit is a location).

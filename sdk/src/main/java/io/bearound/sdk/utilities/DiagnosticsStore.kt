@@ -11,6 +11,7 @@ object DiagnosticsStore {
     private const val MAX_ERRORS = 10
 
     private val lock = Any()
+    private val gson = Gson()
 
     private var lastSyncAt: Long? = null
     private var lastSyncSuccess: Boolean? = null
@@ -25,7 +26,7 @@ object DiagnosticsStore {
     internal fun recordSamplingPolicy(evidence: MotionEvidence, plan: SamplingPlan, capability: Boolean,
                                       clockUncertaintyMs: Double? = null, nextContextReadElapsedMs: Long? = null,
                                       nextSummaryElapsedMs: Long? = null, nextLiveAttemptElapsedMs: Long? = null) = synchronized(lock) {
-        fun wire(value: Any) = Gson().toJson(value).trim('"')
+        fun wire(value: Any) = gson.toJson(value).trim('"')
         sampling = sampling.copy(state = wire(evidence.state), source = wire(evidence.source),
             confidence = wire(evidence.confidence), reason = wire(evidence.reason), evidenceAgeMs = evidence.ageMs,
             contextStable = evidence.contextStable, capabilityStatus = if (capability) "active" else "unavailable",

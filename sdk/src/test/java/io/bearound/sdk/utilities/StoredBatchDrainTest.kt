@@ -132,7 +132,7 @@ class StoredBatchDrainTest {
     }
 
     @Test
-    fun `legacy batches preserve missing context while grouping up to five per request`() = runBlocking {
+    fun `legacy batches retain main fallback context while grouping up to five per request`() = runBlocking {
         repeat(6) { index ->
             storage.saveBatchReturningId(listOf(beacon(index)))
             Thread.sleep(2)
@@ -142,7 +142,7 @@ class StoredBatchDrainTest {
 
         assertEquals(listOf(5, 1), sent.map { it.beacons.size })
         sent.forEach {
-            assertNull(it.device.location)
+            assertEquals(fresh.location, it.device.location)
             assertNull(it.syncTrigger)
         }
     }
@@ -221,6 +221,38 @@ class StoredBatchDrainTest {
         val id = storage.saveRequestReturningId(captured())!!
         assertFalse(drain().drain(storage.loadAllRecords(), fresh, DataCollectionPolicy.ALL_ENABLED))
         assertTrue(sent.isEmpty()); assertEquals(id, storage.loadAllRecords().single().id)
+    }
+
+    @Test fun `replay persistence failure is recoverable and does not block independent legacy delivery`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val legacy = storage.saveBatchReturningId(listOf(beacon(7)))!!
+        val batch = UUID.randomUUID().toString()
+        val original = JSONObject().put("device", JSONObject().put("deviceId", "fixture"))
+            .put("sdk", JSONObject().put("appId", "fixture"))
+            .put("sampling", JSONObject().put("batchId", batch)).toString()
+        storage.saveRequestReturningId(original)!!
+        val records = storage.loadAllRecords()
+        val directory = storageDir(context)
+        val parked = File(directory.parentFile, "parked-replay-test")
+        parked.deleteRecursively()
+        assertTrue(directory.renameTo(parked))
+        directory.writeText("Unavailable fixture directory")
+        var legacySends = 0
+        var capturedSends = 0
+        try {
+            val blocked = StoredBatchDrain(storage, BeAroundSDK.PERMANENT_HTTP_CODES,
+                send = { _, _, _ -> legacySends++; Result.success(Unit) },
+                sendCaptured = { _, _ -> capturedSends++; Result.success(Unit) })
+            assertFalse(blocked.drain(records, fresh, DataCollectionPolicy.ALL_ENABLED))
+            assertEquals(1, legacySends); assertEquals(0, capturedSends)
+        } finally {
+            directory.delete(); assertTrue(parked.renameTo(directory))
+        }
+        assertEquals(setOf(legacy, batch), storage.loadAllRecords().map { it.id }.toSet())
+        val recovered = StoredBatchDrain(storage, BeAroundSDK.PERMANENT_HTTP_CODES,
+            send = { _, _, _ -> Result.success(Unit) }, sendCaptured = { _, _ -> Result.success(Unit) })
+        assertTrue(recovered.drain(storage.loadAllRecords(), fresh, DataCollectionPolicy.ALL_ENABLED))
+        assertTrue(storage.loadAllRecords().isEmpty())
     }
 
 }

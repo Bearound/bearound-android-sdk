@@ -78,6 +78,8 @@ internal class MotionMonitor(
             accepting = false
             remove(current)
             policy.invalidateNative(MotionReason.PERMISSION_UNAVAILABLE)
+        } else if (!accepting) {
+            start()
         }
     }
 

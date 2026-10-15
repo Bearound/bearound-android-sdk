@@ -7,6 +7,7 @@ import android.os.SystemClock
 import androidx.test.core.app.ApplicationProvider
 import io.bearound.sdk.EncounterMeshManager
 import io.bearound.sdk.utilities.IBeaconParser
+import io.bearound.sdk.withCachedMetadata
 import io.bearound.sdk.BeaconManager
 import io.bearound.sdk.models.Beacon
 import org.junit.Assert.assertEquals
@@ -95,6 +96,23 @@ class BeaconManagerSamplingTest {
         assertEquals(1, deliveries)
         mesh.stop(); manager.processExternalScanResult(scan)
         assertEquals(1, deliveries)
+    }
+
+    @Test fun `cached sensor metadata enriches a later raw iBeacon without changing capture timing`() {
+        ShadowSystemClock.advanceBy(Duration.ofSeconds(60))
+        val manager = BeaconManager(ApplicationProvider.getApplicationContext())
+        var parsed: Beacon? = null
+        manager.onPhysicalBeacon = { beacon, _ -> parsed = beacon }
+        manager.processExternalScanResult(scan(SystemClock.elapsedRealtime() * 1_000_000L))
+        val sensor = parsed!!
+        val cache = mapOf(sensor.identifier to sensor.metadata!!)
+        val raw = sensor.copy(metadata = null, txPower = -59, timestamp = java.util.Date(sensor.timestamp.time + 1000))
+        val enriched = raw.withCachedMetadata(cache[raw.identifier])
+        assertEquals(sensor.metadata, enriched.metadata)
+        assertEquals(sensor.metadata!!.txPower ?: raw.txPower, enriched.txPower)
+        assertEquals(raw.timestamp, enriched.timestamp)
+        assertEquals(raw.rssiRaw, enriched.rssiRaw)
+        assertEquals(raw.identifier, enriched.identifier)
     }
 
 }

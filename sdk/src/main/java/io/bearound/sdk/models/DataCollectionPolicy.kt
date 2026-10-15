@@ -34,6 +34,13 @@ data class DataCollectionPolicy(
     /** Null follows the host location/Wi-Fi choices, including after copy(). */
     val motionSensors: Boolean? = null
 ) {
+    constructor(advertisingId: Boolean = true, location: Boolean = true, wifi: Boolean = true) :
+        this(advertisingId, location, wifi, null)
+
+    fun copy(advertisingId: Boolean = this.advertisingId, location: Boolean = this.location,
+             wifi: Boolean = this.wifi): DataCollectionPolicy =
+        DataCollectionPolicy(advertisingId, location, wifi, motionSensors)
+
     internal val motionSensorsEnabled: Boolean get() = motionSensors ?: (location || wifi)
     companion object {
         /** Everything on — the behaviour of every SDK version before this switch existed. */

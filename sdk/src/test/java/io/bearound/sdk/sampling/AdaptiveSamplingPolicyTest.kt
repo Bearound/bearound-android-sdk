@@ -113,7 +113,7 @@ class AdaptiveSamplingPolicyTest {
         listOf<Long?>(null, elapsed + 1L, elapsed - 120_001L).forEach { timestamp ->
             native(NativeMotionActivity.WALKING, timestamp)
             assertEquals(MotionState.UNKNOWN, policy.evidence().state)
-            assertFalse(policy.plan(60_000L, capability).immediateFlush)
+            assertFalse(policy.plan(60_000L, capability).contextIntervalMs == 30_000L)
         }
     }
 
@@ -121,7 +121,7 @@ class AdaptiveSamplingPolicyTest {
     fun `delayed activity neither renews freshness nor opens a current novelty window`() {
         native(NativeMotionActivity.WALKING, elapsed - 100_000L)
         assertEquals(100_000L, policy.evidence().ageMs)
-        assertFalse(policy.plan(60_000L, capability).immediateFlush)
+        assertFalse(policy.plan(60_000L, capability).contextIntervalMs == 30_000L)
         advance(20_001L)
         assertEquals(MotionState.UNKNOWN, policy.evidence().state)
     }
@@ -210,7 +210,7 @@ class AdaptiveSamplingPolicyTest {
             policy.observeContext(change.copy(observedAtElapsedMs = elapsed))
             assertFalse(policy.evidence().contextStable)
             assertEquals(MotionReason.CONTEXT_CHANGED, policy.evidence().reason)
-            assertTrue(policy.plan(60_000L, capability).immediateFlush)
+            assertTrue(policy.plan(60_000L, capability).contextIntervalMs == 30_000L)
         }
     }
 
@@ -233,7 +233,7 @@ class AdaptiveSamplingPolicyTest {
         assertEquals(MotionState.MOVING_INFERRED, policy.evidence().state)
         assertEquals(MotionConfidence.LOW, policy.evidence().confidence)
         assertEquals(MotionSource.FRESH_LOCATION, policy.evidence().source)
-        assertTrue(policy.plan(60_000L, capability).immediateFlush)
+        assertTrue(policy.plan(60_000L, capability).contextIntervalMs == 30_000L)
     }
 
     @Test
@@ -269,7 +269,7 @@ class AdaptiveSamplingPolicyTest {
         advance(10_000L)
         policy.observeLocation(fix(latitude = 0.005))
         assertEquals(MotionState.UNKNOWN, policy.evidence().state)
-        assertFalse(policy.plan(60_000L, capability).immediateFlush)
+        assertFalse(policy.plan(60_000L, capability).contextIntervalMs == 30_000L)
     }
 
     @Test
@@ -303,7 +303,7 @@ class AdaptiveSamplingPolicyTest {
         policy.observeLocation(fix(latitude = 0.0004))
         assertEquals(MotionState.UNKNOWN, policy.evidence().state)
         assertFalse(policy.evidence().contextStable)
-        assertTrue(policy.plan(60_000L, capability).immediateFlush)
+        assertTrue(policy.plan(60_000L, capability).contextIntervalMs == 30_000L)
     }
 
     @Test

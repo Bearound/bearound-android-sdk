@@ -275,10 +275,13 @@ internal class VisitController(
 internal class OfflineBatchVisitEventQueue(
     private val context: Context,
     private val storage: OfflineBatchStorage,
+    private val capturePayload: ((VisitEvent) -> String)? = null,
     private val drain: suspend () -> Unit
 ) : VisitEventQueue {
 
-    override fun persist(event: VisitEvent): Boolean = storage.saveVisitEvent(event) != null
+    override fun persist(event: VisitEvent): Boolean = capturePayload?.let {
+        storage.saveRequestReturningId(it(event), priority = true) != null
+    } ?: (storage.saveVisitEvent(event) != null)
 
     override suspend fun flush() {
         OutboxMigration.migrate(context, storage)

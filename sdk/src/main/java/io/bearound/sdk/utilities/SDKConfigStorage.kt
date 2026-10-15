@@ -144,13 +144,11 @@ object SDKConfigStorage {
             collectMotionSensors = if (!prefs.contains(KEY_COLLECT_MOTION) || prefs.getBoolean(KEY_MOTION_AUTO, false)) null
                 else prefs.getBoolean(KEY_COLLECT_MOTION, collectLocation || collectWifi),
             adaptiveSamplingEnabled = prefs.getBoolean(KEY_ADAPTIVE_SAMPLING, true),
-            restoredSyncIntervalMillis = prefs.getLong(KEY_BASE_INTERVAL, prefs.getLong(KEY_SYNC_INTERVAL, -1L))
-                .takeIf { it in 1_000L..300_000L },
             presenceHeartbeatIntervalMillis = io.bearound.sdk.models.PresenceHeartbeatDefaults.sanitizedInterval(
                 prefs.getLong(KEY_HEARTBEAT_INTERVAL, io.bearound.sdk.models.PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS)
             ),
             appPresence = decodeAppPresence(prefs.getString(KEY_APP_PRESENCE, null))
-        )
+        ).also { it.restoredSyncIntervalMillis = prefs.getLong(KEY_BASE_INTERVAL, prefs.getLong(KEY_SYNC_INTERVAL, -1L)).takeIf { value -> value in 1_000L..300_000L } }
     }
 
     /**

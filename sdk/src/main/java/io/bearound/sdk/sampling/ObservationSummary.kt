@@ -23,6 +23,8 @@ internal data class PreparedObservation(
     val observedTo: Long
 )
 
+internal class ObservationPayloadBudgetException(message: String) : IllegalStateException(message)
+
 internal class ObservationSummary(
     private val clock: () -> Long = System::currentTimeMillis,
     private val elapsedRealtime: () -> Long = SystemClock::elapsedRealtime,
@@ -65,6 +67,16 @@ internal class ObservationSummary(
     private var synchronization: ClockSynchronization? = null
     private var synchronizationGeneration = 0L
     private var current: Window? = null
+    private var payloadBudgetBytes = PAYLOAD_BYTES
+
+    @Synchronized
+    fun setPayloadBudget(bytes: Int) {
+        require(bytes > 0) { "Payload budget must be positive" }
+        payloadBudgetBytes = minOf(bytes, PAYLOAD_BYTES)
+    }
+
+    private fun assemblyBudget(): Int = (payloadBudgetBytes - REPLAY_BYTES).coerceAtLeast(1)
+
     private var sequence = 0L
     private var lastClockPair: Watermark? = null
     private var minimumSourceElapsed = Long.MIN_VALUE
@@ -96,7 +108,7 @@ internal class ObservationSummary(
         }
         val context = JsonParser.parseString(contextJson).asJsonObject.deepCopy().apply { remove("beacons"); remove("sampling") }
         val contextBytes = gson.toJson(context).toByteArray(Charsets.UTF_8).size
-        require(contextBytes + ENVELOPE_BYTES < PAYLOAD_BYTES) { "Observation context exceeds payload limit" }
+        if (contextBytes + ENVELOPE_BYTES >= assemblyBudget()) throw ObservationPayloadBudgetException("Observation context exceeds payload limit")
         val previousPair = lastClockPair
         if (previousPair != null && (elapsed < previousPair.elapsed || abs((wall - previousPair.wall).toDouble() - (elapsed - previousPair.elapsed)) > 120_000.0)) {
             clearClockSynchronization()
@@ -122,7 +134,7 @@ internal class ObservationSummary(
             check(watermark != null || watermarks.size < MAX_WATERMARKS) { "Observation identity capacity exceeded" }
             val base = beaconJson(beacon, observed)
             val baseBytes = gson.toJson(base).toByteArray(Charsets.UTF_8).size
-            require(contextBytes + ENVELOPE_BYTES + baseBytes + STATS_BYTES + BUCKET_BYTES <= PAYLOAD_BYTES) { "Observation sample exceeds payload limit" }
+            if (contextBytes + ENVELOPE_BYTES + baseBytes + STATS_BYTES + BUCKET_BYTES > assemblyBudget()) throw ObservationPayloadBudgetException("Observation sample exceeds payload limit")
             val existing = current
             val gap = existing != null && (sourceElapsed - existing.lastElapsed > gapThresholdMs ||
                 (watermark != null && sourceElapsed - watermark.elapsed > gapThresholdMs))
@@ -138,7 +150,7 @@ internal class ObservationSummary(
             val estimate = window.estimatedBytes + if (signal == null) baseBytes + STATS_BYTES else baseBytes - signal.baseBytes
             val totalEstimate = estimate + if (addedBucket) BUCKET_BYTES else 0
             if ((signal == null && window.signals.size >= MAX_BEACONS) || (addedBucket && (signal?.buckets?.size ?: 0) >= MAX_BUCKETS) ||
-                window.sampleCount >= MAX_SAMPLES || totalEstimate > PAYLOAD_BYTES) {
+                window.sampleCount >= MAX_SAMPLES || totalEstimate > assemblyBudget()) {
                 sealCurrent()
                 window = Window(UUID.randomUUID().toString(), context.deepCopy(), contextBytes, motion.copy(), validSynchronization(synchronization, elapsed), synchronizationGeneration).also { current = it }
             }
@@ -163,7 +175,7 @@ internal class ObservationSummary(
             window.captureElapsed = elapsed
             window.sampleCount++
             watermarks[key] = Watermark(observed, sourceElapsed)
-            check(window.estimatedBytes <= PAYLOAD_BYTES) { "Observation sample exceeds payload limit" }
+            check(window.estimatedBytes <= assemblyBudget()) { "Observation sample exceeds payload limit" }
         }
         return closed
     }
@@ -262,6 +274,7 @@ internal class ObservationSummary(
         const val MAX_BUCKETS = 40
         const val MAX_SAMPLES = 65_536
         const val PAYLOAD_BYTES = 524_288
+        private const val REPLAY_BYTES = 8_192
         const val ENVELOPE_BYTES = 4096
         const val STATS_BYTES = 256
         const val BUCKET_BYTES = 384

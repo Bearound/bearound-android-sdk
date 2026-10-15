@@ -46,8 +46,11 @@ internal data class NegotiatedSamplingCapability(
     val synchronizedAtElapsedMs: Long,
     val deviceId: String,
     val synchronizedAtWallMs: Long,
-    val requestGzipEnabled: Boolean = false
+    val requestGzipEnabled: Boolean = false,
+    val clockSkewToleranceMs: Long = 120_000L
 )
+
+internal class CapturedPayloadBudgetException : IllegalStateException("Captured payload exceeds the negotiated budget")
 
 internal data class SamplingAcknowledgment(val batchId: String, val projection: String, val invalidatedCapability: Boolean)
 
@@ -96,7 +99,7 @@ class APIClient(
         val current = negotiated ?: return null
         val now = elapsedRealtime()
         if (current.deviceId != deviceId || now < current.synchronizedAtElapsedMs || now >= current.expiresAtElapsedMs ||
-            kotlin.math.abs(clock().toDouble() - (current.synchronizedAtWallMs.toDouble() + now - current.synchronizedAtElapsedMs)) > 120_000.0) {
+            kotlin.math.abs(clock().toDouble() - (current.synchronizedAtWallMs.toDouble() + now - current.synchronizedAtElapsedMs)) > current.clockSkewToleranceMs.toDouble()) {
             negotiated = null
             return null
         }
@@ -143,7 +146,7 @@ class APIClient(
         negotiated = NegotiatedSamplingCapability(SamplingCapability(session, services, mapTtl), maxAge,
             maxBytes.toInt(), now + lease, serverTime - (requestWall + roundTrip / 2.0),
             roundTrip / 2.0 + 1.0, now, deviceId, clock(),
-            value.optJSONArray("requestContentEncodings")?.let { it.length() == 1 && it.opt(0) == "gzip" } == true)
+            value.optJSONArray("requestContentEncodings")?.let { it.length() == 1 && it.opt(0) == "gzip" } == true, skew)
     }
 
     internal fun filterPayload(original: JSONObject): JSONObject {
@@ -214,9 +217,8 @@ class APIClient(
             val json = authorized.toString().toByteArray(Charsets.UTF_8)
             val limit = capability?.maxPayloadBytes ?: originalBudget ?: 524_288
             if (originalBudget == null) originalBudget = limit
-            if (enforceCapturedBudget && json.size > limit) {
-                invalidateSamplingCapability()
-                error("Captured payload exceeds the negotiated budget")
+            if (enforceCapturedBudget && authorized.has("sampling") && json.size > limit) {
+                throw CapturedPayloadBudgetException()
             }
             val suppressed = synchronized(gzipSuppression) {
                 val now = elapsedRealtime()
@@ -481,6 +483,18 @@ class APIClient(
         }
 
         return filterPayload(payload)
+    }
+
+    internal fun buildVisitPayload(event: io.bearound.sdk.visit.VisitEvent, info: SDKInfo,
+                                   capturedDevice: UserDevice, properties: UserProperties?): JSONObject {
+        val wifis = event.wifis ?: capturedDevice.wifis
+        val device = capturedDevice.copy(
+            timestamp = event.fix?.timestamp ?: event.wifis?.maxOfOrNull { it.timestamp } ?: capturedDevice.timestamp,
+            location = event.toDeviceLocation(), wifis = wifis,
+            apId = wifis.firstOrNull { it.connected }?.apId,
+            wifiSSID = wifis.firstOrNull { it.connected }?.ssid
+        )
+        return buildPayload(emptyList(), info, device, properties, io.bearound.sdk.visit.VisitEvent.SYNC_TRIGGER)
     }
 
     internal fun buildDevicePayload(device: UserDevice): JSONObject {

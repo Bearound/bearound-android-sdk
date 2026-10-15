@@ -246,13 +246,13 @@ class APIClientSamplingTest {
         assertTrue(JSONObject(original).getJSONObject("sampling").getLong("sentAt") > wall)
     }
 
-    @Test fun `smaller advertised budget preserves queued evidence and disables adaptive emission`() = withServer({ response() }) { endpoint, requests ->
+    @Test fun `smaller advertised budget preserves queued evidence and the valid lease`() = withServer({ response() }) { endpoint, requests ->
         val client = client(endpoint)
         client.observeResponse(response(capability().put("maxPayloadBytes", 100)), "device-1", wall, elapsed)
         val body = captured(client).toString()
         val result = client.sendStoredPayload(body)
         assertTrue(result.isFailure); assertFalse(result.exceptionOrNull() is HttpException)
-        assertTrue(requests.isEmpty()); assertNull(client.samplingCapability("device-1"))
+        assertTrue(requests.isEmpty()); assertNotNull(client.samplingCapability("device-1"))
     }
 
     @Test fun `restored callback captured before the active generation never reads current collection sources`() {
@@ -561,7 +561,7 @@ class APIClientSamplingTest {
         val attempts = mutableListOf<Int>()
         assertTrue(client.sendStoredPayload(original) { attempts += it }.isFailure)
         assertTrue(attempts.isEmpty()); assertTrue(requests.isEmpty())
-        assertNull(client.samplingCapability("device-1"))
+        assertNotNull(client.samplingCapability("device-1"))
     }
 
     @Test fun `compression failure or no benefit selects unchanged identity before submission`() {
@@ -934,6 +934,242 @@ class APIClientSamplingTest {
             }
         }
 
+    }
+
+    @Test fun `legacy sixty second offline payloads and known tenant upgrade records retry without capability`() = withServer({ "{}" }) { endpoint, requests ->
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        for (adaptive in listOf(false, true)) {
+            File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
+            val configuration = config.copy(adaptiveSamplingEnabled = adaptive)
+            val client = APIClient(configuration, endpoint, { DataCollectionPolicy.ALL_ENABLED })
+            val storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
+            val at = System.currentTimeMillis() - 60_000L
+            val beacon = Beacon(UUID.randomUUID(), 0, 188, -61, Beacon.Proximity.NEAR, 1.0, Date(at))
+            val device = VisitTestFixtures.device().copy(deviceId = "device-1", timestamp = at)
+            val info = SDKInfo(appId = config.appId, build = 1)
+            val properties = UserProperties(internalId = "captured-user")
+            val original = client.buildPayload(listOf(beacon), info, device, properties).toString()
+            storage.saveRequestReturningId(original)!!
+            storage.saveBatchReturningId(listOf(beacon), null, OfflineBatchStorage.CapturedContext(device.location, device.wifis))!!
+            val restored = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
+            val drain = io.bearound.sdk.utilities.StoredBatchDrain(restored, BeAroundSDK.PERMANENT_HTTP_CODES,
+                send = { beacons, capturedDevice, trigger ->
+                    var result: Result<Unit> = Result.failure(IllegalStateException("Missing response"))
+                    client.sendBeacons(beacons, info, capturedDevice, properties, trigger) { result = it }; result
+                }, sendCaptured = { record, _ -> client.sendStoredPayload(record.requestJson!!).map { Unit } })
+            val count = requests.size
+            assertNull(client.samplingCapability("device-1"))
+            assertTrue(drain.drain(restored.loadAllRecords(), device.copy(timestamp = at + 60_000), DataCollectionPolicy.ALL_ENABLED))
+            assertTrue(restored.loadAllRecords().isEmpty())
+            assertEquals(2, requests.size - count)
+            requests.drop(count).forEach {
+                assertFalse(it.has("sampling"))
+                assertEquals(at, it.getJSONArray("beacons").getJSONObject(0).getLong("timestamp"))
+                assertEquals(at, it.getJSONObject("device").getLong("timestamp"))
+                assertEquals("captured-user", it.getJSONObject("userProperties").getString("internalId"))
+            }
+            assertEquals(JSONObject(original).toString(), requests[count].toString())
+        }
+    }
+
+    @Test fun `captured visit retry retains its identity and encounters while enforcing current privacy`() = withServer({ "{}" }, statusFor = { if (it.optBoolean("fixtureFirst")) 503 else 200 }) { endpoint, requests ->
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
+        val storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
+        var policy = DataCollectionPolicy.ALL_ENABLED
+        val client = APIClient(config, endpoint, { policy })
+        val at = System.currentTimeMillis() - 60_000L
+        val wifi = io.bearound.sdk.models.WifiObservation("arrival", "Fixture", -61, true, 2412, at)
+        val visit = io.bearound.sdk.visit.VisitEvent(io.bearound.sdk.visit.VisitEventKind.ARRIVAL, null, "fixture", listOf(wifi))
+        val device = VisitTestFixtures.device().copy(timestamp = at, advertisingId = "captured-ad", limitAdTracking = false,
+            encounterIds = listOf("captured-rotating-id"), encounters = listOf(io.bearound.sdk.models.EncounterObservation(
+                "0123456789abcdef0123456789abcdef", -60, 2, -61, -59, -60, at - 1000, at)))
+        val info = SDKInfo(appId = config.appId, build = 1)
+        var properties = UserProperties(internalId = "visit-user")
+        val queue = io.bearound.sdk.visit.OfflineBatchVisitEventQueue(context, storage, capturePayload = {
+            client.buildVisitPayload(it, info, device, properties).toString()
+        }, drain = {})
+        assertTrue(queue.persist(visit))
+        val captured = storage.loadAllRecords().single().requestJson!!
+        assertEquals("captured-ad", JSONObject(captured).getJSONObject("device").getJSONObject("permissions").getString("advertisingId"))
+        assertTrue(client.sendStoredPayload(JSONObject(captured).put("fixtureFirst", true).toString()).isFailure)
+        properties = UserProperties(internalId = "later-user")
+        policy = DataCollectionPolicy(advertisingId = false, location = false, wifi = false, motionSensors = false)
+        val reopened = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
+        val drain = io.bearound.sdk.utilities.StoredBatchDrain(reopened, BeAroundSDK.PERMANENT_HTTP_CODES,
+            send = { _, _, _ -> error("Visit must use captured payload") },
+            sendCaptured = { record, _ -> client.sendStoredPayload(record.requestJson!!).map { Unit } })
+        assertTrue(drain.drain(reopened.loadAllRecords(), device, policy))
+        val submitted = requests.last()
+        assertEquals("visit", submitted.getString("syncTrigger")); assertFalse(submitted.has("sampling"))
+        assertEquals("visit-user", submitted.getJSONObject("userProperties").getString("internalId"))
+        assertFalse(submitted.getJSONObject("device").getJSONObject("permissions").has("advertisingId"))
+        assertFalse(submitted.has("wifis")); assertFalse(submitted.has("location"))
+        assertEquals(at, submitted.getJSONObject("device").getLong("timestamp"))
+        assertEquals("captured-rotating-id", submitted.getJSONArray("encounterIds").getString(0))
+        assertEquals(at, submitted.getJSONArray("encounters").getJSONObject(0).getLong("lastSeen"))
+        assertTrue(reopened.loadAllRecords().isEmpty())
+        assertTrue(JSONObject(captured).has("wifis"))
+    }
+
+    @Test fun `over budget replay retains original and lease while later observations make progress`() = withServer({ durableAck(it) }) { endpoint, requests ->
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
+        val storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
+        val client = client(endpoint)
+        client.observeResponse(response(capability().put("maxPayloadBytes", 6000)), "device-1", wall, elapsed)
+        val oversized = captured(client).put("fixturePadding", "x".repeat(10_000)).toString()
+        val first = storage.saveRequestReturningId(oversized)!!
+        val second = storage.saveRequestReturningId(captured(client).toString())!!
+        val drain = io.bearound.sdk.utilities.StoredBatchDrain(storage, BeAroundSDK.PERMANENT_HTTP_CODES,
+            send = { _, _, _ -> error("Expected captured requests") }, sendCaptured = { record, manifest ->
+                val original = JSONObject(record.requestJson!!)
+                manifest?.let { original.getJSONObject("sampling").put("replay", it) }
+                client.sendStoredPayload(original.toString()).map { Unit }
+            })
+        assertFalse(drain.drain(storage.loadAllRecords(), VisitTestFixtures.device(), DataCollectionPolicy.ALL_ENABLED))
+        assertEquals(1, requests.size)
+        assertEquals(second, requests.single().getJSONObject("sampling").getString("batchId"))
+        assertEquals(first, storage.loadAllRecords().single().id)
+        assertEquals(oversized, storage.loadAllRecords().single().requestJson)
+        assertNotNull(client.samplingCapability("device-1"))
+        assertFalse(drain.drain(storage.loadAllRecords(), VisitTestFixtures.device(), DataCollectionPolicy.ALL_ENABLED))
+        assertEquals(1, requests.size)
+    }
+
+    @Test fun `version one retries retain main identifier fallback and captured context with current privacy`() = withServer({ "{}" }) { endpoint, requests ->
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
+        val storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
+        val at = System.currentTimeMillis() - 60_000L
+        val beacon = Beacon(UUID.randomUUID(), 0, 188, -61, Beacon.Proximity.NEAR, 1.0, Date(at))
+        val location = io.bearound.sdk.models.DeviceLocation(1.0, 2.0, timestamp = at, source = "gnss")
+        val device = VisitTestFixtures.device().copy(timestamp = at + 60_000L, advertisingId = "legacy-fallback-ad",
+            encounterIds = listOf("legacy-fallback-rpi"))
+        var policy = DataCollectionPolicy.ALL_ENABLED
+        val client = APIClient(config, endpoint, { policy })
+        val info = SDKInfo(appId = config.appId, build = 1)
+        val drain = io.bearound.sdk.utilities.StoredBatchDrain(storage, BeAroundSDK.PERMANENT_HTTP_CODES,
+            send = { samples, capturedDevice, trigger ->
+                var result: Result<Unit> = Result.failure(IllegalStateException("Missing response"))
+                client.sendBeacons(samples, info, capturedDevice, UserProperties(internalId = "legacy-main-user"), trigger) { result = it }
+                result
+            })
+        suspend fun submit() {
+            storage.saveBatchReturningId(listOf(beacon), null, OfflineBatchStorage.CapturedContext(location, emptyList()))!!
+            assertTrue(drain.drain(storage.loadAllRecords(), device, policy))
+        }
+        submit()
+        assertEquals(at, requests.last().getJSONObject("location").getLong("timestamp"))
+        assertEquals("legacy-fallback-ad", requests.last().getJSONObject("device").getJSONObject("permissions").getString("advertisingId"))
+        policy = DataCollectionPolicy(advertisingId = false, location = false, wifi = false, motionSensors = false)
+        submit()
+        val revoked = requests.last()
+        assertFalse(revoked.has("location")); assertFalse(revoked.has("wifis"))
+        assertFalse(revoked.getJSONObject("device").getJSONObject("permissions").has("advertisingId"))
+        assertEquals("legacy-main-user", revoked.getJSONObject("userProperties").getString("internalId"))
+        assertEquals("legacy-fallback-rpi", revoked.getJSONArray("encounterIds").getString(0))
+        assertEquals(at, revoked.getJSONObject("device").getLong("timestamp"))
+    }
+
+    @Test fun `large legacy retry keeps main identity transport despite a smaller adaptive gzip lease`() {
+        val headers = mutableListOf<Map<String, String>>()
+        withServer({ "{}" }, onRequestHeaders = { headers += it }) { endpoint, requests ->
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
+            val storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
+            val client = client(endpoint)
+            client.observeResponse(response(capability().put("maxPayloadBytes", 4000)
+                .put("requestContentEncodings", JSONArray(listOf("gzip")))), "device-1", wall, elapsed)
+            val original = client.buildPayload(emptyList(), SDKInfo(appId = config.appId, build = 1),
+                VisitTestFixtures.device().copy(deviceId = "device-1"),
+                UserProperties(internalId = "legacy-user", customProperties = mapOf("fixturePadding" to "x".repeat(600_000)))).toString()
+            assertTrue(original.toByteArray(Charsets.UTF_8).size > 524_288)
+            assertTrue(original.toByteArray(Charsets.UTF_8).size < 1_048_576)
+            val id = storage.saveRequestReturningId(original)!!
+            assertTrue(client.sendStoredPayload(storage.loadAllRecords().single().requestJson!!).isSuccess)
+            storage.removeBatch(id)
+            assertEquals(JSONObject(original).toString(), requests.single().toString())
+            assertFalse(headers.single().containsKey("content-encoding"))
+            assertNotNull(client.samplingCapability("device-1"))
+            assertTrue(storage.loadAllRecords().isEmpty())
+        }
+    }
+
+    @Test fun `legacy stop then immediate restart retains failed disk snapshots until one attributed retry`() = withServer({ "{}" }) { endpoint, requests ->
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        for (adaptive in listOf(false, true)) {
+            val directory = File(context.filesDir.parentFile, "app_com.bearound.sdk.batches")
+            directory.deleteRecursively()
+            val parked = File(directory.parentFile, "parked-stop-capture")
+            parked.deleteRecursively()
+            val storage = OfflineBatchStorage(context).also { it.currentTenantId = "original-tenant" }
+            val configuration = config.copy(adaptiveSamplingEnabled = adaptive)
+            val client = APIClient(configuration, endpoint, { DataCollectionPolicy.ALL_ENABLED })
+            val info = SDKInfo(appId = config.appId, build = 1)
+            val at = System.currentTimeMillis() - 60_000L
+            val oldDevice = VisitTestFixtures.device().copy(timestamp = at, advertisingId = "original-ad")
+            var properties = UserProperties(internalId = "original-user")
+            var generation = 7L
+            val frames = mutableListOf<Beacon>()
+            val retained = mutableListOf<io.bearound.sdk.LegacyStopSnapshot>()
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
+            val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val restarted = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val queue = PhysicalCaptureQueue(scope, capture = { beacon, _, admittedGeneration ->
+                if (beacon.minor == 1) gate.await()
+                assertEquals(7L, admittedGeneration); assertEquals(7L, generation)
+                frames += beacon
+            }, overflow = {}, failed = { throw it })
+            try {
+                val uuid = UUID.randomUUID()
+                repeat(2) { index ->
+                    assertTrue(queue.offer(Beacon(uuid, 0, index + 1, -60, Beacon.Proximity.NEAR, 1.0, Date(at)), 100L + index, generation) { true })
+                }
+                queue.closeAdmission {}
+                assertTrue(directory.renameTo(parked))
+                directory.writeText("Unavailable fixture directory")
+                queue.flush {
+                    val snapshot = BeAroundSDK.prepareLegacyStopSnapshot(adaptive, false, "original-tenant",
+                        client, info, frames.toList(), oldDevice, properties)!!
+                    assertFalse(snapshot.persist(storage))
+                    retained += snapshot
+                }
+                assertTrue(queue.deferStart {
+                    generation++
+                    frames.clear()
+                    properties = UserProperties(internalId = "later-user")
+                    storage.currentTenantId = "different-tenant"
+                    queue.resume()
+                    restarted.complete(Unit)
+                })
+                gate.complete(Unit)
+                restarted.await()
+                assertEquals(8L, generation); assertTrue(frames.isEmpty()); assertEquals(1, retained.size)
+                directory.delete(); assertTrue(parked.renameTo(directory))
+                assertFalse(retained.single().persist(storage))
+                assertTrue(storage.loadAllRecords().isEmpty())
+                storage.currentTenantId = "original-tenant"
+                assertTrue(retained.removeAll { it.persist(storage) })
+                assertTrue(retained.isEmpty()); assertEquals(1, storage.loadAllRecords().size)
+                val count = requests.size
+                val drain = io.bearound.sdk.utilities.StoredBatchDrain(storage, BeAroundSDK.PERMANENT_HTTP_CODES,
+                    send = { _, _, _ -> error("Expected frozen stop request") },
+                    sendCaptured = { record, _ -> client.sendStoredPayload(record.requestJson!!).map { Unit } })
+                assertTrue(drain.drain(storage.loadAllRecords(), oldDevice.copy(timestamp = at + 60_000L), DataCollectionPolicy.ALL_ENABLED))
+                assertTrue(drain.drain(storage.loadAllRecords(), oldDevice, DataCollectionPolicy.ALL_ENABLED))
+                assertEquals(count + 1, requests.size)
+                val submitted = requests.last()
+                assertFalse(submitted.has("sampling")); assertEquals(2, submitted.getJSONArray("beacons").length())
+                assertEquals(at, submitted.getJSONObject("device").getLong("timestamp"))
+                assertEquals(at, submitted.getJSONArray("beacons").getJSONObject(0).getLong("timestamp"))
+                assertEquals("original-user", submitted.getJSONObject("userProperties").getString("internalId"))
+                assertEquals("original-ad", submitted.getJSONObject("device").getJSONObject("permissions").getString("advertisingId"))
+            } finally {
+                scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+                if (parked.exists()) { directory.deleteRecursively(); parked.renameTo(directory) }
+            }
+        }
     }
 
 }

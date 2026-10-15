@@ -76,4 +76,12 @@ class SDKConfigurationTest {
         assertTrue(positional.copy(collectWifi = true).dataCollectionPolicy.motionSensorsEnabled)
     }
 
+    @Test fun `restored cadence stays outside config identity and precision copy uses its new cadence`() {
+        val restored = config.copy().also { it.restoredSyncIntervalMillis = 60_000L }
+        assertEquals(config, restored)
+        assertEquals(15_000L, restored.copy(scanPrecision = ScanPrecision.HIGH).syncInterval)
+        assertEquals(60_000L, restored.copy(collectWifi = false).syncInterval)
+        assertFalse(restored.copy(adaptiveSamplingEnabled = false).adaptiveSamplingEnabled)
+    }
+
 }

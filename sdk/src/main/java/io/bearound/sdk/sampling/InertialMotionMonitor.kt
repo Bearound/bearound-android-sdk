@@ -37,7 +37,8 @@ internal class InertialMotionMonitor(
     private val budget: InertialStartBudget = InertialStartBudget(),
     private val elapsedRealtime: () -> Long = SystemClock::elapsedRealtime,
     private val clock: () -> Long = System::currentTimeMillis,
-    private val onClockUncertain: () -> Unit = {}
+    private val onClockUncertain: () -> Unit = {},
+    private val sampleEligible: () -> Boolean = eligible
 ) {
     private class Burst(val id: Long, val opened: Long, val deadline: Long, val openedWall: Long) {
         val samples = mutableListOf<InertialSample>()
@@ -107,7 +108,7 @@ internal class InertialMotionMonitor(
             if (!running || burst !== current) return
             val now = elapsedRealtime()
             val previous = current.samples.lastOrNull()?.monotonicAtMs
-            valid = allowed() && now >= current.opened && now <= current.deadline + 250L &&
+            valid = runCatching { sampleEligible() }.getOrDefault(false) && now >= current.opened && now <= current.deadline + 250L &&
                 sample.monotonicAtMs in current.opened..minOf(now, current.deadline) &&
                 sample.xG.isFinite() && sample.yG.isFinite() && sample.zG.isFinite() &&
                 (previous == null || (sample.monotonicAtMs > previous && sample.monotonicAtMs - previous <= 250L))

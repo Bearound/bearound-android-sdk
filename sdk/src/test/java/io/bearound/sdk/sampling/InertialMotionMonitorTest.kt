@@ -242,4 +242,27 @@ class InertialMotionMonitorTest {
         runNext(); assertTrue(windows.isEmpty()); assertEquals(1, providers.single().stops); monitor.stop()
     }
 
+    @Test fun `sensor samples use a cheap execution snapshot without repeating the service query`() {
+        var serviceQueries = 0
+        var sampleChecks = 0
+        val monitor = InertialMotionMonitor(1L, eligible = { serviceQueries++; eligible },
+            providerFactory = { Provider().also { providers += it } },
+            schedule = { delay, action ->
+                val task = Task(now + delay, action); tasks += task
+                val cancel: () -> Unit = { task.canceled = true }; cancel
+            }, onWindow = { _, _ -> }, elapsedRealtime = { now }, clock = { 1_800_000_000_000L + now },
+            sampleEligible = { sampleChecks++; eligible })
+        monitor.start()
+        val atStart = serviceQueries
+        emit(count = 40)
+        assertEquals(atStart, serviceQueries)
+        assertEquals(40, sampleChecks)
+        eligible = false
+        now += 50
+        providers.single().sample(InertialSample(now, 0.0, 0.0, 1.0))
+        assertEquals(1, providers.single().stops)
+        assertTrue(windows.isEmpty())
+        monitor.stop()
+    }
+
 }
