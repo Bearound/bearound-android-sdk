@@ -2518,7 +2518,9 @@ class BeAroundSDK private constructor() {
             val isAppInBackground = if (forceBackground) true else isInBackground
             // The send-time snapshot: the whole device block of a legacy batch, and every
             // field a batch did not capture.
-            val fresh = synchronized(adaptiveLock) { samplingDevice } ?: deviceInfoCollector.collectDeviceInfo(
+            val cachedDevice = if (records.any { it.requestJson == null }) null
+                else synchronized(adaptiveLock) { samplingDevice }
+            val fresh = cachedDevice ?: deviceInfoCollector.collectDeviceInfo(
                 getLocationPermissionStatus(), if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off", !isAppInBackground
             ).withEncounterData()
             Log.d(TAG, "Draining ${records.size} stored batch(es)")
