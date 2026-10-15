@@ -314,20 +314,15 @@ class APIClient(
         userDevice: UserDevice,
         userProperties: UserProperties?,
         /**
-         * Why this payload is going up, when that is not simply "beacons were seen":
-         * `encounter_mesh` (only peers around) or `presence_heartbeat` (nothing at all, so
-         * the location and Wi-Fi ARE the datum). Omitted for an ordinary beacon sync, which
-         * needs no explanation. Without it the backend cannot tell a presence report from a
-         * normal sync — both arrive as a payload with an empty beacon list.
+         * Why this payload is sent with no beacon: `encounter_mesh` (only peers nearby) or
+         * `presence_heartbeat` (periodic report with no beacon or peer). Omitted for an
+         * ordinary beacon sync.
          */
         syncTrigger: String? = null,
         onComplete: (Result<Unit>) -> Unit
     ) {
-        // Nothing at all to report — not a beacon, not a peer, not even where the device is.
-        // An empty shell would cost a request and teach the backend nothing. Whether a scan
-        // that found nothing is worth uploading is decided upstream, by the heartbeat
-        // throttle (BeAroundSDK.shouldReportEmptyScan); by the time it reaches here, the
-        // location/Wi-Fi it carries IS the payload.
+        // Nothing to report (no beacon, no peer, no location or Wi-Fi): skip the request.
+        // Whether an empty scan is uploaded is decided upstream (BeAroundSDK.shouldReportEmptyScan).
         if (beacons.isEmpty() &&
             userDevice.encounters.isEmpty() &&
             userDevice.location == null &&
@@ -470,8 +465,7 @@ class APIClient(
             payload.put("location", JSONObject().apply {
                 put("latitude", location.latitude)
                 put("longitude", location.longitude)
-                // Timestamp OF THE FIX, not of the payload — a fix can be minutes old
-                // and the backend has to be able to tell.
+                // Timestamp of the fix, not of the payload (a fix can be minutes old).
                 put("timestamp", location.timestamp)
                 put("source", location.source)
                 location.accuracy?.let { put("accuracy", it) }
@@ -489,11 +483,16 @@ class APIClient(
         return filterPayload(payload)
     }
 
-    private fun buildDevicePayload(device: UserDevice): JSONObject {
+    internal fun buildDevicePayload(device: UserDevice): JSONObject {
         val payload = JSONObject()
 
         payload.put("deviceId", device.deviceId)
-        device.pushToken?.let { payload.put("pushToken", it) }
+        device.pushToken?.let {
+            payload.put("pushToken", it)
+            // Token registration reports the native SDK version: the backend derives from it
+            // whether the device can render rich push formats.
+            payload.put("sdkVersion", io.bearound.sdk.BuildConfig.SDK_VERSION.take(32))
+        }
         payload.put("timestamp", device.timestamp)
         payload.put("timezone", device.timezone)
 
@@ -524,6 +523,10 @@ class APIClient(
         val network = JSONObject().apply {
             put("type", device.networkType)
             device.cellularGeneration?.let { put("cellularGeneration", it) }
+            // Operator codes of the SIM and of the registered network.
+            device.simMccMnc?.let { put("simMccMnc", it) }
+            device.simOperatorName?.let { put("simOperatorName", it) }
+            device.networkMccMnc?.let { put("networkMccMnc", it) }
             device.apId?.let { put("apId", it) }
             // Network name — part of the contract, see WifiObservation.ssid.
             device.wifiSSID?.let { put("wifiSSID", it) }
@@ -537,11 +540,9 @@ class APIClient(
             put("bluetooth", device.bluetoothState)
             device.locationAccuracy?.let { put("locationAccuracy", it) }
             // Sem isto, Wi-Fi vazio em background e Wi-Fi vazio por falta de permissao sao
-            // indistinguiveis do backend — e a segunda causa nao aparece em log nenhum.
+            // indistinguiveis, e a segunda causa nao aparece em log nenhum.
             put("backgroundLocation", device.backgroundLocation)
-            // Advertising ID lives here because that is where the ingest already reads it
-            // from (`device.permissions.advertisingId`) — it is provided by the SDK so the
-            // backend can skip the matchmaker round-trip.
+            // The advertising ID is sent in `device.permissions.advertisingId`.
             device.advertisingId?.let { put("advertisingId", it) }
             device.limitAdTracking?.let { put("limitAdTracking", it) }
         }

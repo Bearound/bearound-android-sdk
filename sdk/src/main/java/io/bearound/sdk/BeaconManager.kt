@@ -475,7 +475,7 @@ class BeaconManager(private val context: Context) {
         stopRegionCleanupTimer()
 
         if (isRanging) {
-            bluetoothLeScanner?.stopScan(scanCallback)
+            stopRegularScan()
             isRanging = false
         }
         stopSlowBeaconBatchScan()
@@ -483,8 +483,8 @@ class BeaconManager(private val context: Context) {
         // Snapshot the TRUE zone state BEFORE tearing it down. stop()+start() is also the
         // reconfigure path (settings apply): persisting `false` here made the next start
         // skip ranging ("startRanging skipped — not inside beacon region") until a
-        // PendingIntent broadcast happened to revive it — in the field, precision changes
-        // looked like they didn't apply (realme C61, 2026-07-22). The fresh snapshot lets
+        // PendingIntent broadcast happened to revive it, so precision changes
+        // looked like they didn't apply. The fresh snapshot lets
         // startScanning() restore the zone and re-arm active scanning immediately.
         persistZoneState()
 
@@ -578,12 +578,21 @@ class BeaconManager(private val context: Context) {
         Log.d(TAG, "stopRanging() called - isRanging: $isRanging, isInForeground: $isInForeground")
         if (!isRanging) return
 
-        bluetoothLeScanner?.stopScan(scanCallback)
+        stopRegularScan()
         isRanging = false
         stopWatchdog()
         
         if (isInForeground) {
             stopRangingRefreshTimer()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopRegularScan() {
+        try {
+            bluetoothLeScanner?.stopScan(scanCallback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to stop ranging: ${e.message}")
         }
     }
 
@@ -712,8 +721,7 @@ class BeaconManager(private val context: Context) {
         // ENCOUNTER, never a detection. It reaches this funnel through the beacon filters
         // that already run in background — including the PendingIntent broadcast, which on
         // AOSP-like Android 14 is the only path that delivers at all. Dropping it in the
-        // parser (as the SDK did since 3.8.0) silently removed the one mesh port that had
-        // ever produced pairs in the field.
+        // parser (as 3.8.0 did) lost these encounters.
         encounterMesh?.let { mesh ->
             IBeaconParser.parseVirtualEncounterFrame(scanRecord, result.rssi)?.let { virtual ->
                 mesh.handleVirtualBeacon(virtual.minor, virtual.rssi,
@@ -1083,8 +1091,10 @@ class BeaconManager(private val context: Context) {
         if (!ScanStartBudget.tryAcquire("ranging-restart")) return
 
         if (isRanging) {
-            bluetoothLeScanner?.stopScan(scanCallback)
+            stopRegularScan()
         }
+        // REQ-007: the delayed start must see the old registration as stopped.
+        isRanging = false
 
         val backoffDelay = minOf(500L * rangingRestartCount, 5000L)
 

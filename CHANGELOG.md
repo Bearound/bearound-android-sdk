@@ -7,6 +7,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.1] - 2026-10-13
+
+### Fixed
+- **Scan diagnostics throttle.** RSSI changes no longer bypass the Scan diagnostic throttle; the
+  history (up to 500 entries) is serialized only when a new beacon composition is admitted, so
+  idle periods stop paying that cost. Every beacon callback still reaches the listener.
+- **Recovery after a Bluetooth shutdown.** An uncaught `BluetoothLeScanner` failure while the radio
+  was turned off no longer breaks ranging recovery when the radio comes back.
+
+## [3.16.0] - 2026-10-13
+
+### Added
+- **App presence (local, opt-in).** Checks whether a short list of target packages that the
+  integrator configures and declares in the app's own manifest `<queries>` is present on the
+  device, verified against the build's declaration asset. Off by default, no UI, no new
+  permission, and `QUERY_ALL_PACKAGES` is never requested. Results are delivered to the host
+  app only and never enter the beacon payload, the offline queue or the error telemetry. Read
+  the Google Play policy note in the README before shipping: package visibility must serve
+  user-facing core functionality and the data cannot be sold or shared for analytics or ads.
+
+## [3.15.0] - 2026-10-09
+
+### Added
+- **Operator codes in the device payload.** `device.network` may now carry three optional
+  fields: `simMccMnc` (MCC+MNC of the SIM), `simOperatorName` and `networkMccMnc` (MCC+MNC of
+  the registered network). Each is omitted when the SIM is not ready or the value is not
+  available.
+
+No new permission is declared or requested.
+
+## [3.14.0] - 2026-09-30
+
+### Added
+- **Wi-Fi visit matching.** On places configured for it, the SDK also detects a visit through
+  the Wi-Fi networks around the device, reported as an ordinary `visit` event.
+
+### Changed
+- A visit event may be sent without a location. Configurations and state stored by 3.13.0
+  still load.
+
+No new permission is declared or requested.
+
+## [3.13.0] - 2026-09-29
+
+### Added
+- **Rich push notifications rendered by the SDK.** A data-only FCM message carrying
+  `data["bearound_rich"]` (contract version `1`) is now built and posted by the SDK itself,
+  inside `BeAroundSDK.handleRemoteMessage`: it works with the SDK's optional
+  `BearoundMessagingService` and with a host `FirebaseMessagingService` that forwards
+  messages to `handleRemoteMessage`. Formats:
+  - `IMAGE`: a `BigPictureStyle` notification.
+  - `TWO_IMAGES`: two image cards side by side, each with its caption and its own tap target.
+  - `CAROUSEL`: one card at a time with previous/next arrows. The first render prefetches every
+    card into files in `cacheDir` (keyed by a hash of the media URL, dropped after two days and
+    capped at 40 MB in total, oldest first), so the arrows re-post the same notification from the
+    cache without touching the network, even when the page turn starts a fresh process (measured
+    on a device: about 30 ms to rebuild a page).
+  - `PLAY`: a real video. The card's `u` is a direct MP4 (at most 15 MB); the SDK downloads it
+    into `cacheDir`, extracts 8 evenly spaced frames with `MediaMetadataRetriever` and shows them
+    in a self-advancing `ViewFlipper` in the expanded notification (an animated preview made of
+    the video's own frames; the collapsed view shows the first frame). Tapping opens the new
+    full-screen `RichPushVideoActivity` (`VideoView` + `MediaController`, with sound, rotation
+    friendly, close button), which plays the cached file or streams `u`. It never opens a
+    browser. If the video cannot be used, the notification shows the poster `m` with no play
+    glyph, or title and body. Framework APIs only: no new dependency.
+
+  On a metered network, or with Data Saver on for the app, the SDK downloads no video on its
+  own: a `PLAY` push shows the poster (no play glyph) and a tap still opens the player, which
+  streams on demand; the carousel fetches only the card on screen and loads the others on their
+  page turn. `handleRemoteMessage` restarts scanning and flushes the sync first, then renders on a
+  worker thread and returns at once (media budget of about 9 s). Nothing is downloaded when the
+  notification could not be shown (permission missing, notifications off, or its channel turned
+  off). Rich notifications are posted under the tag `bearound_rich`, so their ids never collide
+  with the host's. Card URLs are allowlisted: `http(s)`, or a deep link that an Activity of the
+  host app itself handles (opened inside the host app); anything else opens the app.
+
+  When the push marker is measurable, each image is fetched through the tracker view
+  endpoint (`push:view`, with the card index) and each http(s) card tap goes through the
+  tracker click endpoint (`push:click`, with the card index); deep links open directly. A card
+  prefetched but not yet shown is fetched from the raw media URL, and its view is reported once
+  when it is first shown. A PLAY tap fires the click hit (`push:click`, index 0) without following
+  its redirect and opens the SDK player; the poster fetch stays the view. Every
+  tap still reports the push `open` through the existing open measurement, via an invisible
+  SDK Activity (allowed by the Android 12+ notification trampoline rules). The received
+  measurement is unchanged. If an image cannot be downloaded, the notification degrades to
+  title and body. An unknown contract version renders title and body only.
+
+  The notification uses the host's FCM default channel
+  (`com.google.firebase.messaging.default_notification_channel_id`) when it exists, otherwise
+  an SDK channel `bearound_rich_push` ("Promotions", localized pt/es). Small icon: the host's
+  FCM default notification icon when declared, otherwise the app icon. Every bitmap is cropped
+  to its box and downscaled before it goes into the notification (720 px wide for carousel and
+  two-image cards, 8 video frames within 1.8 MB), so no custom RemoteViews crosses the platform's
+  2 MB "RemoteViews too large" warning. The `IMAGE` picture is a standard `BigPictureStyle`
+  bitmap of at most 1080 px, RGB_565 when it has no transparency. The manifest now declares
+  `RichNotificationTrampolineActivity`, `RichPushVideoActivity` and
+  `RichNotificationActionReceiver` (all `exported="false"`).
+- **Push token registration reports the SDK version.** The `device` object carries
+  `sdkVersion` next to `pushToken`, so the backend can tell which devices render rich push.
+  After an SDK upgrade the token is re-sent once so the new version is reported.
+
+### Fixed
+- **The foreground-service notification no longer floods the NotificationManager.** With
+  `onProvideNotificationContent` implemented, the scan notification (id 19850) was re-posted on
+  every background scan callback, several times per second while beacons were in range. Android
+  then throttled the app ("Package enqueue rate ... Shedding") and dropped its other
+  notifications, rich pushes included, besides spending battery. Refreshes are now deduplicated
+  (content equal to what is shown is never re-posted) and throttled to at most one post every
+  5 s; changes inside the window are coalesced and the latest one is posted when it ends.
+
 ## [3.12.0] - 2026-09-28
 
 ### Added

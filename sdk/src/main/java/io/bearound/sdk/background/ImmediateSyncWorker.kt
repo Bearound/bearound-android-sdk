@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * One-shot flush of pending beacons, enqueued right after a background
- * detection (top-5 fix #1: "detects in seconds, delivers in minutes").
+ * detection.
  *
  * Why a Worker: the broadcast window (goAsync) covers the fast path, but if the
  * process dies or the network is gated by Doze, this Worker re-runs the flush

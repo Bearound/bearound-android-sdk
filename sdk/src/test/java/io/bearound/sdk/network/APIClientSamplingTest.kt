@@ -21,6 +21,7 @@ import io.bearound.sdk.models.DataCollectionPolicy
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.visit.VisitTestFixtures
+import io.bearound.sdk.visit.saveVisitEvent
 import java.net.InetSocketAddress
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
@@ -881,6 +882,58 @@ class APIClientSamplingTest {
                 assertEquals(requests[0].getJSONObject("sampling").get(key).toString(), requests[1].getJSONObject("sampling").get(key).toString())
             assertEquals(original, storage.loadAllRecords().single { it.id == id }.requestJson)
         }
+    }
+
+    @Test fun `WiFi visits submit captured legacy requests independently of adaptive backlog and ACKs`() {
+        var attempts = 0
+        withServer({ "{}" }, statusFor = { if (++attempts == 1) 503 else 200 }) { endpoint, requests ->
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            SecureStorage.initialize(context)
+            File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
+            val sdk = BeAroundSDK::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+            fun field(name: String) = BeAroundSDK::class.java.getDeclaredField(name).apply { isAccessible = true }
+            field("context").set(sdk, context)
+            val device = VisitTestFixtures.device().copy(timestamp = System.currentTimeMillis())
+            val storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
+            val client = client(endpoint)
+            val backlog = storage.saveRequestReturningId(captured(client).toString())!!
+            val capturedAt = System.currentTimeMillis() - 60_000L
+            val wifi = io.bearound.sdk.models.WifiObservation("fixture-arrival", "Fixture WiFi", -60, true, 2412, capturedAt)
+            val visit = io.bearound.sdk.visit.VisitEvent(io.bearound.sdk.visit.VisitEventKind.ARRIVAL, null,
+                "fixture-environment", listOf(wifi))
+            val visitId = storage.saveVisitEvent(visit)!!
+            field("configuration").set(sdk, config); field("apiClient").set(sdk, client)
+            field("sdkInfo").set(sdk, SDKInfo(appId = config.appId, build = 1))
+            field("samplingDevice").set(sdk, device); field("offlineBatchStorage").set(sdk, storage)
+            val previousPolicy = io.bearound.sdk.models.DataCollectionPolicyStore.current
+            io.bearound.sdk.models.DataCollectionPolicyStore.apply(DataCollectionPolicy.ALL_ENABLED)
+            try {
+                val method = BeAroundSDK::class.java.getDeclaredMethod("flushVisitBatches", kotlin.coroutines.Continuation::class.java)
+                    .apply { isAccessible = true }
+                suspend fun flush() = suspendCoroutine<Unit> { continuation ->
+                    val value = method.invoke(sdk, continuation)
+                    if (value != kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) continuation.resume(Unit)
+                }
+                flush()
+                assertEquals(setOf(backlog, visitId), storage.loadAllRecords().map { it.id }.toSet())
+                val submitted = requests.single()
+                assertEquals("visit", submitted.getString("syncTrigger"))
+                assertFalse(submitted.has("sampling")); assertFalse(submitted.has("location"))
+                assertEquals(0, submitted.getJSONArray("beacons").length())
+                val submittedWifi = submitted.getJSONArray("wifis").getJSONObject(0)
+                assertEquals(wifi.apId, submittedWifi.getString("apId"))
+                assertEquals(wifi.ssid, submittedWifi.getString("ssid"))
+                assertEquals(capturedAt, submittedWifi.getLong("timestamp"))
+                assertEquals(wifi.apId, submitted.getJSONObject("device").getJSONObject("network").getString("apId"))
+                flush()
+                assertEquals(2, requests.size)
+                assertEquals(submitted.toString(), requests.last().toString())
+                assertEquals(listOf(backlog), storage.loadAllRecords().map { it.id })
+            } finally {
+                io.bearound.sdk.models.DataCollectionPolicyStore.apply(previousPolicy)
+            }
+        }
+
     }
 
 }

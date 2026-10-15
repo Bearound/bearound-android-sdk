@@ -37,13 +37,12 @@ object IBeaconParser {
     /** Majors at or above this are RESERVED for SDK hosts advertising as virtual
      * beacons (encounter layer) — physical Bearound beacons never use them. Filtering
      * the whole band (not just 0xFFFF) also drops air-corrupted virtual frames
-     * (observed in the field: 0xFF32 from a damaged 0xFFFF byte). */
+     * (for example 0xFF32 from a damaged 0xFFFF byte). */
     const val VIRTUAL_ENCOUNTER_MAJOR_FLOOR: Int = 0xFF00
 
     /** The exact major an SDK host advertises with (see
      * [io.bearound.sdk.EncounterMeshManager]). Only this value identifies a peer: the rest
-     * of the reserved band is air corruption, which carries no usable minor. The backend
-     * keys the mesh on the same constant, so the two definitions must not drift. */
+     * of the reserved band is air corruption, which carries no usable minor. */
     const val VIRTUAL_ENCOUNTER_MAJOR: Int = 0xFFFF
 
     private fun uuidToBytes(uuid: UUID): ByteArray =
@@ -127,9 +126,9 @@ object IBeaconParser {
     /**
      * The other half of [parseIBeaconFrame]: the frames it deliberately refuses.
      *
-     * An SDK host pulsing as a virtual beacon is not a detection, but it IS the encounter
-     * signal that works in the field — a backgrounded Android emits it for as long as its
-     * process lives, and every receive path (regular scan, batch scan, PendingIntent
+     * An SDK host pulsing as a virtual beacon is not a detection; it is routed to the
+     * encounter layer. A backgrounded Android emits it for as long as its process lives,
+     * and every receive path (regular scan, batch scan, PendingIntent
      * broadcast) already carries it because the scan filter matches on the UUID prefix,
      * not on the major.
      *

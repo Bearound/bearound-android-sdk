@@ -37,10 +37,10 @@ internal class WifiCollector(private val context: Context) {
         private const val NOMAP_SUFFIX = "_nomap"
 
         /** Ceiling on how many neighbours travel in one payload. */
-        private const val MAX_OBSERVATIONS = 25
+        const val MAX_OBSERVATIONS = 25
 
         /** Results older than this are stale enough that the device likely moved. */
-        private const val MAX_RESULT_AGE_MS = 5 * 60 * 1000L
+        const val MAX_RESULT_AGE_MS = 5 * 60 * 1000L
     }
 
     /**
@@ -64,7 +64,16 @@ internal class WifiCollector(private val context: Context) {
         }
     }
 
-    fun collect(): List<WifiObservation> {
+    fun collect(): List<WifiObservation> = collectCached()
+        .sortedByDescending { it.rssi ?: Int.MIN_VALUE }
+        .take(MAX_OBSERVATIONS)
+
+    /**
+     * Every access point in the system's cached scan results (no [MAX_OBSERVATIONS] cap, no
+     * ordering), plus the connected one. Reads the cache only: it never asks for a scan.
+     * Results older than [MAX_RESULT_AGE_MS] are dropped, so a non-empty list is fresh.
+     */
+    fun collectCached(): List<WifiObservation> {
         if (!hasWifiStatePermission()) return emptyList()
 
         val wifiManager = context.applicationContext
@@ -73,8 +82,7 @@ internal class WifiCollector(private val context: Context) {
         val now = System.currentTimeMillis()
         val observations = LinkedHashMap<String, WifiObservation>()
 
-        // The connected access point comes first: it is the strongest signal of where
-        // the device actually is, and it is the only one iOS can offer.
+        // The connected access point comes first.
         connectedObservation(wifiManager, now)?.let { observations[it.apId] = it }
 
         // Neighbours need the scan permission on top of the Wi-Fi one.
@@ -84,9 +92,7 @@ internal class WifiCollector(private val context: Context) {
             }
         }
 
-        return observations.values
-            .sortedByDescending { it.rssi ?: Int.MIN_VALUE }
-            .take(MAX_OBSERVATIONS)
+        return observations.values.toList()
     }
 
     // ── permissions ──────────────────────────────────────────────────────────────

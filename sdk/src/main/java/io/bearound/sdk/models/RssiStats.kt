@@ -6,7 +6,7 @@ import kotlin.math.sqrt
  * Aggregated RSSI statistics over a sync window for a single beacon.
  *
  * Built incrementally via [Accumulator] so we never store all samples — just running sums.
- * Useful for trilateration weighting: avg gives a stable estimate, stdDev signals noise.
+ * avg is the mean RSSI over the window; stdDev is its dispersion.
  */
 data class RssiStats(
     val count: Int,

@@ -22,10 +22,16 @@ import android.util.Log
  *   fix (its real position and time);
  * - departure: the first fix outside, reported with the LAST inside fix, so the pair spans
  *   the time the device was actually seen inside.
+ *
+ * On the same wakeups the [WifiVisitRunner] matches the platform's CACHED Wi-Fi scan results
+ * against the known access points of each environment. It needs no fix and never starts a
+ * scan (no burst on this path). A stop it opens and a GPS stop are the same stop.
  */
 internal class SoftFenceVisitDetector(
     private val store: VisitStateStore,
-    private val tracker: VisitStopTracker
+    private val tracker: VisitStopTracker,
+    /** Wi-Fi matching on the same wakeups, from cached scan results only. Null: GPS only. */
+    private val wifi: WifiVisitRunner? = null
 ) : VisitDetector {
 
     companion object {
@@ -53,10 +59,15 @@ internal class SoftFenceVisitDetector(
 
     override fun apply(config: PlacesConfig?, now: Long) {
         this.config = config?.takeIf { it.visitDetectionEnabled }
-        if (this.config == null) store.softCandidate = null
+        if (this.config == null) {
+            store.softCandidate = null
+            wifi?.reset()
+        }
     }
 
     override fun onTick(fix: VisitFix?, now: Long) {
+        // Wi-Fi does not need a fix: it runs on every wakeup, before the GPS gates below.
+        wifi?.onWakeup(config, now)
         val config = config ?: return
         if (fix == null) return
         val accuracy = fix.accuracy
@@ -66,7 +77,8 @@ internal class SoftFenceVisitDetector(
         if (lastFixAt != null && fix.timestamp <= lastFixAt) return
         store.softLastFixAt = fix.timestamp
 
-        val open = tracker.openStop()
+        // A stop only Wi-Fi holds is closed by Wi-Fi: a fix outside must not end it.
+        val open = tracker.openStop()?.takeIf { VisitSource.GPS in it.sources }
         if (open != null) {
             val stillInside = config.places.any { place ->
                 place.environmentId == open.environmentId &&
@@ -76,8 +88,9 @@ internal class SoftFenceVisitDetector(
                 tracker.touch(fix)
                 return
             }
-            if (tracker.depart(open.environmentId, open.lastInside)) {
-                Log.i(TAG, "Soft fence: departure from ${open.environmentId} (last seen inside at ${open.lastInside.timestamp})")
+            val lastInside = open.lastInside
+            if (lastInside != null && tracker.depart(open.environmentId, lastInside)) {
+                Log.i(TAG, "Soft fence: departure from ${open.environmentId} (last seen inside at ${lastInside.timestamp})")
             }
         }
 
@@ -114,6 +127,7 @@ internal class SoftFenceVisitDetector(
     override fun tearDown() {
         config = null
         store.softCandidate = null
+        wifi?.reset()
     }
 
     private fun radiusOf(place: PlacesConfig.Place) = maxOf(place.radiusMeters, MIN_TARGET_RADIUS_METERS)

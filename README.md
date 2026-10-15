@@ -149,14 +149,14 @@ allprojects {
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("com.github.Bearound:bearound-android-sdk:3.12.0")
+    implementation("com.github.Bearound:bearound-android-sdk:3.16.1")
 }
 ```
 
 ```gradle
 // build.gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:3.12.0'
+    implementation 'com.github.Bearound:bearound-android-sdk:3.16.1'
 }
 ```
 
@@ -166,7 +166,7 @@ for how they wire together with one line):
 
 ```gradle
 dependencies {
-    implementation 'com.github.Bearound:bearound-android-sdk:3.12.0'
+    implementation 'com.github.Bearound:bearound-android-sdk:3.16.1'
     implementation 'com.github.Bearound:bearound-telemetry-android-sdk:v0.1.2'
 }
 ```
@@ -259,9 +259,6 @@ just the connected access point.
 ### Wi-Fi observations
 
 Alongside each beacon sighting the SDK reports the **access points visible at that moment**.
-The purpose is positioning coverage: an access point seen repeatedly next to a known beacon
-gets a position of its own, and from then on it can place a device even where no beacon
-reaches.
 
 The identity that matters is `apId` — a one-way SHA-256 hash of the access point's hardware
 address, canonicalised so that the same router produces the same identifier on Android and
@@ -276,9 +273,8 @@ on iOS.
 | `timestamp` | When the access point was seen (not when the payload was sent) |
 | `ssid` | Network name (see the note below) |
 
-> **`ssid` and `network.wifiSSID` carry the network name**, and the backend consumes them:
-> the name says something the hashed `apId` cannot. Because a network name identifies a
-> place — and at home a household — both are personal data and ship only while Wi-Fi
+> **`ssid` and `network.wifiSSID` carry the network name.** Because a network name identifies
+> a place (and at home a household), both are personal data and are sent only while Wi-Fi
 > collection is on. `configure(collectWifi = false)` drops them with the rest of the Wi-Fi
 > block; see [Controlling what the SDK collects](#controlling-what-the-sdk-collects).
 
@@ -302,16 +298,11 @@ on which permissions the user granted:
 > This is the single most surprising thing on this page, so it is worth being blunt about:
 > from **Android 10** on, a backgrounded app without `ACCESS_BACKGROUND_LOCATION` gets an
 > **empty scan list** and the placeholder BSSID `02:00:00:00:00:00` — not an error, not a
-> `SecurityException`, nothing in logcat. The SDK discards the placeholder (it must — every
-> device on earth returns the same one), so `wifis[]` and `network.apId` simply arrive
-> empty.
+> `SecurityException`, nothing in logcat. The SDK discards the placeholder, so `wifis[]` and
+> `network.apId` simply arrive empty.
 >
-> Measured on a real device: the same app, same session, every permission it asked for
-> granted, went from **25 access points to zero** the instant it was backgrounded. Location
-> stopped coming through in the same payload.
->
-> Since a fleet spends almost all of its time in the background, "foreground only" means
-> "almost never". If your integration tests by hand with the app open, it will look perfect.
+> If your integration tests by hand with the app open, it will look perfect, while in the
+> background the Wi-Fi list stays empty.
 >
 > **Check it without guessing:** every payload reports
 > `device.permissions.backgroundLocation`. If it is `false`, you are collecting Wi-Fi in the
@@ -375,6 +366,15 @@ addresses that Android returns when a permission is missing are discarded rather
 > **Migration note:** `network.apId` joins `network.wifiSSID` — a stable, hashed identity for
 > the access point, reported next to the name rather than instead of it.
 
+#### Wi-Fi visit matching
+
+From 3.14.0 the SDK can also detect a visit at a place through the Wi-Fi networks around the
+device, on places configured for it. Visits are reported as ordinary `visit` events. It uses the
+permissions described above and declares or requests nothing new; without
+`ACCESS_BACKGROUND_LOCATION` it only works while the app is in the foreground.
+`configure(collectWifi = false)`, `collectLocation = false` or disabling visit detection switch
+it off.
+
 ### Encounter layer (device-to-device)
 
 Besides listening for beacons, every SDK device also **advertises a fixed Bearound service**
@@ -388,11 +388,10 @@ derived from the same rotating identifier. That frame is never treated as a beac
 it does not enter region monitoring, ranging or the detection log — but it IS reported as an
 encounter: it rides the beacon scan filters that already run in background (including the
 PendingIntent broadcast, the only delivery path left on some AOSP-like Android 14 builds), so
-it is the port that keeps producing pairs when the app is not in the foreground.
+it keeps being reported when the app is not in the foreground.
 
 Every payload from a running device also carries `encounterIds` — the identifiers this device
-is currently advertising. It is sent whether or not the device saw anyone: it is the half that
-lets the backend turn somebody else's sighting into a real pair.
+is currently advertising. It is sent whether or not the device saw anyone.
 
 **Permission involved (Android 12+ only):**
 
@@ -445,9 +444,8 @@ permissionLauncher.launch(permissions.toTypedArray())
 
 ### Advertising identifier (AAID)
 
-The SDK reports the **Google Advertising ID** — the resettable identifier that lets the same
-person be recognised across apps for advertising. It is what makes audiences built from
-beacon visits usable in ad platforms.
+The SDK reports the **Google Advertising ID**, the resettable, user-controlled identifier
+used for advertising.
 
 **The SDK does not declare the `AD_ID` permission.** Whether your app collects the AAID is
 your decision, and you opt in from your own app module:
@@ -614,7 +612,7 @@ Play's background-location review (declaration form + demo video) for zero detec
 
 `internalId` is **your own id for the user** (e.g. from your CRM) — a user property. Set it
 (and any other user data) via `setUserProperties` right after `configure()`, so every beacon
-event is tied back to that user on the backend:
+event carries that user id:
 
 ```kotlin
 import io.bearound.sdk.models.UserProperties
@@ -691,8 +689,9 @@ crash apps without Firebase).
 For a measurable Bearound push (one carrying `sid`, `d` and an `https` `tr` in the `bearound`
 marker: a sync/wake-up-only push has neither and is not measurable), the SDK reports two
 events through the Bearound tracker: `received` when the FCM message is processed, and `open`
-when a tap on the notification launches or resumes the app. The SDK never renders
-notifications; this only measures taps on whatever the host app or FCM rendered.
+when a tap on the notification launches or resumes the app. Except for rich push (below), the
+SDK never renders notifications; this only measures taps on whatever the host app or FCM
+rendered.
 
 **Automatic tap tracking** requires no wiring: the SDK registers an
 `Application.ActivityLifecycleCallbacks` (as early as the SDK's first `getInstance(context)`
@@ -730,6 +729,57 @@ wiring it into the plugin's foreground/background tap listeners.
 Both APIs enqueue into a small persisted queue (capped at 200 entries / 7 days, deduped per
 event, retried with backoff on a transient failure) that requires no business token, so a
 cold-launch tap is measured even if it happens before `configure()` runs.
+
+#### Rich push notifications
+
+A data-only FCM message carrying `data["bearound_rich"]` (contract version `1`) is rendered by
+the SDK itself inside `handleRemoteMessage`, whether the message arrives through
+`BearoundMessagingService` or through your own service that forwards it. No extra wiring.
+
+| Format | What the user sees | Tap |
+|---|---|---|
+| `IMAGE` | A big picture | The card URL, or the app |
+| `TWO_IMAGES` | Two cards side by side | Each card opens its own URL |
+| `CAROUSEL` | One card at a time with previous/next arrows | The shown card's URL |
+| `PLAY` | The video's own frames, animated in the expanded notification | The SDK's full-screen player |
+
+- **`PLAY` is a real video.** The card's `u` is a direct MP4 (H.264/AAC, at most 15 MB). The SDK
+  downloads it into `cacheDir`, extracts 8 evenly spaced frames with `MediaMetadataRetriever` and
+  shows them in a self-advancing `ViewFlipper` (a notification cannot host a video player, so the
+  preview is made of the video's own frames). A tap opens `RichPushVideoActivity`, a
+  full-screen `VideoView` with `MediaController` that plays the video with sound from the cached
+  file (or streams it) and has a close button. It never opens a browser. When the video cannot be
+  used, the notification shows the poster (`m`) with no play glyph, or title and body.
+- **Carousel page turns are instant.** The first render prefetches every card into files in
+  `cacheDir` (keyed by a hash of the media URL, dropped after two days and capped at 40 MB in
+  total, oldest first), so the arrows re-post the notification without any network, even in a
+  fresh process.
+- **Metered networks and Data Saver.** When the active network is metered, or Data Saver is on
+  for your app, the SDK downloads no video on its own: a `PLAY` push shows the poster (no play
+  glyph) and a tap still opens the player, which streams on demand. The carousel then fetches
+  only the card on screen; the others load when the user turns to them.
+- **Rendering never holds the FCM callback.** `handleRemoteMessage` restarts scanning and flushes
+  the sync first, then renders on a worker thread and returns at once. Media downloads have a
+  budget of about 9 s; nothing is downloaded (so no view is counted) when the notification could
+  not be shown: permission missing, notifications off for the app, or its channel turned off.
+- **Size discipline.** Every bitmap is cropped to its on-screen box and downscaled before it is
+  handed to the notification. The SDK's custom layouts (`TWO_IMAGES`, `CAROUSEL`, `PLAY`) keep
+  their bitmaps under 2 MB per RemoteViews, the size at which Android logs a "RemoteViews too
+  large" warning (it strips a custom view at 5 MB). The `IMAGE` picture is a standard
+  `BigPictureStyle` bitmap, not a custom RemoteViews: at most 1080 px on its longer edge, and
+  RGB_565 when it has no transparency (at most about 2.3 MB).
+- **Card links.** `http(s)` card URLs open in the browser (through the tracker when measurable).
+  Any other URI is treated as a deep link and kept only when an Activity of your own app handles
+  it; the tap then opens it inside your app. Everything else opens your app's launch Activity.
+- **Notification tag.** The SDK posts rich notifications under the tag `bearound_rich`, so their
+  ids never collide with your own notifications.
+- **Measurement.** With a measurable marker, a shown card's image is fetched through the
+  tracker view endpoint (or, when it came from the cache, its view is reported once), http(s)
+  card taps go through the tracker click endpoint, and a `PLAY` tap fires the click hit without
+  following its redirect. Every tap also reports the push `open` as above.
+- **Manifest.** The SDK declares `RichNotificationTrampolineActivity`, `RichPushVideoActivity`
+  and `RichNotificationActionReceiver`, all `exported="false"`. Framework APIs only, no new
+  dependency. The notification uses your FCM default channel and icon when declared.
 
 ## Background scanning
 
@@ -1048,6 +1098,146 @@ worker never registers scanners, PendingIntents, or foreground services of its o
 runs without any network constraint — offline it persists and completes, leaving
 delivery to the retry pipeline.
 
+### App presence (local, opt-in)
+
+Checks whether specific apps, chosen by you and declared in your app's build, are
+installed on the device. Results are delivered **only** to your listener: the SDK never
+uploads them, never adds them to payloads, telemetry or retry queues, and never shows any
+UI. Read the store policy notes below before enabling it in a published app.
+
+**Off by default.** A new or upgraded integration has `enabled = false` and no targets:
+nothing is queried and no callback fires until you opt in.
+
+```kotlin
+sdk.configureAppPresence(
+    AppPresenceConfiguration(
+        enabled = true,
+        targets = listOf(
+            // Your own targets. id: [A-Za-z0-9._-], 1-64 chars, unique; at most 50 targets.
+            AppPresenceTarget(id = "fixture", androidPackageName = "io.bearound.fixture.presence")
+        )
+    )
+)
+
+sdk.listener = object : BeAroundSDKListener {
+    override fun onBeaconsUpdated(beacons: List<Beacon>) {}
+
+    override fun onAppPresenceUpdated(snapshot: AppPresenceSnapshot) {
+        snapshot.results.forEach { result ->
+            // result.state: PRESENT | ABSENT | UNKNOWN; result.present: true | false | null
+            // result.reason: null when known, else why it is unknown
+        }
+    }
+}
+
+sdk.getLastAppPresenceSnapshot() // last compatible snapshot (cached = true) or null; never queries
+```
+
+An invalid configuration (duplicated ids, malformed ids or package names, more than 50
+targets) disables **only this feature** and reaches `onError` with an
+`AppPresenceConfigurationException` (`code = "app_presence_invalid_configuration"`); the
+rest of the SDK keeps working. If the private storage is unavailable, the round is cancelled
+before any app is checked and `onError` receives an `AppPresenceStorageException`
+(`code = "app_presence_storage_unavailable"`).
+
+#### 1. Declare the targets in your manifest
+
+Android 11+ hides packages your app did not declare. Add each target package to the
+`<queries>` of **your app's** manifest. The SDK never requests `QUERY_ALL_PACKAGES` and
+never enumerates installed apps: it makes one `getPackageInfo(package, 0)` call per
+declared target.
+
+```xml
+<queries>
+    <package android:name="io.bearound.fixture.presence" />
+</queries>
+```
+
+#### 2. Generate and verify the build evidence
+
+Because package visibility silently filters undeclared packages, "not found" only means
+"absent" when the SDK can prove the package is declared in your **final** merged manifest.
+That proof is an asset generated at build time. Apply the script shipped in this repo in
+your **app** module, after the Android application plugin:
+
+```groovy
+apply from: "<path-to>/scripts/app-presence-evidence.gradle"
+
+// Fail the build when the evidence diverges from the final manifest:
+tasks.named("check") { dependsOn("verifyAppPresenceArtifactRelease") }
+```
+
+It generates `bearound_app_presence_declarations.json` (applicationId + the exact
+`<queries><package>` set) for every variant, and registers
+`verifyAppPresenceArtifact<Variant>` (final APK, uses `aapt2`) and
+`verifyAppPresenceBundle<Variant>` (final AAB, needs `bundletool`). Both run
+`scripts/verify_app_presence_artifact.py` (`python3` on PATH) and fail when the asset is
+missing or its package set differs from the final manifest. Wire them into your release
+build and CI: removing the hook leaves the integration non-conformant. The evidence is a
+verifiable build product, not a cryptographic authorization.
+
+#### What each result means (Android)
+
+| Situation | `state` | `present` | `reason` |
+|---|---|---|---|
+| Declared, evidence valid, package installed | `PRESENT` | `true` | `null` |
+| Declared, evidence valid, `NameNotFoundException` | `ABSENT` | `false` | `null` |
+| Evidence asset missing, malformed or for another applicationId (PackageManager not called) | `UNKNOWN` | `null` | `DECLARATION_UNVERIFIED` |
+| Package not in the evidence | `UNKNOWN` | `null` | `NOT_DECLARED` |
+| `SecurityException` or any other lookup error | `UNKNOWN` | `null` | `QUERY_FAILED` |
+| Target has no `androidPackageName` | `UNKNOWN` | `null` | `UNSUPPORTED_PLATFORM` |
+
+Every round delivers a **complete** snapshot: each target once, in the configured order,
+even when nothing changed. A snapshot carries `snapshotId` (new per round),
+`configurationFingerprint` (SHA-256 of the targets), `checkedAt` (ISO 8601 UTC) and
+`cached`; each result also has its own `checkedAt` and `detectionMethod`. Assigning a
+listener replays the last compatible snapshot once with `cached = true` and its original
+ids and times; a snapshot id reaches the same listener assignment at most once. Changing
+the targets or the client hides an incompatible snapshot; only the latest snapshot per
+client is kept (no history).
+
+#### When it runs
+
+- `startScanning()` starts it **before** any Bluetooth or location check: missing
+  permissions, Bluetooth off, no beacons or no network do not block it. `configure(...)` or
+  `configureAppPresence(...)` alone never queries.
+- Then it is tried on app foreground and on the active sync timer, at most **once every
+  3600 s per client and host app**. The window is reserved durably on disk before any app
+  is checked; a crash after that still consumes the window.
+- Restarting the app does not bring the next round forward. Within the same boot the
+  persisted interval is reused (`elapsedRealtime` + `Settings.Global.BOOT_COUNT`); the wall
+  clock never releases or delays the window. After a reboot, a corrupt record, or on API 23
+  (no boot count), the first round waits one full interval from process launch; on API 23
+  that happens in every new process, so short sessions there may never refresh.
+- There is no worker, alarm, service or push of its own: while the app is suspended or
+  killed nothing runs, and hourly updates are **not** guaranteed.
+- `stopScanning()` pauses it and drops pending deliveries; a new `startScanning()` respects
+  the reservation. `enabled = false` or an empty target list deletes the snapshot but keeps
+  the cooldown, so switching settings or clients back and forth never re-opens the window.
+- Only the host's main process runs it. The business token never appears in file names,
+  logs or callbacks.
+
+#### Store policies: technical support is not publication approval
+
+This feature exists for a commercial use case. That a check works technically does **not**
+mean a store will accept it, and nothing in this SDK bypasses store review.
+
+- **Google Play**: the Package Visibility policy only allows querying installed apps when
+  it is tied to a core, user-facing function of your app, and the User Data policy forbids
+  selling or sharing that inventory for advertising or analytics monetization. Limiting the
+  number of queried apps does not remove those obligations. Declare it as required by the
+  Data safety form.
+- **Apple App Store** (iOS SDK): guideline 5.1.2(iv) forbids collecting installed-app
+  information for analytics, advertising or marketing. On iOS the check uses `canOpenURL`
+  with schemes from `LSApplicationQueriesSchemes`, bounded by a budget shared with the
+  whole host app (25 schemes by default, 50 only with build evidence of a pre-27 linked
+  SDK); `true` there means "a handler exists", not the app's identity.
+- **Consent is not an exception**: user consent or an ATT prompt does not make a forbidden
+  purpose acceptable, and another product on the market offering similar detection is not
+  evidence of authorization.
+- The absence of UI in this feature does not exempt your app from the transparency and
+  privacy disclosures that apply to it.
+
 ## API Reference
 
 ### BeAroundSDK
@@ -1082,6 +1272,10 @@ sdk.disableForegroundScanning()
 sdk.setUserProperties(properties: UserProperties)   // merges; internalId is persisted
 sdk.clearUserProperties()
 sdk.setPushToken(token: String)                     // re-registers immediately if configured
+
+// App presence (local only, opt-in; see "App presence")
+sdk.configureAppPresence(configuration: AppPresenceConfiguration): BeAroundSDK
+sdk.getLastAppPresenceSnapshot(): AppPresenceSnapshot?  // cached = true, never queries
 
 // Background reliability (Doze / OEM killers)
 sdk.reliabilityStatus(): ReliabilityStatus          // OEM ROM + aggressiveness + recommendsUserAction
@@ -1132,6 +1326,9 @@ interface BeAroundSDKListener {
     fun onEnterBeaconRegion() {}                                // rising edge: first beacon
     fun onExitBeaconRegion() {}                                 // falling edge: zone silent
     fun onActiveScanStateChanged(isActive: Boolean) {}          // duty cycle on/off
+
+    // App presence: every round + one cached replay per listener assignment
+    fun onAppPresenceUpdated(snapshot: AppPresenceSnapshot) {}
 
     // Foreground-service notification (v2.4+)
     fun onProvideNotificationContent(beacons: List<Beacon>): NotificationContent? = null

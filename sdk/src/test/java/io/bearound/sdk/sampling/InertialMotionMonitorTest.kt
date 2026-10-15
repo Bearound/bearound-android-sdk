@@ -198,8 +198,12 @@ class InertialMotionMonitorTest {
     @Suppress("DEPRECATION")
     @Test fun `background execution requires Android foreground status for the actual existing scan service`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val lifecycle = ProcessLifecycleOwner.get().lifecycle as LifecycleRegistry
-        val before = lifecycle.currentState; lifecycle.currentState = Lifecycle.State.CREATED
+        val owner = ProcessLifecycleOwner.get()
+        val registryField = owner.javaClass.declaredFields.first { it.type == LifecycleRegistry::class.java }
+            .apply { isAccessible = true }
+        val previousRegistry = registryField.get(owner)
+        val lifecycle = LifecycleRegistry(owner).also { it.currentState = Lifecycle.State.CREATED }
+        registryField.set(owner, lifecycle)
         val activity = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
         val shadow = shadowOf(activity); val previous = activity.getRunningServices(Int.MAX_VALUE)
         val running = io.bearound.sdk.background.BeaconScanService::class.java.getDeclaredField("isRunning").apply { isAccessible = true }
@@ -224,7 +228,7 @@ class InertialMotionMonitorTest {
             assertEquals(false, check.invoke(sdk))
             running.setBoolean(null, false); lifecycle.currentState = Lifecycle.State.STARTED
             assertEquals(true, check.invoke(sdk))
-        } finally { running.setBoolean(null, wasRunning); shadow.setServices(previous); lifecycle.currentState = before }
+        } finally { running.setBoolean(null, wasRunning); shadow.setServices(previous); registryField.set(owner, previousRegistry) }
     }
 
     @Test fun `slow unregister cannot hide a close completion beyond the deadline overrun`() {

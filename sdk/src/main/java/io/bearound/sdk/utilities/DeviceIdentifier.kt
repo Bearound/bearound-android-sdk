@@ -15,7 +15,8 @@ import java.util.UUID
  *      signing key + device since Android 8.
  *   2. random UUID as a fallback.
  * Once stored, the id is frozen and never recomputed — identity must stay stable for
- * the lifetime of the install (independent of advertising IDs, which the SDK no longer collects).
+ * the lifetime of the install. It is an SDK-generated install identifier, separate from
+ * the advertising ID (see AdvertisingIdCollector).
  */
 object DeviceIdentifier {
     private const val TAG = "BeAroundSDK-DeviceId"

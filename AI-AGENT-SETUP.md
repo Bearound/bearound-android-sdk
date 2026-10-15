@@ -35,9 +35,7 @@ below refine it).
    demonstration video. BUT without it, from Android 10 on, Wi-Fi observations only work
    while the app is in the FOREGROUND: a backgrounded app gets an empty scan list and the
    placeholder BSSID 02:00:00:00:00:00 — no error, nothing in logcat, and `wifis[]` simply
-   arrives empty. Measured on a real device: 25 access points dropped to zero the instant
-   the app was backgrounded, with every permission it asked for granted. Since a fleet lives
-   in the background, "foreground only" means "almost never". So: ASK ME whether Wi-Fi
+   arrives empty, even with every other permission granted. So: ASK ME whether Wi-Fi
    collection in the background matters for this app. If I say yes, add it to MY manifest
    and request it as a SEPARATE, SECOND prompt after foreground location is already granted
    (Android 11+ refuses to grant both in one dialog and sends the user to Settings). If I
@@ -189,7 +187,7 @@ Guardrails — follow strictly:
   fall back to the BearoundScan public test token — the app/build.gradle fallback is "".
 - Do NOT request ACCESS_BACKGROUND_LOCATION without asking me first — see step 2. It is
   irrelevant to beacon detection and costs a Play review, but leaving it out silently caps
-  Wi-Fi collection to the foreground, which for a real fleet is close to collecting nothing.
+  Wi-Fi collection to the foreground.
   Verify the outcome in the payload: `device.permissions.backgroundLocation`.
 - Default to plain startScanning() and strip FOREGROUND_SERVICE_CONNECTED_DEVICE
   (tools:node="remove"). Only wire the connectedDevice foreground service after asking me.

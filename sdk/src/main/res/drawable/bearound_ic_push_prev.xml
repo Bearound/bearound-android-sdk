@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Carousel "previous card" arrow. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="32dp"
+    android:height="32dp"
+    android:viewportWidth="32"
+    android:viewportHeight="32">
+    <path
+        android:fillColor="#99000000"
+        android:pathData="M16,0a16,16 0,1 1,0 32a16,16 0,1 1,0 -32z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M19.4,9.4L17.6,7.6L9.2,16L17.6,24.4L19.4,22.6L12.8,16z" />
+</vector>

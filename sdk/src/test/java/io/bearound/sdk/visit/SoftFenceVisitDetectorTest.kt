@@ -6,6 +6,7 @@ import io.bearound.sdk.BeAroundSDK
 import io.bearound.sdk.models.DataCollectionPolicy
 import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
+import io.bearound.sdk.models.WifiObservation
 import io.bearound.sdk.network.APIClient
 import io.bearound.sdk.utilities.OfflineBatchStorage
 import io.bearound.sdk.utilities.StoredBatchDrain
@@ -14,7 +15,10 @@ import io.bearound.sdk.visit.VisitTestFixtures.ORIGIN_LNG
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -45,7 +49,10 @@ class SoftFenceVisitDetectorTest {
     }
 
     /** The production queue: visit events persisted in OfflineBatchStorage and sent by its drain. */
-    private fun controller(): VisitController {
+    private fun controller(
+        wifiReader: WifiCacheReader? = null,
+        wifiAllowed: () -> Boolean = { true }
+    ): VisitController {
         val drain = StoredBatchDrain(
             storage = storage,
             permanentHttpCodes = BeAroundSDK.PERMANENT_HTTP_CODES,
@@ -67,7 +74,11 @@ class SoftFenceVisitDetectorTest {
             lastKnownFix = { currentFix },
             createDetector = { mode, tracker ->
                 assertEquals(VisitDetectionMode.SOFT_FENCE, mode)
-                SoftFenceVisitDetector(store, tracker)
+                SoftFenceVisitDetector(
+                    store,
+                    tracker,
+                    wifiReader?.let { WifiVisitRunner(tracker, it, wifiAllowed) }
+                )
             },
             clock = { now }
         )
@@ -144,5 +155,70 @@ class SoftFenceVisitDetectorTest {
         tickAt(4, fixAt(900.0), controller)
 
         assertEquals(0, payloads.size)
+    }
+
+    /** A cached scan that always shows the known access point, stamped at [now]. */
+    private fun knownApScan(reads: IntArray, apId: String = "9f3a1c02b7d4e688") = WifiCacheReader {
+        reads[0]++
+        listOf(WifiObservation(apId = apId, rssi = -55, timestamp = now), WifiObservation(apId = "ffffffffffffffff", timestamp = now))
+    }
+
+    private fun wifiTick(minutes: Long, controller: VisitController) = runBlocking {
+        now = 1_800_000_000_000L + minutes * 60_000L
+        currentFix = null // background: the platform hands out no fix
+        controller.tick("test", force = true)
+    }
+
+    @Test
+    fun `soft fence matches Wi-Fi from the cache alone and sends location-less events`() = runBlocking {
+        store.saveConfig(VisitTestFixtures.configBody(minDwellMinutes = 5, withWifiPlace = true), "etag-1", now)
+        val reads = intArrayOf(0)
+        val controller = controller(wifiReader = knownApScan(reads))
+        controller.start()
+
+        wifiTick(0, controller)
+        wifiTick(3, controller)
+        assertEquals(0, payloads.size)
+        wifiTick(6, controller) // dwell reached: arrival, dated by the first sighting
+        assertEquals(1, payloads.size)
+
+        val arrival = payloads[0]
+        assertEquals("visit", arrival.getString("syncTrigger"))
+        assertFalse(arrival.has("location"))
+        val wifis = arrival.getJSONArray("wifis")
+        assertEquals("9f3a1c02b7d4e688", wifis.getJSONObject(0).getString("apId"))
+        assertEquals(1_800_000_000_000L, wifis.getJSONObject(0).getLong("timestamp"))
+
+        // The stop belongs to Wi-Fi alone: no fix was ever involved.
+        val open = store.openStop!!
+        assertEquals(setOf(VisitSource.WIFI), open.sources)
+        assertNull(open.arrival)
+
+        // One cache read per wakeup (the start tick and three more): the detector asks nothing else.
+        assertEquals(4, reads[0])
+    }
+
+    @Test
+    fun `soft fence does not run the matcher when the host disabled Wi-Fi collection`() = runBlocking {
+        store.saveConfig(VisitTestFixtures.configBody(minDwellMinutes = 1, withWifiPlace = true), "etag-1", now)
+        val reads = intArrayOf(0)
+        var allowed = true
+        val controller = controller(wifiReader = knownApScan(reads), wifiAllowed = { allowed })
+        controller.start()
+
+        wifiTick(0, controller)
+        wifiTick(6, controller)
+        assertEquals(1, payloads.size)
+        assertNotEquals(null, store.openStop)
+        val readsBefore = reads[0]
+
+        allowed = false
+        wifiTick(8, controller)
+
+        // Nothing read, no invented departure, the Wi-Fi stop is dropped.
+        assertEquals(readsBefore, reads[0])
+        assertEquals(1, payloads.size)
+        assertNull(store.openStop)
+        assertTrue(store.lastDepartureAt == null)
     }
 }

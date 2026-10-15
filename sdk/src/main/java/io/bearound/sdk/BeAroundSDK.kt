@@ -15,12 +15,16 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import io.bearound.sdk.apppresence.AppPresenceCoordinator
 import io.bearound.sdk.background.BackgroundScanManager
 import io.bearound.sdk.background.BackgroundScheduler
 import io.bearound.sdk.background.BeaconScanService
 import io.bearound.sdk.background.ImmediateSyncWorker
 import io.bearound.sdk.interfaces.BeAroundSDKListener
 import io.bearound.sdk.interfaces.BluetoothManagerListener
+import io.bearound.sdk.models.AppPresenceConfiguration
+import io.bearound.sdk.models.AppPresenceSnapshot
+import io.bearound.sdk.models.AppPresenceValidator
 import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.BeAroundDiagnostics
 import io.bearound.sdk.models.BeaconMetadata
@@ -53,6 +57,7 @@ import io.bearound.sdk.utilities.StoredBatchDrain
 import io.bearound.sdk.utilities.PushTokenStore
 import io.bearound.sdk.utilities.RegisterStore
 import io.bearound.sdk.utilities.SDKConfigStorage
+import io.bearound.sdk.utilities.ScanLogThrottle
 import io.bearound.sdk.utilities.SecureStorage
 import io.bearound.sdk.utilities.LocationCollector
 import io.bearound.sdk.visit.GeofenceSignal
@@ -86,9 +91,6 @@ class BeAroundSDK private constructor() {
     companion object {
         private const val TAG = "BeAroundSDK"
 
-        /** Scan-log throttle window — same 10 s the iOS SDK uses. */
-        private const val SCAN_LOG_THROTTLE_MS = 10_000L
-
         /**
          * Statuses where an identical retry fails identically: the payload/credential is
          * the problem, not the transport. 413 lands here too — if a SINGLE batch still
@@ -111,10 +113,10 @@ class BeAroundSDK private constructor() {
         private const val IMMEDIATE_FLUSH_MIN_GAP_MS = 10_000L
 
         /**
-         * Anti-downgrade scan refresh (Fix B, 2026-07). OEMs on Android 13+ silently
-         * downgrade long-lived scan sessions (field-observed: requested BALANCED/LOW_LATENCY
-         * demoted to AMBIENT_DISCOVERY/OPPORTUNISTIC on Moto G35 / realme C61, shrinking
-         * listening to ~10% duty), and AOSP drops any scan older than 30 min to opportunistic.
+         * Anti-downgrade scan refresh. OEMs on Android 13+ silently
+         * downgrade long-lived scan sessions (requested BALANCED/LOW_LATENCY demoted to
+         * AMBIENT_DISCOVERY/OPPORTUNISTIC, shrinking listening duty), and AOSP drops any
+         * scan older than 30 min to opportunistic.
          * Re-registering the client restores full duty. 20 min stays safely under the AOSP
          * 30-min cliff and is far above ScanStartBudget's 4-starts/30 s throttle window.
          */
@@ -139,6 +141,14 @@ class BeAroundSDK private constructor() {
     }
 
     var listener: BeAroundSDKListener? = null
+        set(value) {
+            field = value
+            // A new assignment gets the cached app presence snapshot replayed (cached = true).
+            if (::appPresenceCoordinator.isInitialized) appPresenceCoordinator.setListener(value)
+        }
+
+    /** Local app presence feature (see [configureAppPresence]). Internal for tests. */
+    internal lateinit var appPresenceCoordinator: AppPresenceCoordinator
 
     private lateinit var context: Context
     private var configuration: SDKConfiguration? = null
@@ -587,9 +597,7 @@ class BeAroundSDK private constructor() {
         }
     }
 
-    /** Scan-log throttle state — mirrors iOS `lastScanLogSignature`/`lastScanLogAt`. */
-    private var lastScanLogSignature: String? = null
-    private var lastScanLogAt: Long = 0L
+    private val scanLogThrottle = ScanLogThrottle()
 
     private var syncRunnable: Runnable? = null
     private var scanRefreshRunnable: Runnable? = null
@@ -666,6 +674,7 @@ class BeAroundSDK private constructor() {
             offlineBatchStorage.currentTenantId = tenantFingerprint(savedConfig.businessToken)
             samplingDevice = deviceInfoCollector.collectDeviceInfo(getLocationPermissionStatus(),
                 if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off", !isInBackground)
+            appPresenceCoordinator.setBusinessToken(savedConfig.businessToken)
 
             SDKConfigStorage.loadInternalId(context)?.let { savedId ->
                 if (userProperties?.internalId == null) {
@@ -699,6 +708,13 @@ class BeAroundSDK private constructor() {
 
         // Restore foreground scan config if previously set
         foregroundScanConfig = SDKConfigStorage.loadForegroundScanConfig(context)
+
+        // App presence: restores the persisted opt-in only; nothing is queried until
+        // startScanning() activates it.
+        appPresenceCoordinator = AppPresenceCoordinator.create(context, handler) { error ->
+            dispatchToListener { it.onError(error) }
+        }
+        appPresenceCoordinator.configure(SDKConfigStorage.loadAppPresenceConfiguration(context))
 
         setupCallbacks()
         setupLifecycleObserver()
@@ -758,18 +774,14 @@ class BeAroundSDK private constructor() {
             dispatchToListener { it.onBeaconsUpdated(beaconsForListener) }
 
             // Ranged-scan log (diagnostic, persisted): one entry per composition
-            // change or every 10 s — same contract and format as iOS, so the same
+            // change or every 10 s, same contract and format as iOS, so the same
             // host UI reads both platforms identically.
-            if (enrichedBeacons.isNotEmpty()) {
-                val signature = enrichedBeacons.joinToString(", ") {
+            scanLogThrottle.detailIfDue(enrichedBeacons) {
+                enrichedBeacons.joinToString(", ") {
                     "${it.major}.${it.minor} rssi=${it.rssi}"
                 }
-                val now = System.currentTimeMillis()
-                if (signature != lastScanLogSignature || now - lastScanLogAt > SCAN_LOG_THROTTLE_MS) {
-                    lastScanLogSignature = signature
-                    lastScanLogAt = now
-                    DetectionLogStore.append(context, type = "Scan", detail = signature)
-                }
+            }?.let { detail ->
+                DetectionLogStore.append(context, type = "Scan", detail = detail)
             }
 
             // Notify if beacons detected in background
@@ -938,6 +950,9 @@ class BeAroundSDK private constructor() {
         // Foreground is where the soft fence can see at all: evaluate right away.
         tickVisitDetection("foreground", force = true)
 
+        // App presence: foreground is one of its two triggers (no-op unless active+eligible).
+        appPresenceCoordinator.tryRun()
+
         dispatchToListener { it.onAppStateChanged(isInBackground = false) }
     }
 
@@ -1020,7 +1035,10 @@ class BeAroundSDK private constructor() {
             collectLocation = collectLocation,
             collectWifi = collectWifi,
             adaptiveSamplingEnabled = adaptiveSamplingEnabled,
-            collectMotionSensors = collectMotionSensors
+            collectMotionSensors = collectMotionSensors,
+            // Carried over: configure() persists the whole configuration, and app presence
+            // is set through configureAppPresence(), not through this call.
+            appPresence = SDKConfigStorage.loadAppPresenceConfiguration(context)
         )
 
         // Applied FIRST: everything below (telemetry install, the advertising-ID fetch, the
@@ -1047,6 +1065,10 @@ class BeAroundSDK private constructor() {
         // collected for — a configure() with a DIFFERENT client's token must never drain
         // the previous client's queue through the new credential.
         offlineBatchStorage.currentTenantId = tenantFingerprint(businessToken)
+
+        // App presence is isolated per client: a token switch moves to that client's
+        // reservation and snapshot (never configures queries by itself).
+        appPresenceCoordinator.setBusinessToken(businessToken)
 
         SDKConfigStorage.saveConfiguration(context, config)
         synchronized(adaptiveLock) {
@@ -1198,7 +1220,7 @@ class BeAroundSDK private constructor() {
         this.context = context
     }
 
-    private fun registerNotificationOpenCallbacks() {
+    internal fun registerNotificationOpenCallbacks() {
         val app = context.applicationContext as? android.app.Application ?: return
         if (notificationOpenCallbacksRegisteredOn === app) return
         app.registerActivityLifecycleCallbacks(notificationOpenCallbacks)
@@ -1377,13 +1399,16 @@ class BeAroundSDK private constructor() {
      * for you. Returns `true` if the message was a Bearound wake-up (handled here); `false`
      * for third-party messages (which the host should keep handling itself).
      *
+     * A data-only push carrying `bearound_rich` (image, two images, carousel or play) is
+     * rendered by the SDK itself as a notification, whichever service forwarded it here.
+     *
      * On a Bearound push the SDK restores its config if the app was killed, restarts
      * scanning (always — a backend wake-up overrides a previous [stopScanning]) and
      * flushes pending sync — the Android counterpart of the iOS silent-push wake-up,
      * letting the backend trigger an on-demand scan + sync.
      */
     fun handleRemoteMessage(data: Map<String, String>): Boolean {
-        // Marker set by the backend FCM payload (buildFcmPayload → data["bearound"]).
+        // Marker set in the FCM data payload (data["bearound"]).
         // Guards against acting on third-party pushes routed through the same service.
         val raw = data[BEAROUND_EXTRA_KEY] ?: return false
         Log.d(TAG, "Bearound wake-up push received — restarting scan + flushing sync")
@@ -1401,20 +1426,65 @@ class BeAroundSDK private constructor() {
             if (!isConfigured) attemptConfigRestore()
             if (!isConfigured) {
                 Log.w(TAG, "Wake-up ignored - SDK not configured")
-                return true
+            } else {
+                // Push-commanded wake: restart scanning UNCONDITIONALLY and flush pending
+                // sync. A wake-up push restarts scanning even after stopScanning()
+                // (unlike the watchdog/boot self-heal paths, which only restore what was on).
+                restartScanningFromBackground()
+                performBackgroundSync()
             }
-            // Backend-commanded wake: restart scanning UNCONDITIONALLY and flush pending
-            // sync. Product decision — there is no user opt-out; stopScanning() is not a
-            // consent gate, so a wake-up push always brings the device back to scanning
-            // (unlike the watchdog/boot self-heal paths, which only restore what was on).
-            restartScanningFromBackground()
-            performBackgroundSync()
         } catch (t: Throwable) {
             Log.e(TAG, "handleRemoteMessage error: ${t.message}")
             io.bearound.sdk.telemetry.ErrorReporter.report(t, "BeAroundSDK.handleRemoteMessage")
         }
+
+        // Rich push (data-only, `bearound_rich`): the SDK builds and posts the notification
+        // itself, AFTER the wake-up above and on a worker thread (media downloads never hold
+        // the FCM callback). Past the configure gate on purpose: rendering needs no business
+        // token, and a cold start must still show the push. show() never throws.
+        if (data.containsKey(io.bearound.sdk.push.RichNotificationBuilder.KEY_RICH)) {
+            io.bearound.sdk.push.RichNotificationBuilder.show(context, data)
+        }
         return true
     }
+
+    // region App presence
+
+    /**
+     * Configures the local app presence check (opt-in; disabled with no targets by default).
+     *
+     * Invalid configurations are rejected: [BeAroundSDKListener.onError] receives an
+     * [io.bearound.sdk.models.AppPresenceConfigurationException] with code
+     * `app_presence_invalid_configuration`, only this feature is disabled and its cached
+     * snapshot is dropped; the rest of the SDK is unaffected. Disabling or emptying the
+     * targets deletes the snapshot but keeps the hourly cooldown.
+     *
+     * This call never queries by itself: rounds run while scanning is active (started by
+     * [startScanning]), on foreground and on the sync timer, at most once per hour per
+     * client. Results are delivered only to [BeAroundSDKListener.onAppPresenceUpdated];
+     * nothing is uploaded.
+     */
+    fun configureAppPresence(configuration: AppPresenceConfiguration): BeAroundSDK {
+        val error = appPresenceCoordinator.configure(configuration)
+        val effective = if (error == null) AppPresenceValidator.normalize(configuration)
+        else AppPresenceConfiguration.DISABLED
+        SDKConfigStorage.saveAppPresenceConfiguration(context, effective)
+        this.configuration = this.configuration?.copy(appPresence = effective)
+        if (error != null) {
+            // Not reported to error telemetry: a host configuration problem, local only.
+            Log.w(TAG, "App presence configuration rejected, feature disabled")
+            dispatchToListener { it.onError(error) }
+        }
+        return this
+    }
+
+    /**
+     * The last app presence snapshot compatible with the current configuration and client,
+     * with `cached = true` and its original ids and times, or null. Never queries any app.
+     */
+    fun getLastAppPresenceSnapshot(): AppPresenceSnapshot? = appPresenceCoordinator.lastSnapshot()
+
+    // endregion
 
     /** Clears all user properties, including the persisted internalId. */
     fun clearUserProperties() {
@@ -1536,6 +1606,10 @@ class BeAroundSDK private constructor() {
             return
         }
 
+        // App presence does not depend on Bluetooth, location permission or beacons:
+        // activated before anything below can fail on them.
+        appPresenceCoordinator.activate()
+
         // Enable foreground service if config provided
         if (foregroundScanConfig != null) {
             enableForegroundScanning(foregroundScanConfig)
@@ -1560,7 +1634,7 @@ class BeAroundSDK private constructor() {
         // Equivalent in spirit to iOS's CLBeaconRegion monitoring.
         backgroundScanManager.enableBackgroundScanning()
 
-        // Fix B — keep long-lived scan sessions at full duty (anti-downgrade re-register).
+        // Keep long-lived scan sessions at full duty (anti-downgrade re-register).
         startScanRefreshTimer()
 
         // Persist scanning state for recovery after kill/reboot
@@ -1661,6 +1735,8 @@ class BeAroundSDK private constructor() {
     }
 
     fun stopScanning() {
+        // App presence pauses with the session: no new round, pending deliveries dropped.
+        appPresenceCoordinator.pause()
         // Saved first: visit work queued before this call re-checks the flag under the visit
         // controller's mutex, so it cannot re-arm geofences after the stop below.
         SDKConfigStorage.saveScanningEnabled(context, false)
@@ -1842,7 +1918,7 @@ class BeAroundSDK private constructor() {
         syncRunnable = object : Runnable {
             override fun run() {
                 if (generation != samplingGeneration) return
-                syncBeacons()
+                onSyncTimerTick()
                 handler.postDelayed(this, config.syncInterval)
             }
         }
@@ -1859,8 +1935,7 @@ class BeAroundSDK private constructor() {
      * Replaces the manual 10 s-scan/10 s-pause duty cycle: that design consumed 3-4 of
      * the 5 scan-starts/30 s the OS allows BY DESIGN, so any extra start (watchdog,
      * batch revive, anti-downgrade refresh, fg/bg flip) tripped the quota and the OS
-     * silently starved every scanner for 30 s+ — field-observed on Moto G35 as
-     * "minutes without a beacon". One registration = zero start churn: the whole
+     * silently starved every scanner for 30 s+ (minutes without a beacon). One registration = zero start churn: the whole
      * budget stays available for the recovery paths, and beacons never expire inside
      * an artificial pause window.
      */
@@ -1885,11 +1960,17 @@ class BeAroundSDK private constructor() {
         syncRunnable = object : Runnable {
             override fun run() {
                 if (generation != samplingGeneration) return
-                syncBeacons()
+                onSyncTimerTick()
                 handler.postDelayed(this, config.syncInterval)
             }
         }
         handler.postDelayed(syncRunnable!!, config.syncInterval)
+    }
+
+    /** One tick of the active sync timer: beacon sync, plus the app presence trigger. */
+    private fun onSyncTimerTick() {
+        syncBeacons()
+        appPresenceCoordinator.tryRun()
     }
 
     private fun restartSyncTimer() {
@@ -1910,7 +1991,7 @@ class BeAroundSDK private constructor() {
         syncRunnable = object : Runnable {
             override fun run() {
                 if (generation != samplingGeneration) return
-                syncBeacons()
+                onSyncTimerTick()
                 handler.postDelayed(this, config.syncInterval)
             }
         }
@@ -1924,7 +2005,7 @@ class BeAroundSDK private constructor() {
     }
 
     /**
-     * Fix B — periodic anti-downgrade refresh (see [SCAN_REFRESH_INTERVAL_MS]).
+     * Periodic anti-downgrade refresh (see [SCAN_REFRESH_INTERVAL_MS]).
      *
      * Every tick re-registers the two long-lived scan clients so the platform treats them
      * as fresh sessions at full duty:
@@ -1957,13 +2038,8 @@ class BeAroundSDK private constructor() {
     /**
      * Attaches encounter-mesh data (sightings + own rotating ids) to a payload.
      *
-     * `encounterIds` is the device DECLARING ITS OWN IDENTITY, and it must go up whenever
-     * the mesh is running — not only when this device happened to see someone. It is the
-     * other half of every pair: the backend resolves a sighting reported by A into a real
-     * device only if B declared that identifier in the same window. Gating it on
-     * `sightings.isEmpty()` (as 3.8.x did) made the two halves depend on each other, so a
-     * device that saw nobody stayed anonymous and no pair could ever be closed — measured
-     * in production as zero `encounterIds` from every Android host.
+     * `encounterIds` are this device's own rotating identifiers. They are sent whenever
+     * the mesh is running, whether or not this device recorded any sighting.
      *
      * No-op (empty fields, omitted from JSON) before the mesh spins up.
      *
@@ -2019,11 +2095,8 @@ class BeAroundSDK private constructor() {
     @Volatile private var lastPresenceHeartbeatAt = 0L
 
     /**
-     * True when a scan that found nothing should still report in.
-     *
-     * The scan found no beacon and no peer — but the device has its own location, or the
-     * Wi-Fi around it, and *that* is the datum: it was here, and there was nothing here.
-     * Without this the backend cannot tell "no coverage" apart from "app not running".
+     * True when a scan that found nothing should still send a presence heartbeat (device
+     * location and Wi-Fi, subject to DataCollectionPolicy).
      *
      * Throttled by [SDKConfiguration.presenceHeartbeatIntervalMillis] (5 min by default, `0`
      * disables it) so a phone sitting still overnight does not repeat one coordinate every
@@ -2036,8 +2109,7 @@ class BeAroundSDK private constructor() {
         if (interval <= 0L) return false
         val now = System.currentTimeMillis()
         if (now - lastPresenceHeartbeatAt < interval) return false
-        // Nothing to say: no fix and no access point. Reporting an empty shell would cost a
-        // request and teach the backend nothing.
+        // Nothing to report (no fix, no access point): no request is sent.
         if (!deviceInfoCollector.hasPresenceSignal()) return false
         lastPresenceHeartbeatAt = now
         Log.d(TAG, "No beacons or peers — reporting empty scan (location/Wi-Fi)")
@@ -2112,15 +2184,9 @@ class BeAroundSDK private constructor() {
                     .map { it.first.copy(rssiSamples = null) }
             else beaconLock.withLock { collectedBeacons.values.filter { !it.alreadySynced } }
 
-            // Two reasons to upload with no beacon in hand:
-            //  - encounter mesh: the device saw other devices (throttled 60s, gated on fresh
-            //    identified sightings) — otherwise a device that only sees peers never uploads;
-            //  - empty scan: it saw nothing at all, and where it was plus the Wi-Fi around it
-            //    is the datum (throttled by presenceHeartbeatIntervalMillis).
-            // Why this payload is going up, when it is not simply "beacons were seen".
-            // Without stamping it, an encounter batch and an empty-scan report reach the
-            // backend looking exactly like an ordinary sync with nothing in it — which is
-            // precisely the distinction this release exists to make.
+            // Two reasons to upload with no beacon: encounter mesh (throttled 60s, gated on
+            // fresh sightings) and the empty-scan heartbeat (throttled by
+            // presenceHeartbeatIntervalMillis). `syncTrigger` labels which one.
             var syncTrigger: String? = null
             if (rawBeaconsToSend.isEmpty()) {
                 syncTrigger = when {
@@ -2145,8 +2211,8 @@ class BeAroundSDK private constructor() {
             // process death mid-request can no longer lose the batch (the old flow only
             // saved AFTER a failure callback — death between send and callback = data
             // gone). On success the exact id is removed; on failure the batch is already
-            // on disk for the retry drain. A lost 2xx response re-sends the batch — the
-            // known at-least-once trade-off until the backend dedupe lands.
+            // on disk for the retry drain. A lost 2xx response re-sends the batch
+            // (at-least-once delivery).
             //
             // The device context is collected BEFORE the save and persisted with the batch:
             // a retry replays where the beacons were seen, not where the device is at retry
@@ -2176,13 +2242,10 @@ class BeAroundSDK private constructor() {
                     }
             }
 
-            // Peers pulsing as VIRTUAL BEACONS ride inside `beacons[]` with the reserved
-            // major — the exact shape the backend rebuilds mesh edges from, and the only
-            // mesh port that has ever produced pairs in the field. Deliberately added
-            // AFTER the diagnostics and the durable batch: they are encounters using the
-            // beacon envelope, not detections, so they must not inflate the scan counters
-            // and must not be replayed by the offline retry drain (a rotating identity is
-            // worthless once its window has passed).
+            // Peers advertising as virtual beacons go inside `beacons[]` with the reserved
+            // major. Added after diagnostics and the durable batch: they are encounters,
+            // not detections, so they neither inflate scan counters nor get replayed by the
+            // offline retry (a rotating identity expires with its window).
             val meshBeacons = encounterMesh?.drainVirtualBeacons().orEmpty().map { it.toBeacon() }
 
             // Notify listener that sync is starting
@@ -2664,7 +2727,7 @@ class BeAroundSDK private constructor() {
         // Bluetooth scanning is always enabled in v2.2.0+
         bluetoothManager.startScanning()
 
-        // Fix B — this revive path starts the same long-lived scan sessions as
+        // This revive path starts the same long-lived scan sessions as
         // startScanning(), so it needs the same anti-downgrade refresh. Without this,
         // a process revived by the watchdog/boot receiver ran unprotected until the
         // host happened to call startScanning() again.

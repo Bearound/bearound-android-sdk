@@ -63,4 +63,17 @@ class SDKConfigurationTest {
         assertFalse(config.copy(collectMotionSensors = false).dataCollectionPolicy.motionSensorsEnabled)
     }
 
+    @Test fun `published app presence positional argument remains before appended adaptive controls`() {
+        val presence = AppPresenceConfiguration(true, listOf(AppPresenceTarget("fixture", androidPackageName = "io.bearound.fixture")))
+        val positional = SDKConfiguration("fixture-token", "fixture", ScanPrecision.MEDIUM,
+            MaxQueuedPayloads.MEDIUM, "android-native", true, 1_200_000L, 10_000L,
+            300_000L, true, false, false, presence)
+
+        assertEquals(presence, positional.appPresence)
+        assertTrue(positional.adaptiveSamplingEnabled)
+        assertEquals(null, positional.collectMotionSensors)
+        assertFalse(positional.dataCollectionPolicy.motionSensorsEnabled)
+        assertTrue(positional.copy(collectWifi = true).dataCollectionPolicy.motionSensorsEnabled)
+    }
+
 }

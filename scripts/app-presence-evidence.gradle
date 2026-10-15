@@ -1,0 +1,167 @@
+// App presence build evidence (BeAround SDK).
+//
+// Apply in the APP module, after the Android application plugin:
+//
+//     apply from: "<path>/app-presence-evidence.gradle"
+//
+// For every variant it:
+//   1. generates the asset bearound_app_presence_declarations.json from the MERGED manifest:
+//      {"schemaVersion":1,"applicationId":"<variant applicationId>","packages":[<sorted>],
+//       "manifestSha256":"<diagnostic only>"}
+//      where packages are the <queries><package android:name/> entries. The SDK reads it at
+//      runtime; without a valid asset every Android target is reported as unknown.
+//   2. registers verifyAppPresenceArtifact<Variant> (final APK) and
+//      verifyAppPresenceBundle<Variant> (final AAB, needs bundletool on PATH or the
+//      `bearound.bundletool` property). They run scripts/verify_app_presence_artifact.py,
+//      which fails when the asset is missing or diverges from the final manifest.
+//
+// Wire the verify tasks into assemble/bundle and CI yourself, e.g.
+//     tasks.named("check") { dependsOn("verifyAppPresenceArtifactRelease") }
+// The script location is resolved from this file, so keep the .py next to it, or set the
+// `bearound.appPresenceVerifier` property. `python3` must be on PATH (or set
+// `bearound.python`).
+
+import groovy.json.JsonOutput
+
+import javax.inject.Inject
+import java.security.MessageDigest
+
+abstract class GenerateAppPresenceDeclarationsTask extends DefaultTask {
+    @InputFile
+    @PathSensitive(PathSensitivity.NONE)
+    abstract RegularFileProperty getMergedManifest()
+
+    @Input
+    abstract Property<String> getApplicationId()
+
+    @OutputDirectory
+    abstract DirectoryProperty getOutputDirectory()
+
+    @TaskAction
+    void generate() {
+        File manifest = mergedManifest.get().asFile
+        def factory = javax.xml.parsers.DocumentBuilderFactory.newInstance()
+        factory.namespaceAware = true
+        def root = factory.newDocumentBuilder().parse(manifest).documentElement
+        Set<String> packages = new TreeSet<String>()
+        def children = root.childNodes
+        for (int i = 0; i < children.length; i++) {
+            def queries = children.item(i)
+            if (queries.nodeType != org.w3c.dom.Node.ELEMENT_NODE || queries.localName != "queries") continue
+            def entries = queries.childNodes
+            for (int j = 0; j < entries.length; j++) {
+                def entry = entries.item(j)
+                if (entry.nodeType != org.w3c.dom.Node.ELEMENT_NODE || entry.localName != "package") continue
+                String name = entry.getAttributeNS("http://schemas.android.com/apk/res/android", "name")
+                if (name) packages.add(name)
+            }
+        }
+        String sha = MessageDigest.getInstance("SHA-256").digest(manifest.bytes).encodeHex().toString()
+        def content = new LinkedHashMap<String, Object>()
+        content.schemaVersion = 1
+        content.applicationId = applicationId.get()
+        content.packages = new ArrayList<String>(packages)
+        content.manifestSha256 = sha
+        File dir = outputDirectory.get().asFile
+        dir.deleteDir()
+        dir.mkdirs()
+        new File(dir, "bearound_app_presence_declarations.json").setText(JsonOutput.toJson(content) + "\n", "UTF-8")
+    }
+}
+
+abstract class VerifyAppPresenceArtifactTask extends DefaultTask {
+    @InputFiles
+    @PathSensitive(PathSensitivity.NONE)
+    abstract ConfigurableFileCollection getArtifactFiles()
+
+    @Internal
+    abstract DirectoryProperty getArtifactDirectory()
+
+    @Internal
+    abstract RegularFileProperty getArtifactFile()
+
+    @Input
+    abstract Property<String> getVerifierScript()
+
+    @Input
+    abstract Property<String> getPython()
+
+    @Input
+    @Optional
+    abstract Property<String> getAapt2()
+
+    @Input
+    @Optional
+    abstract Property<String> getBundletool()
+
+    @OutputFile
+    abstract RegularFileProperty getReportFile()
+
+    @Inject
+    abstract ExecOperations getExecOperations()
+
+    @TaskAction
+    void verify() {
+        String target = artifactFile.isPresent() ? artifactFile.get().asFile.absolutePath : artifactDirectory.get().asFile.absolutePath
+        List<String> command = [python.get(), verifierScript.get(), target, "--report", reportFile.get().asFile.absolutePath]
+        if (aapt2.isPresent()) command += ["--aapt2", aapt2.get()]
+        if (bundletool.isPresent()) command += ["--bundletool", bundletool.get()]
+        execOperations.exec { it.commandLine(command) }
+    }
+}
+
+def appPresenceScriptDir = buildscript.sourceFile.parentFile
+def appPresenceVerifier = (project.findProperty("bearound.appPresenceVerifier")
+        ?: new File(appPresenceScriptDir, "verify_app_presence_artifact.py").absolutePath).toString()
+def appPresencePython = (project.findProperty("bearound.python") ?: "python3").toString()
+def appPresenceBundletool = project.findProperty("bearound.bundletool")?.toString()
+
+def appPresenceSdkDirectory = androidComponents.sdkComponents.sdkDirectory
+// Script plugins do not see the Android Gradle Plugin classes at compile time, so the
+// SingleArtifact objects are resolved through the plugin's own class loader.
+def appPresenceArtifact = { String name ->
+    androidComponents.getClass().classLoader
+            .loadClass("com.android.build.api.artifact.SingleArtifact\$" + name)
+            .getField("INSTANCE").get(null)
+}
+
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        def suffix = variant.name.capitalize()
+
+        def generate = tasks.register("generateAppPresenceDeclarations${suffix}", GenerateAppPresenceDeclarationsTask) {
+            mergedManifest.set(variant.artifacts.get(appPresenceArtifact("MERGED_MANIFEST")))
+            applicationId.set(variant.applicationId)
+            outputDirectory.set(layout.buildDirectory.dir("generated/bearoundAppPresence/${variant.name}"))
+        }
+        variant.sources.assets?.addGeneratedSourceDirectory(generate, { it.outputDirectory })
+
+        def aapt2Path = appPresenceSdkDirectory.map { sdkDir ->
+            new File(sdkDir.asFile, "build-tools/${android.buildToolsVersion}/aapt2").absolutePath
+        }
+
+        def apkDir = variant.artifacts.get(appPresenceArtifact("APK"))
+        tasks.register("verifyAppPresenceArtifact${suffix}", VerifyAppPresenceArtifactTask) {
+            group = "verification"
+            description = "Checks the app presence declaration asset against the final ${variant.name} APK manifest."
+            artifactFiles.from(apkDir)
+            artifactDirectory.set(apkDir)
+            verifierScript.set(appPresenceVerifier)
+            python.set(appPresencePython)
+            aapt2.set(aapt2Path)
+            reportFile.set(layout.buildDirectory.file("reports/bearoundAppPresence/${variant.name}-apk.json"))
+        }
+
+        def bundleFile = variant.artifacts.get(appPresenceArtifact("BUNDLE"))
+        tasks.register("verifyAppPresenceBundle${suffix}", VerifyAppPresenceArtifactTask) {
+            group = "verification"
+            description = "Checks the app presence declaration asset against the final ${variant.name} AAB base manifest."
+            artifactFiles.from(bundleFile)
+            artifactFile.set(bundleFile)
+            verifierScript.set(appPresenceVerifier)
+            python.set(appPresencePython)
+            if (appPresenceBundletool != null) bundletool.set(appPresenceBundletool)
+            reportFile.set(layout.buildDirectory.file("reports/bearoundAppPresence/${variant.name}-aab.json"))
+        }
+    }
+}

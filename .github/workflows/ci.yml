@@ -55,7 +55,7 @@ jobs:
         with:
           name: lint-report
           path: sdk/build/reports/lint-results*.html
-          retention-days: 7
+          retention-days: 3
 
   test:
     name: Run Tests
@@ -90,7 +90,7 @@ jobs:
         with:
           name: test-results
           path: sdk/build/reports/tests/
-          retention-days: 7
+          retention-days: 3
 
   build:
     name: Build SDK
@@ -142,7 +142,7 @@ jobs:
         with:
           name: sdk-aar-${{ matrix.build-type }}
           path: sdk/build/outputs/aar/sdk-${{ matrix.build-type }}.aar
-          retention-days: 7
+          retention-days: 3
 
   build-sample-app:
     name: Build Sample App
@@ -189,7 +189,7 @@ jobs:
         with:
           name: sample-app-apk
           path: app/build/outputs/apk/debug/*.apk
-          retention-days: 7
+          retention-days: 3
 
   jitpack-simulation:
     name: JitPack Build Simulation
@@ -284,7 +284,7 @@ jobs:
         with:
           name: dependency-report
           path: dependencies.txt
-          retention-days: 7
+          retention-days: 3
 
   ci-success:
     name: CI Success

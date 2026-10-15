@@ -14,15 +14,27 @@ internal object VisitTestFixtures {
     const val ORIGIN_LAT = -23.561
     const val ORIGIN_LNG = -46.656
     const val ENV_ID = "env-1"
+    const val WIFI_ENV_ID = "env-wifi"
 
     /** Meters along a meridian to degrees of latitude, with the same Earth radius as [Geo]. */
     fun metersToLatDegrees(meters: Double) = Math.toDegrees(meters / 6_371_000.0)
+
+    /** A place that carries the `knownApIds` field used for Wi-Fi visit matching. */
+    private const val WIFI_PLACE_JSON = """
+            {
+              "environmentId": "$WIFI_ENV_ID",
+              "distanceMeters": 120,
+              "geometry": { "type": "point", "lat": $ORIGIN_LAT, "lng": $ORIGIN_LNG, "radiusMeters": 60 },
+              "minDwellMinutes": 5,
+              "knownApIds": ["9f3a1c02b7d4e688", "0a1b2c3d4e5f6071"]
+            }"""
 
     fun configBody(
         enabled: Boolean = true,
         refreshAfterMeters: Double = 2500.0,
         maxAgeSeconds: Double = 21600.0,
-        minDwellMinutes: Int = 5
+        minDwellMinutes: Int = 5,
+        withWifiPlace: Boolean = false
     ) = """
         {
           "origin": { "lat": $ORIGIN_LAT, "lng": $ORIGIN_LNG },
@@ -49,7 +61,7 @@ internal object VisitTestFixtures {
                 "radiusMeters": 80
               },
               "minDwellMinutes": null
-            }
+            }${if (withWifiPlace) ",$WIFI_PLACE_JSON" else ""}
           ]
         }
     """.trimIndent()

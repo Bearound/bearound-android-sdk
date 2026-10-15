@@ -63,6 +63,9 @@ class DeviceInfoCollector(
          * coldStart=true and the field carried no signal.
          */
         private val firstPayloadOfProcess = java.util.concurrent.atomic.AtomicBoolean(true)
+
+        private val MCC_MNC = Regex("^\\d{5,6}$")
+        private const val MAX_OPERATOR_NAME_LENGTH = 64
     }
 
     private val appStartTime = System.currentTimeMillis()
@@ -84,6 +87,8 @@ class DeviceInfoCollector(
         // such, so there is no reason to hit the Wi-Fi stack twice. Skipped entirely when
         // Wi-Fi collection is off — nothing to withhold later if the value is never read.
         val wifis = if (policy.wifi) wifiCollector.collect() else emptyList()
+
+        val operator = getOperatorInfo()
 
         return UserDevice(
             deviceId = DeviceIdentifier.getDeviceId(context),
@@ -117,6 +122,9 @@ class DeviceInfoCollector(
             connectionExpensive = isConnectionExpensive(),
             deviceName = getDeviceName(),
             carrierName = getCarrierName(),
+            simMccMnc = operator.simMccMnc,
+            simOperatorName = operator.simOperatorName,
+            networkMccMnc = operator.networkMccMnc,
             availableStorageMb = getAvailableStorageMb(),
             systemLanguage = Locale.getDefault().language,
             thermalState = getThermalState(),
@@ -167,9 +175,7 @@ class DeviceInfoCollector(
      * every host app through that review — including the ones that never collect Wi-Fi.
      * Declaring it is the host's decision; making its absence visible is ours.
      *
-     * Measured in production on 2026-08-05: the same device, same session, every permission
-     * it asked for granted, went from 25 access points to zero the instant it was
-     * backgrounded — and nothing anywhere said why.
+     * Without it, a backgrounded app on Android 10+ gets an empty Wi-Fi list with no error.
      */
     private fun hasBackgroundLocation(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
@@ -429,6 +435,44 @@ class DeviceInfoCollector(
         }
     }
 
+    /**
+     * Operator codes of the SIM and of the registered network. None of these reads needs a
+     * permission. Any failure, an unready SIM or a malformed value yields null for that field.
+     */
+    @SuppressLint("MissingPermission")
+    internal fun getOperatorInfo(): OperatorInfo {
+        return try {
+            val telephonyManager =
+                context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+                    ?: return OperatorInfo()
+            val simReady = safeOperatorRead {
+                telephonyManager.simState == TelephonyManager.SIM_STATE_READY
+            } == true
+            OperatorInfo(
+                simMccMnc = if (simReady) {
+                    safeOperatorRead { telephonyManager.simOperator }?.takeIf { MCC_MNC.matches(it) }
+                } else null,
+                simOperatorName = if (simReady) {
+                    safeOperatorRead { telephonyManager.simOperatorName }
+                        ?.trim()
+                        ?.take(MAX_OPERATOR_NAME_LENGTH)
+                        ?.takeIf { it.isNotEmpty() }
+                } else null,
+                networkMccMnc =
+                    safeOperatorRead { telephonyManager.networkOperator }?.takeIf { MCC_MNC.matches(it) }
+            )
+        } catch (e: Exception) {
+            OperatorInfo()
+        }
+    }
+
+    private inline fun <T> safeOperatorRead(read: () -> T): T? =
+        try {
+            read()
+        } catch (e: Exception) {
+            null
+        }
+
     @SuppressLint("UsableSpace")
     private fun getAvailableStorageMb(): Long? {
         return try {
@@ -458,3 +502,10 @@ class DeviceInfoCollector(
         }
     }
 }
+
+/** Operator codes of the SIM and of the registered network. Every field is optional. */
+internal data class OperatorInfo(
+    val simMccMnc: String? = null,
+    val simOperatorName: String? = null,
+    val networkMccMnc: String? = null
+)

@@ -12,8 +12,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * Reads the Google Advertising ID (AAID) — the resettable, user-controlled identifier that
- * lets the same person be recognised across apps for advertising purposes.
+ * Reads the Google Advertising ID (AAID), the resettable, user-controlled identifier used
+ * for advertising.
  *
  * Four properties of the platform shape this implementation:
  *
@@ -26,10 +26,8 @@ import kotlinx.coroutines.launch
  *    synchronously.
  *
  * 3. **The first read can fail, and failing once must not be permanent.** Play Services can
- *    be slow, updating, or frozen by an aggressive OEM — measured in the field, devices that
- *    missed the first fetch reported no ID in *every* session afterwards, while devices that
- *    caught it reported one in 100% of theirs. So a failure schedules a retry with backoff
- *    instead of settling into a permanent null.
+ *    be slow, updating, or frozen by an aggressive OEM, so a failure schedules a retry with
+ *    backoff instead of settling into a permanent null.
  *
  * 4. **The ID is not immutable.** The user can reset it at any time, which is the whole point
  *    of a resettable identifier. A cached value is therefore refreshed after [TTL_SUCESSO_MS]
