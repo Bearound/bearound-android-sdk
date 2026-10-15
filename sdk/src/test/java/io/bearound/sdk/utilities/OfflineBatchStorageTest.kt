@@ -310,4 +310,17 @@ class OfflineBatchStorageTest {
         assertEquals(first, storage.loadOldestRecords(1).single().id)
     }
 
+    @Test fun `pending original inertial metadata survives reload without adding policy or raw sensor fields`() {
+        val body = JSONObject().put("sdk", JSONObject().put("appId", "fixture"))
+            .put("device", JSONObject().put("deviceId", "fixture-device")).put("beacons", JSONArray())
+            .put("sampling", JSONObject().put("version", 1).put("batchId", UUID.randomUUID().toString())
+                .put("kind", "summary").put("observedFrom", 1000).put("observedTo", 2000).put("sentAt", 3000)
+                .put("motion", JSONObject().put("state", "moving_inferred").put("source", "context_fusion")
+                    .put("confidence", "low").put("reason", "context_changed").put("observedAtMs", 2000).put("ageMs", 1000)))
+        val original = body.toString(); val id = storage.saveRequestReturningId(original)!!
+        val loaded = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }.loadAllRecords().single { it.id == id }
+        assertEquals(original, loaded.requestJson)
+        assertFalse(loaded.requestJson!!.contains("motionSensors")); assertFalse(loaded.requestJson!!.contains("dynamicRmsG"))
+    }
+
 }

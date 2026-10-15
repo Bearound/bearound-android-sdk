@@ -66,4 +66,21 @@ class DataCollectionPersistenceTest {
         assertEquals(true, loaded.collectLocation)
         assertEquals(true, loaded.collectWifi)
     }
+    @Test fun `old all off preferences do not enable a new motion collector`() {
+        SDKConfigStorage.saveConfiguration(context, SDKConfiguration("fixture-token", "io.fixture", collectLocation = false, collectWifi = false))
+        context.getSharedPreferences("bearound_sdk_config", Context.MODE_PRIVATE).edit()
+            .remove("collect_motion_sensors").remove("motion_sensors_auto").commit()
+        val restored = SDKConfigStorage.loadConfiguration(context)!!
+        assertEquals(null, restored.collectMotionSensors)
+        assertEquals(false, restored.dataCollectionPolicy.motionSensorsEnabled)
+    }
+    @Test fun `motion opt out and explicit opt in survive storage without changing old collection switches`() {
+        for (motion in listOf(false, true)) {
+            SDKConfigStorage.saveConfiguration(context, SDKConfiguration("fixture-token", "io.fixture", collectLocation = false, collectWifi = false, collectMotionSensors = motion))
+            val restored = SDKConfigStorage.loadConfiguration(context)!!
+            assertEquals(motion, restored.collectMotionSensors); assertEquals(motion, restored.dataCollectionPolicy.motionSensorsEnabled)
+            assertEquals(false, restored.collectLocation); assertEquals(false, restored.collectWifi)
+        }
+    }
+
 }

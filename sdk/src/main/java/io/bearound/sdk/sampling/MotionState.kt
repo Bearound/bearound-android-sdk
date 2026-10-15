@@ -53,6 +53,11 @@ internal data class MotionEvidence(
     val contextStable: Boolean
 )
 
+internal fun MotionEvidence.isMoving() = state == MotionState.MOVING_CONFIRMED || state == MotionState.MOVING_INFERRED
+
+internal fun isInertialMotionTuple(state: String?, source: String?, confidence: String?, reason: String?) =
+    state == "moving_inferred" && source == "context_fusion" && confidence == "low" && reason == "context_changed"
+
 internal enum class NativeMotionActivity { STILL, WALKING, RUNNING, CYCLING, VEHICLE }
 
 internal data class NativeActivityObservation(

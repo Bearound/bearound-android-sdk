@@ -30,8 +30,11 @@ import android.util.Log
 data class DataCollectionPolicy(
     val advertisingId: Boolean = true,
     val location: Boolean = true,
-    val wifi: Boolean = true
+    val wifi: Boolean = true,
+    /** Null follows the host location/Wi-Fi choices, including after copy(). */
+    val motionSensors: Boolean? = null
 ) {
+    internal val motionSensorsEnabled: Boolean get() = motionSensors ?: (location || wifi)
     companion object {
         /** Everything on — the behaviour of every SDK version before this switch existed. */
         val ALL_ENABLED = DataCollectionPolicy()

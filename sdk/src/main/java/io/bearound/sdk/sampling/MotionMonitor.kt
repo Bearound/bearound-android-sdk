@@ -31,6 +31,7 @@ internal interface MotionActivityRegistrar {
 internal class MotionMonitor(
     private val policy: AdaptiveSamplingPolicy,
     private val registrar: MotionActivityRegistrar,
+    private val collectionAllowed: () -> Boolean = { true },
     private val elapsedRealtime: () -> Long = SystemClock::elapsedRealtime
 ) {
     companion object { private val generations = AtomicLong() }
@@ -43,7 +44,7 @@ internal class MotionMonitor(
     @Synchronized
     fun start() {
         stop()
-        policy.reset()
+        policy.invalidateNative(MotionReason.STARTUP)
         startedAt = elapsedRealtime()
         lastElapsed = startedAt
         val current = generations.incrementAndGet()
@@ -66,7 +67,7 @@ internal class MotionMonitor(
         generation = null
         accepting = false
         if (previous != null) remove(previous)
-        policy.reset(MotionReason.NO_EVIDENCE)
+        policy.invalidateNative(MotionReason.NO_EVIDENCE)
     }
 
     /** Call from existing SDK ticks; it does not add a wakeup or request permission. */
@@ -114,7 +115,7 @@ internal class MotionMonitor(
     }
 
     private fun authorized(): Boolean = try {
-        registrar.availability() == MotionAvailability.AUTHORIZED
+        collectionAllowed() && registrar.availability() == MotionAvailability.AUTHORIZED
     } catch (_: Exception) {
         false
     }

@@ -185,7 +185,9 @@ data class SDKConfiguration(
      */
     val collectWifi: Boolean = true,
     val adaptiveSamplingEnabled: Boolean = true,
-    internal val restoredSyncIntervalMillis: Long? = null
+    internal val restoredSyncIntervalMillis: Long? = null,
+    /** Null follows collectLocation || collectWifi; false prevents native and raw motion access. */
+    val collectMotionSensors: Boolean? = null
 ) {
     companion object {
         internal var endpointResolver: (String) -> String = { it }
@@ -195,7 +197,8 @@ data class SDKConfiguration(
         get() = DataCollectionPolicy(
             advertisingId = collectAdvertisingId,
             location = collectLocation,
-            wifi = collectWifi
+            wifi = collectWifi,
+            motionSensors = collectMotionSensors
         )
 
     /**

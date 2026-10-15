@@ -835,4 +835,52 @@ class APIClientSamplingTest {
         }
     }
 
+    @Test fun `only the exact reserved inertial tuple is independent of disabled GPS and WiFi`() {
+        val motion = JSONObject().put("state", "moving_inferred").put("source", "context_fusion")
+            .put("confidence", "low").put("reason", "context_changed").put("observedAtMs", wall - 1000).put("ageMs", 1000)
+        val client = client(policy = { DataCollectionPolicy(location = false, wifi = false, motionSensors = true) })
+        val original = captured(client).apply { getJSONObject("sampling").put("motion", motion) }
+        assertEquals(motion.toString(), client.filterPayload(original).getJSONObject("sampling").getJSONObject("motion").toString())
+        for ((key, value) in listOf("state" to "stationary_inferred", "confidence" to "medium", "reason" to "context_stable")) {
+            val near = JSONObject(original.toString()); near.getJSONObject("sampling").getJSONObject("motion").put(key, value)
+            assertEquals("unknown", client.filterPayload(near).getJSONObject("sampling").getJSONObject("motion").getString("state"))
+        }
+    }
+    @Test fun `motion opt out filters native and inertial evidence without reading native availability or removing GPS evidence`() {
+        var availabilityReads = 0
+        val client = APIClient(config, "http://127.0.0.1:1", { DataCollectionPolicy(motionSensors = false) }, { availabilityReads++; true })
+        for (source in listOf("native_activity", "context_fusion", "fresh_location")) {
+            val original = captured(client).apply { getJSONObject("sampling").put("motion", JSONObject()
+                .put("state", "moving_inferred").put("source", source).put("confidence", "low").put("reason", "context_changed")) }
+            assertEquals(if (source == "fresh_location") "moving_inferred" else "unknown",
+                client.filterPayload(original).getJSONObject("sampling").getJSONObject("motion").getString("state"))
+        }
+        assertEquals(0, availabilityReads)
+    }
+    @Test fun `historical gzip identity fallback removes revoked inertial evidence without changing original IDs clocks or queue body`() {
+        var policy = DataCollectionPolicy(location = false, wifi = false, motionSensors = true)
+        val headers = java.util.Collections.synchronizedList(mutableListOf<Map<String, String>>())
+        withServer({ durableAck(it, true) }, onRequestHeaders = { headers += it }, statusFor = {
+            if (headers.size == 1) { policy = policy.copy(motionSensors = false); 415 } else 200
+        }) { endpoint, requests ->
+            val client = client(endpoint) { policy }; negotiateGzip(client)
+            assertEquals(endpoint, APIClient::class.java.getDeclaredField("endpoint").apply { isAccessible = true }.get(client))
+            val original = captured(client).apply { getJSONObject("sampling").put("motion", JSONObject()
+                .put("state", "moving_inferred").put("source", "context_fusion").put("confidence", "low").put("reason", "context_changed")
+                .put("observedAtMs", wall - 1000).put("ageMs", 1000))
+                getJSONObject("sampling").put("replay", JSONObject().put("fixture", true)) }.toString()
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val storage = OfflineBatchStorage(context).also { it.currentTenantId = "fixture-inertial"; it.clearAllBatches() }
+            val id = storage.saveRequestReturningId(original)!!
+            val attempts = mutableListOf<Int>()
+            assertTrue(client.sendStoredPayload(original) { attempts += it }.isSuccess)
+            assertEquals(listOf("gzip", null), headers.map { it["content-encoding"] }); assertEquals(2, attempts.size)
+            assertEquals("moving_inferred", requests[0].getJSONObject("sampling").getJSONObject("motion").getString("state"))
+            assertEquals("unknown", requests[1].getJSONObject("sampling").getJSONObject("motion").getString("state"))
+            for (key in listOf("batchId", "clock", "sentAt", "observedFrom", "observedTo", "replay"))
+                assertEquals(requests[0].getJSONObject("sampling").get(key).toString(), requests[1].getJSONObject("sampling").get(key).toString())
+            assertEquals(original, storage.loadAllRecords().single { it.id == id }.requestJson)
+        }
+    }
+
 }

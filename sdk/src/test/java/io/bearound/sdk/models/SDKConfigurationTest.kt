@@ -56,4 +56,11 @@ class SDKConfigurationTest {
         }
     }
 
+    @Test fun `appended nullable motion override preserves old positional calls and copy auto semantics`() {
+        assertTrue(config.dataCollectionPolicy.motionSensorsEnabled)
+        assertFalse(config.copy(collectLocation = false, collectWifi = false).dataCollectionPolicy.motionSensorsEnabled)
+        assertTrue(config.copy(collectLocation = false, collectWifi = false, collectMotionSensors = true).dataCollectionPolicy.motionSensorsEnabled)
+        assertFalse(config.copy(collectMotionSensors = false).dataCollectionPolicy.motionSensorsEnabled)
+    }
+
 }

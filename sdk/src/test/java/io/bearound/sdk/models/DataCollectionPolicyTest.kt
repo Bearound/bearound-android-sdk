@@ -76,4 +76,12 @@ class DataCollectionPolicyTest {
         assertTrue(DataCollectionPolicyStore.current.advertisingId)
         assertTrue(DataCollectionPolicyStore.current.wifi)
     }
+    @Test fun `implicit motion follows host switches through old copy calls while explicit choices stay independent`() {
+        assertTrue(DataCollectionPolicy().motionSensorsEnabled)
+        assertFalse(DataCollectionPolicy().copy(location = false, wifi = false).motionSensorsEnabled)
+        assertTrue(DataCollectionPolicy(location = false, wifi = false, motionSensors = true).motionSensorsEnabled)
+        assertFalse(DataCollectionPolicy(motionSensors = false).motionSensorsEnabled)
+        assertTrue(DataCollectionPolicy(location = false, wifi = true).motionSensorsEnabled)
+    }
+
 }

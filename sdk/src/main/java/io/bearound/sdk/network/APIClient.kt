@@ -10,6 +10,7 @@ import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.UserDevice
 import io.bearound.sdk.models.UserProperties
 import io.bearound.sdk.sampling.SamplingCapability
+import io.bearound.sdk.sampling.isInertialMotionTuple
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -160,9 +161,12 @@ class APIClient(
         }
         val motion = payload.optJSONObject("sampling")?.optJSONObject("motion")
         val source = motion?.optString("source")
+        val inertial = isInertialMotionTuple(motion?.optString("state"), source,
+            motion?.optString("confidence"), motion?.optString("reason"))
         if ((source == "fresh_location" && !policy.location) ||
-            (source == "context_fusion" && (!policy.location || !policy.wifi)) ||
-            (source == "native_activity" && !nativeActivityAllowed())
+            (inertial && !policy.motionSensorsEnabled) ||
+            (source == "context_fusion" && !inertial && (!policy.location || !policy.wifi)) ||
+            (source == "native_activity" && (!policy.motionSensorsEnabled || !nativeActivityAllowed()))
         ) motion?.apply {
             put("state", "unknown"); put("source", "none"); put("confidence", "none")
             put("reason", "source_disabled"); put("observedAtMs", JSONObject.NULL); put("ageMs", JSONObject.NULL)

@@ -13,7 +13,8 @@ import kotlin.math.sqrt
 internal class AdaptiveSamplingPolicy(
     private val elapsedRealtime: () -> Long = SystemClock::elapsedRealtime,
     private val clock: () -> Long = System::currentTimeMillis,
-    collectionPolicy: DataCollectionPolicy = DataCollectionPolicy.ALL_ENABLED
+    collectionPolicy: DataCollectionPolicy = DataCollectionPolicy.ALL_ENABLED,
+    private val inertialGeneration: Long = 0L
 ) {
     companion object {
         const val ACTIVITY_TTL_MS = 120_000L
@@ -29,6 +30,7 @@ internal class AdaptiveSamplingPolicy(
     private data class TimedActivity(val observation: NativeActivityObservation, val epochMs: Long)
     private data class TimedFix(val fix: DeviceLocation, val elapsedMs: Long)
     private data class TimedContext(val observation: ContextObservation, val epochMs: Long)
+    private enum class NoveltyOrigin { NATIVE, INERTIAL, LOCATION, CONTEXT }
 
     private var collectionPolicy = collectionPolicy
     private var lastClock: Long? = null
@@ -43,7 +45,12 @@ internal class AdaptiveSamplingPolicy(
     private var movingFix: TimedFix? = null
     private var noveltyAt: Long? = null
     private var noveltyReason = MotionReason.CONTEXT_CHANGED
+    private var noveltyOrigin: NoveltyOrigin? = null
     private var emptyReason = MotionReason.STARTUP
+    private val activeInertial = mutableListOf<InertialWindow>()
+    private var inertialWatermark: Long? = null
+    private var inertialEpochMs: Long? = null
+    private var corroboratedInertial: InertialWindow? = null
 
     @Synchronized
     fun reset(reason: MotionReason = MotionReason.STARTUP) {
@@ -57,17 +64,27 @@ internal class AdaptiveSamplingPolicy(
         lastWindowId = null
         movingFix = null
         noveltyAt = null
+        noveltyOrigin = null
         lastClock = null
         emptyReason = reason
+        activeInertial.clear()
+        inertialWatermark = null
+        inertialEpochMs = null
+        corroboratedInertial = null
     }
 
     @Synchronized
     fun updateCollectionPolicy(policy: DataCollectionPolicy) {
+        if (policy.motionSensorsEnabled != collectionPolicy.motionSensorsEnabled) {
+            invalidateNative(MotionReason.SOURCE_DISABLED)
+            nativeWatermark = maxOf(nativeWatermark ?: Long.MIN_VALUE, elapsedRealtime())
+            invalidateInertial()
+        }
         if (policy.location != collectionPolicy.location) {
             fixes.clear()
             movingFix = null
             locationWatermark = maxOf(locationWatermark ?: Long.MIN_VALUE, clock())
-            noveltyAt = null
+            clearNovelty(NoveltyOrigin.LOCATION)
             emptyReason = MotionReason.SOURCE_DISABLED
         }
         if (policy.wifi != collectionPolicy.wifi) {
@@ -76,7 +93,7 @@ internal class AdaptiveSamplingPolicy(
             latestContext = null
             contextWatermark = maxOf(contextWatermark ?: Long.MIN_VALUE, elapsedRealtime())
             lastWindowId = null
-            noveltyAt = null
+            clearNovelty(NoveltyOrigin.CONTEXT)
             emptyReason = MotionReason.SOURCE_DISABLED
         }
         collectionPolicy = policy
@@ -114,9 +131,13 @@ internal class AdaptiveSamplingPolicy(
             else {
                 val distance = distanceMeters(previous.fix, fix)
                 if (distance > maxOf(25.0, previous.fix.accuracy!!.toDouble() + accuracy)) {
+                    val wasMoving = movingAt(now)
                     movingFix = current.takeIf { distance / (gap / 1000.0) >= 0.8 }
-                    noveltyAt = current.elapsedMs
-                    noveltyReason = MotionReason.LOCATION_DISPLACEMENT
+                    if (!wasMoving) {
+                        noveltyAt = current.elapsedMs
+                        noveltyReason = MotionReason.LOCATION_DISPLACEMENT
+                        noveltyOrigin = NoveltyOrigin.LOCATION
+                    }
                     contexts.clear()
                     latestContext = null
                     fixes.clear()
@@ -151,6 +172,7 @@ internal class AdaptiveSamplingPolicy(
             native = native?.takeUnless { it.observation.activity == NativeMotionActivity.STILL }
             noveltyAt = observed
             noveltyReason = MotionReason.CONTEXT_CHANGED
+            noveltyOrigin = NoveltyOrigin.CONTEXT
         } else if (contexts.lastOrNull()?.let { observed - it.observation.observedAtElapsedMs!! < MIN_CONTEXT_GAP_MS } == true) {
             // A fresh sample refreshes age without moving the independent window's anchor.
             return
@@ -164,6 +186,7 @@ internal class AdaptiveSamplingPolicy(
     @Synchronized
     fun onNativeActivity(observation: NativeActivityObservation) {
         val now = now() ?: return
+        if (!collectionPolicy.motionSensorsEnabled) return
         val observed = observation.observedAtElapsedMs
         if (observed == null || now - observed !in 0..ACTIVITY_TTL_MS) {
             invalidateNative(MotionReason.CLOCK_UNCERTAIN)
@@ -176,10 +199,18 @@ internal class AdaptiveSamplingPolicy(
             emptyReason = MotionReason.NO_EVIDENCE
             return
         }
+        val wasMoving = movingAt(now)
+        if (observation.activity == NativeMotionActivity.STILL && recentInertial(now).isNotEmpty()) {
+            native = null
+            return
+        }
         native = TimedActivity(observation, clock() - (now - observed))
         if (observation.activity != NativeMotionActivity.STILL) {
-            noveltyAt = observed
-            noveltyReason = MotionReason.NATIVE_MOVING
+            if (!wasMoving) {
+                noveltyAt = observed
+                noveltyReason = MotionReason.NATIVE_MOVING
+                noveltyOrigin = NoveltyOrigin.NATIVE
+            }
             fixes.clear()
             movingFix = null
         }
@@ -188,9 +219,60 @@ internal class AdaptiveSamplingPolicy(
     @Synchronized
     fun invalidateNative(reason: MotionReason = MotionReason.PERMISSION_UNAVAILABLE) {
         native = null
-        if (noveltyReason == MotionReason.NATIVE_MOVING) noveltyAt = null
+        clearNovelty(NoveltyOrigin.NATIVE)
         emptyReason = reason
     }
+
+    @Synchronized
+    fun invalidateInertial() {
+        activeInertial.clear()
+        inertialEpochMs = null
+        corroboratedInertial = null
+        clearNovelty(NoveltyOrigin.INERTIAL)
+        inertialWatermark = maxOf(inertialWatermark ?: Long.MIN_VALUE, elapsedRealtime())
+    }
+
+    @Synchronized
+    fun observeInertial(window: InertialWindow, observedAtMs: Long? = null) {
+        val now = now() ?: return
+        if (!collectionPolicy.motionSensorsEnabled || window.generation != inertialGeneration ||
+            window.sampleCount !in 30..128 || !window.dynamicRmsG.isFinite() || window.dynamicRmsG < 0 ||
+            !window.excursionRatio.isFinite() || window.excursionRatio !in 0.0..1.0 ||
+            window.startedAtMonotonicMs < 0 || window.endedAtMonotonicMs - window.startedAtMonotonicMs !in 2_000L..3_000L ||
+            window.startedAtMonotonicMs <= (inertialWatermark ?: Long.MIN_VALUE) ||
+            now - window.endedAtMonotonicMs !in 0..5_000L) return
+        val wasMoving = movingAt(now)
+        inertialWatermark = window.endedAtMonotonicMs
+        if (window.classification != InertialClassification.ACTIVE) return
+        activeInertial.removeAll { now - it.endedAtMonotonicMs !in 0..60_000L }
+        activeInertial += window
+        while (activeInertial.size > 2) activeInertial.removeAt(0)
+        if (activeInertial.size == 2 && window.endedAtMonotonicMs - activeInertial.first().endedAtMonotonicMs in 10_000L..60_000L) {
+            corroboratedInertial = window
+            inertialEpochMs = observedAtMs ?: (clock() - (now - window.endedAtMonotonicMs))
+        }
+        native = native?.takeUnless { it.observation.activity == NativeMotionActivity.STILL }
+        if (!wasMoving && inferredInertial(now) != null) {
+            noveltyAt = window.endedAtMonotonicMs
+            noveltyReason = MotionReason.CONTEXT_CHANGED
+            noveltyOrigin = NoveltyOrigin.INERTIAL
+        }
+    }
+
+    private fun recentInertial(now: Long) = activeInertial.filter { now - it.endedAtMonotonicMs in 0..60_000L }
+
+    private fun inferredInertial(now: Long): InertialWindow? {
+        return corroboratedInertial?.takeIf { now - it.endedAtMonotonicMs in 0..60_000L }
+    }
+
+    private fun clearNovelty(origin: NoveltyOrigin) {
+        if (noveltyOrigin == origin) { noveltyAt = null; noveltyOrigin = null }
+    }
+
+    private fun movingAt(now: Long) =
+        native?.let { now - it.observation.observedAtElapsedMs!! in 0..ACTIVITY_TTL_MS &&
+            it.observation.activity != NativeMotionActivity.STILL } == true ||
+            movingFix?.let { now - it.elapsedMs in 0..LOCATION_TTL_MS } == true || inferredInertial(now) != null
 
     @Synchronized
     fun invalidateContext(reason: MotionReason = MotionReason.BLUETOOTH_UNAVAILABLE) {
@@ -198,7 +280,7 @@ internal class AdaptiveSamplingPolicy(
         latestContext = null
         contextWatermark = maxOf(contextWatermark ?: Long.MIN_VALUE, elapsedRealtime())
         lastWindowId = null
-        noveltyAt = null
+        clearNovelty(NoveltyOrigin.CONTEXT)
         emptyReason = reason
     }
 
@@ -226,7 +308,14 @@ internal class AdaptiveSamplingPolicy(
                 MotionConfidence.LOW, MotionReason.LOCATION_DISPLACEMENT, moving.fix.timestamp,
                 now - moving.elapsedMs, contextStable)
         }
-        if (activity != null) {
+        val inertial = inferredInertial(now)
+        if (inertial != null) {
+            return MotionEvidence(MotionState.MOVING_INFERRED, MotionSource.CONTEXT_FUSION,
+                MotionConfidence.LOW, MotionReason.CONTEXT_CHANGED,
+                inertialEpochMs, now - inertial.endedAtMonotonicMs, contextStable)
+        }
+        val contradictoryInertial = recentInertial(now).isNotEmpty()
+        if (activity != null && !contradictoryInertial) {
             val observed = activity.observation.observedAtElapsedMs!!
             val corroborated = context != null && contexts.size >= 2 &&
                 context.observation.observedAtElapsedMs!! > observed &&
@@ -240,7 +329,7 @@ internal class AdaptiveSamplingPolicy(
             )
         }
         val latestFix = fixes.lastOrNull()?.takeIf { now - it.elapsedMs in 0..LOCATION_TTL_MS }
-        if (contextStable && latestFix != null && fixes.size >= 3 &&
+        if (!contradictoryInertial && contextStable && latestFix != null && fixes.size >= 3 &&
             latestFix.elapsedMs - fixes.first().elapsedMs >= STABILITY_SPAN_MS &&
             fixes.all { distanceMeters(it.fix, latestFix.fix) <= maxOf(25.0, it.fix.accuracy!!.toDouble() + latestFix.fix.accuracy!!) }
         ) {
@@ -276,12 +365,12 @@ internal class AdaptiveSamplingPolicy(
         val novelty = noveltyAt?.let { now - it in 0 until NOVELTY_WINDOW_MS } == true
         val summary = when {
             novelty -> minOf(baseIntervalMs, 15_000L)
-            evidence.contextStable -> minOf(300_000L, capability.sessionTimeoutMs / 3, capability.summaryMaxIntervalMs)
-            evidence.state == MotionState.MOVING_CONFIRMED || evidence.state == MotionState.MOVING_INFERRED ->
+            evidence.isMoving() ->
                 minOf(60_000L, capability.sessionTimeoutMs / 3, capability.summaryMaxIntervalMs)
+            evidence.contextStable -> minOf(300_000L, capability.sessionTimeoutMs / 3, capability.summaryMaxIntervalMs)
             else -> baseIntervalMs
         }
-        return SamplingPlan(true, if (novelty) 30_000L else if (evidence.contextStable) 300_000L else 60_000L,
+        return SamplingPlan(true, if (novelty) 30_000L else if (evidence.isMoving()) 60_000L else if (evidence.contextStable) 300_000L else 60_000L,
             summary, live, novelty)
     }
 

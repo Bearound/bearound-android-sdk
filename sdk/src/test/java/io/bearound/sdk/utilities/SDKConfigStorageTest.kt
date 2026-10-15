@@ -50,4 +50,15 @@ class SDKConfigStorageTest {
         SDKConfigStorage.saveConfiguration(context, config)
         assertEquals(5_000L, SDKConfigStorage.loadConfiguration(context)!!.syncInterval)
     }
+    @Test fun `auto storage records its effective value while retaining copy safe auto semantics`() {
+        SDKConfigStorage.saveConfiguration(context, SDKConfiguration("fixture-token", "fixture", collectLocation = false, collectWifi = false))
+        val prefs = context.getSharedPreferences("bearound_sdk_config", Context.MODE_PRIVATE)
+        assertFalse(prefs.getBoolean("collect_motion_sensors", true)); assertTrue(prefs.getBoolean("motion_sensors_auto", false))
+        val restored = SDKConfigStorage.loadConfiguration(context)!!
+        assertEquals(null, restored.collectMotionSensors)
+        assertTrue(restored.copy(collectWifi = true).dataCollectionPolicy.motionSensorsEnabled)
+        SDKConfigStorage.saveConfiguration(context, restored.copy(collectMotionSensors = false))
+        assertFalse(SDKConfigStorage.loadConfiguration(context)!!.copy(collectWifi = true).dataCollectionPolicy.motionSensorsEnabled)
+    }
+
 }

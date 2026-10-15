@@ -211,4 +211,21 @@ class MotionMonitorTest {
             MotionTransitionDispatch.unregister(id)
         }
     }
+    @Test fun `motion opt out is checked before native availability and registration`() {
+        var reads = 0
+        val guarded = object : MotionActivityRegistrar {
+            override fun availability(): MotionAvailability { reads++; return MotionAvailability.AUTHORIZED }
+            override fun register(generation: Long, onEvent: (NativeActivityObservation) -> Unit, onResult: (Throwable?) -> Unit) { org.junit.Assert.fail("Forbidden registration") }
+            override fun unregister(generation: Long) = Unit
+        }
+        val monitor = MotionMonitor(policy, guarded, collectionAllowed = { false }, elapsedRealtime = { elapsed })
+        monitor.start(); monitor.refreshAuthorization(); assertEquals(0, reads); monitor.stop()
+    }
+    @Test fun `native monitor stop preserves already permitted fresh location inference`() {
+        policy.observeLocation(io.bearound.sdk.models.DeviceLocation(0.0, 0.0, accuracy = 10f, timestamp = 1_800_000_000_000L + elapsed, source = "fixture"))
+        elapsed += 10_000
+        policy.observeLocation(io.bearound.sdk.models.DeviceLocation(.001, 0.0, accuracy = 10f, timestamp = 1_800_000_000_000L + elapsed, source = "fixture"))
+        monitor.start(); monitor.stop(); assertEquals(MotionSource.FRESH_LOCATION, policy.evidence().source)
+    }
+
 }

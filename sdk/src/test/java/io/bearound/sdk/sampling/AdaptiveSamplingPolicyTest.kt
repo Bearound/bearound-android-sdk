@@ -391,4 +391,99 @@ class AdaptiveSamplingPolicyTest {
         assertEquals(fallback, policy.plan(60_000L, capability.copy(sessionTimeoutMs = 179_999L)))
         assertEquals(fallback, policy.plan(60_000L, capability.copy(advertisedServicesCadenceMs = 0L)))
     }
+    private fun inertial(end: Long = elapsed, classification: InertialClassification = InertialClassification.ACTIVE,
+                         generation: Long = 0L) = InertialWindow(generation, end - 3_000, end, 61, .1, .5, classification)
+
+    @Test fun `co moving stable BLE and rejected GPS100 permit only corroborated low confidence movement`() {
+        stableContext(); policy.observeLocation(fix(accuracy = 100f))
+        policy.observeInertial(inertial()); assertEquals(MotionState.UNKNOWN, policy.evidence().state)
+        advance(30_000); context(); policy.observeInertial(inertial())
+        val evidence = policy.evidence()
+        assertTrue(evidence.contextStable); assertEquals(MotionState.MOVING_INFERRED, evidence.state)
+        assertEquals(MotionSource.CONTEXT_FUSION, evidence.source); assertEquals(MotionReason.CONTEXT_CHANGED, evidence.reason)
+        assertEquals(MotionConfidence.LOW, evidence.confidence); assertEquals(0L, evidence.ageMs)
+        assertEquals(5_000L, policy.plan(60_000, capability.copy(advertisedServicesCadenceMs = 5_000)).liveIntervalMs)
+    }
+
+    @Test fun `corroborated movement TTL follows the newest original end after its first corroborator ages out`() {
+        val start = elapsed; advance(3_000); policy.observeInertial(inertial())
+        advance(30_000); policy.observeInertial(inertial()); val observed = policy.evidence().observedAtMs
+        advance(31_000)
+        assertEquals(MotionState.MOVING_INFERRED, policy.evidence().state); assertEquals(31_000L, policy.evidence().ageMs)
+        assertEquals(observed, policy.evidence().observedAtMs)
+        advance(29_000); assertEquals(MotionState.MOVING_INFERRED, policy.evidence().state)
+        assertEquals(60_000L, policy.evidence().ageMs)
+        advance(1); assertEquals(start + 93_001, elapsed); assertEquals(MotionState.UNKNOWN, policy.evidence().state)
+    }
+
+    @Test fun `quiet ambiguous replay wrong generation overlap and stale windows cannot renew movement`() {
+        policy.observeInertial(inertial()); advance(30_000); val active = inertial(); policy.observeInertial(active)
+        val observed = policy.evidence().observedAtMs
+        advance(30_000)
+        policy.observeInertial(inertial(classification = InertialClassification.QUIET))
+        policy.observeInertial(inertial(classification = InertialClassification.AMBIGUOUS))
+        policy.observeInertial(active); policy.observeInertial(inertial(generation = 1))
+        policy.observeInertial(inertial(end = elapsed - 5_001))
+        assertEquals(observed, policy.evidence().observedAtMs); assertEquals(30_000L, policy.evidence().ageMs)
+        advance(30_001); assertEquals(MotionState.UNKNOWN, policy.evidence().state)
+    }
+
+    @Test fun `a single active burst contradicts native STILL without ever confirming stationary`() {
+        stableContext(withFixes = true); native(NativeMotionActivity.STILL)
+        policy.observeInertial(inertial())
+        assertFalse(policy.evidence().state in listOf(MotionState.STATIONARY_CANDIDATE, MotionState.STATIONARY_CONFIRMED, MotionState.STATIONARY_INFERRED))
+        advance(1); native(NativeMotionActivity.STILL); advance(60_000); context()
+        assertEquals(MotionState.UNKNOWN, policy.evidence().state)
+        native(NativeMotionActivity.STILL); advance(60_000); context()
+        assertEquals(MotionState.STATIONARY_CONFIRMED, policy.evidence().state)
+    }
+
+    @Test fun `sustained inertial and later native movement never renew the original novelty window`() {
+        stableContext(); policy.observeInertial(inertial())
+        advance(30_000); context(); policy.observeInertial(inertial()); val began = elapsed
+        repeat(3) { advance(30_000); context(); policy.observeInertial(inertial()) }
+        assertEquals(began + 90_000, elapsed)
+        assertTrue(policy.evidence().contextStable); assertEquals(60_000L, policy.plan(60_000, capability).contextIntervalMs)
+        assertEquals(60_000L, policy.plan(60_000, capability).summaryIntervalMs)
+        native(NativeMotionActivity.WALKING)
+        assertEquals(MotionState.MOVING_CONFIRMED, policy.evidence().state)
+        assertEquals(60_000L, policy.plan(60_000, capability).contextIntervalMs)
+        assertEquals(5_000L, policy.plan(5_000, capability).liveIntervalMs)
+        assertEquals(60_000L, policy.plan(60_000, capability.copy(advertisedServicesCadenceMs = 60_000, mapTtlMs = 300_000)).liveIntervalMs)
+    }
+
+    @Test fun `motion opt out removes sensor novelty immediately but preserves independent BLE and GPS attention`() {
+        policy.observeInertial(inertial()); advance(30_000); policy.observeInertial(inertial())
+        assertEquals(30_000L, policy.plan(60_000, capability).contextIntervalMs)
+        policy.updateCollectionPolicy(DataCollectionPolicy(motionSensors = false))
+        assertEquals(MotionState.UNKNOWN, policy.evidence().state)
+        assertEquals(60_000L, policy.plan(60_000, capability).contextIntervalMs)
+        context(ap = "first"); advance(1); context(ap = "new")
+        policy.updateCollectionPolicy(DataCollectionPolicy(motionSensors = true)); policy.updateCollectionPolicy(DataCollectionPolicy(motionSensors = false))
+        assertEquals(30_000L, policy.plan(60_000, capability).contextIntervalMs)
+        policy.reset(); policy.observeLocation(fix()); advance(10_000); policy.observeLocation(fix(latitude = .001))
+        policy.updateCollectionPolicy(DataCollectionPolicy(motionSensors = true)); policy.updateCollectionPolicy(DataCollectionPolicy(motionSensors = false))
+        assertEquals(MotionSource.FRESH_LOCATION, policy.evidence().source)
+        assertEquals(30_000L, policy.plan(60_000, capability).contextIntervalMs)
+    }
+
+    @Test fun `inertial lifecycle invalidation removes only its own contribution and novelty`() {
+        policy.observeInertial(inertial()); advance(30_000); policy.observeInertial(inertial())
+        policy.invalidateInertial()
+        assertEquals(MotionState.UNKNOWN, policy.evidence().state); assertEquals(60_000L, policy.plan(60_000, capability).contextIntervalMs)
+        policy.observeLocation(fix()); advance(10_000); policy.observeLocation(fix(latitude = .001))
+        policy.invalidateInertial()
+        assertEquals(MotionSource.FRESH_LOCATION, policy.evidence().source)
+        assertEquals(30_000L, policy.plan(60_000, capability).contextIntervalMs)
+    }
+
+    @Test fun `wall clock changes after inference never rejuvenate the frozen sensor epoch or monotonic TTL`() {
+        policy.observeInertial(inertial()); advance(30_000); val epoch = wall - 123
+        policy.observeInertial(inertial(), epoch); val observed = policy.evidence().observedAtMs
+        wall += 500_000; elapsed += 1_000
+        assertEquals(epoch, observed); assertEquals(observed, policy.evidence().observedAtMs)
+        assertEquals(1_000L, policy.evidence().ageMs)
+        elapsed += 59_001; assertEquals(MotionState.UNKNOWN, policy.evidence().state)
+    }
+
 }

@@ -200,6 +200,8 @@ class BeAroundSDK private constructor() {
     private var samplingGenerationStartedAtElapsed = SystemClock.elapsedRealtime()
     private var samplingPolicy = AdaptiveSamplingPolicy()
     private var motionMonitor: MotionMonitor? = null
+    private var inertialMonitor: InertialMotionMonitor? = null
+    private val inertialStartBudget = InertialStartBudget()
     private var observationSummary = ObservationSummary()
     private var samplingDevice: UserDevice? = null
     private var samplingContextJson: String? = null
@@ -222,12 +224,14 @@ class BeAroundSDK private constructor() {
             "android.permission.NEARBY_WIFI_DEVICES") == PackageManager.PERMISSION_GRANTED
         val wifi = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_WIFI_STATE) == PackageManager.PERMISSION_GRANTED &&
             (fineLocation || nearbyWifi)
-        return configured.copy(location = configured.location && location, wifi = configured.wifi && wifi)
+        return configured.copy(location = configured.location && location, wifi = configured.wifi && wifi,
+            motionSensors = configured.motionSensorsEnabled)
     }
 
     private fun newAPIClient(config: SDKConfiguration) = APIClient(config,
         policyProvider = ::effectiveCollectionPolicy,
-        nativeActivityAllowed = { runCatching { PlayServicesMotionRegistrar(context).availability() == MotionAvailability.AUTHORIZED }.getOrDefault(false) }).also { client ->
+        nativeActivityAllowed = { config.adaptiveSamplingEnabled && DataCollectionPolicyStore.current.motionSensorsEnabled &&
+            runCatching { PlayServicesMotionRegistrar(context).availability() == MotionAvailability.AUTHORIZED }.getOrDefault(false) }).also { client ->
         val generation = samplingGeneration
         client.bindGeneration { generation == samplingGeneration && apiClient === client }
     }
@@ -240,8 +244,10 @@ class BeAroundSDK private constructor() {
         activeSync = null
         motionMonitor?.stop()
         motionMonitor = null
+        inertialMonitor?.stop()
+        inertialMonitor = null
         apiClient = configuration?.let(::newAPIClient)
-        samplingPolicy = AdaptiveSamplingPolicy(collectionPolicy = effectiveCollectionPolicy())
+        samplingPolicy = AdaptiveSamplingPolicy(collectionPolicy = effectiveCollectionPolicy(), inertialGeneration = samplingGeneration)
         observationSummary = ObservationSummary()
         samplingDevice = null
         samplingContextJson = null
@@ -258,8 +264,62 @@ class BeAroundSDK private constructor() {
     }
 
     private fun startMotionMonitor() = synchronized(adaptiveLock) {
-        if (configuration?.adaptiveSamplingEnabled != true || motionMonitor != null) return@synchronized
-        motionMonitor = MotionMonitor(samplingPolicy, PlayServicesMotionRegistrar(context)).also { it.start() }
+        val allowed = configuration?.adaptiveSamplingEnabled == true &&
+            DataCollectionPolicyStore.current.motionSensorsEnabled && wasScanningEnabled()
+        if (!allowed) {
+            motionMonitor?.stop(); motionMonitor = null
+            inertialMonitor?.stop(); inertialMonitor = null
+            samplingPolicy.updateCollectionPolicy(effectiveCollectionPolicy())
+            return@synchronized
+        }
+        if (motionMonitor == null) motionMonitor = MotionMonitor(samplingPolicy, PlayServicesMotionRegistrar(context),
+            collectionAllowed = { configuration?.adaptiveSamplingEnabled == true && DataCollectionPolicyStore.current.motionSensorsEnabled })
+            .also { it.start() }
+        else motionMonitor?.refreshAuthorization()
+        if (!inertialExecutionAllowed()) {
+            inertialMonitor?.stop(); inertialMonitor = null
+            samplingPolicy.invalidateInertial()
+            return@synchronized
+        }
+        if (inertialMonitor == null) {
+            val generation = samplingGeneration
+            inertialMonitor = InertialMotionMonitor(generation,
+                eligible = { generation == samplingGeneration && wasScanningEnabled() &&
+                    configuration?.adaptiveSamplingEnabled == true && DataCollectionPolicyStore.current.motionSensorsEnabled && inertialExecutionAllowed() },
+                providerFactory = { AndroidInertialSensorProvider(context, handler) },
+                schedule = { delay, action ->
+                    val task = Runnable { action() }
+                    handler.postDelayed(task, delay)
+                    val cancel: () -> Unit = { handler.removeCallbacks(task) }
+                    cancel
+                },
+                onWindow = { window, observedAtMs -> synchronized(adaptiveLock) {
+                    if (generation == samplingGeneration && wasScanningEnabled() &&
+                        configuration?.adaptiveSamplingEnabled == true && DataCollectionPolicyStore.current.motionSensorsEnabled && inertialExecutionAllowed()) {
+                        val wasMoving = samplingPolicy.evidence().isMoving()
+                        samplingPolicy.observeInertial(window, observedAtMs)
+                        if (!wasMoving && samplingPolicy.evidence().isMoving()) {
+                            closeSamplingWindow("transition", "context_changed")?.let { persistObservation(it) }
+                            samplingContextId = java.util.UUID.randomUUID().toString()
+                        }
+                    }
+                } }, budget = inertialStartBudget,
+                onClockUncertain = { synchronized(adaptiveLock) {
+                    if (generation == samplingGeneration) samplingPolicy.invalidateInertial()
+                } }).also { it.start() }
+        } else inertialMonitor?.refresh()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun inertialExecutionAllowed(): Boolean {
+        if (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) return true
+        if (foregroundScanConfig?.enabled != true || !BeaconScanService.isRunning) return false
+        return runCatching {
+            val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+            manager?.getRunningServices(Int.MAX_VALUE)?.any {
+                it.foreground && it.pid == android.os.Process.myPid() && it.service.className == BeaconScanService::class.java.name
+            } == true
+        }.getOrDefault(false)
     }
 
     private fun currentSamplingPlan(): SamplingPlan {
@@ -353,7 +413,7 @@ class BeAroundSDK private constructor() {
             physicalSamples[key] = beacon to source
             DiagnosticsStore.recordObservation(unique = 1)
             if (!config.adaptiveSamplingEnabled) return
-            motionMonitor?.refreshAuthorization()
+            startMotionMonitor()
             val plan = currentSamplingPlan()
             val client = apiClient ?: return
             val capability = client.samplingCapability(deviceId)
@@ -873,6 +933,8 @@ class BeAroundSDK private constructor() {
             restartSyncTimer()
         }
 
+        startMotionMonitor()
+
         // Foreground is where the soft fence can see at all: evaluate right away.
         tickVisitDetection("foreground", force = true)
 
@@ -891,6 +953,7 @@ class BeAroundSDK private constructor() {
         if (fgConfig?.enabled == true && isScanning) {
             BeaconScanService.start(context, fgConfig)
         }
+        startMotionMonitor()
         
         if (isScanning) {
             restartSyncTimer()
@@ -923,7 +986,8 @@ class BeAroundSDK private constructor() {
         collectAdvertisingId: Boolean = true,
         collectLocation: Boolean = true,
         collectWifi: Boolean = true,
-        adaptiveSamplingEnabled: Boolean = true
+        adaptiveSamplingEnabled: Boolean = true,
+        collectMotionSensors: Boolean? = null
     ): BeAroundSDK {
         // NEVER-CRASH-THE-HOST: an embedded SDK must not throw from a public entry
         // point — a host wired to an empty BuildConfig field would crash on startup.
@@ -955,7 +1019,8 @@ class BeAroundSDK private constructor() {
             collectAdvertisingId = collectAdvertisingId,
             collectLocation = collectLocation,
             collectWifi = collectWifi,
-            adaptiveSamplingEnabled = adaptiveSamplingEnabled
+            adaptiveSamplingEnabled = adaptiveSamplingEnabled,
+            collectMotionSensors = collectMotionSensors
         )
 
         // Applied FIRST: everything below (telemetry install, the advertising-ID fetch, the
@@ -1388,6 +1453,7 @@ class BeAroundSDK private constructor() {
         if (BeaconScanService.isRunning) {
             BeaconScanService.stop(context)
         }
+        startMotionMonitor()
     }
 
     val isForegroundScanningEnabled: Boolean
@@ -1477,7 +1543,6 @@ class BeAroundSDK private constructor() {
 
         // Scanning mode is automatic based on app state (foreground/background)
         resetAdaptiveSampling()
-        startMotionMonitor()
         beaconManager.startScanning()
         // Encounter layer rides the same scan: advertise + recognise other SDK hosts.
         encounterMesh?.start()
@@ -1500,6 +1565,7 @@ class BeAroundSDK private constructor() {
 
         // Persist scanning state for recovery after kill/reboot
         SDKConfigStorage.saveScanningEnabled(context, true)
+        startMotionMonitor()
 
         // v2.5 — Bluetooth metadata scanning is gated by beacon region presence. It will
         // be started inside onActiveScanShouldStart when the first beacon is detected, and
@@ -2017,7 +2083,7 @@ class BeAroundSDK private constructor() {
 
             if (configuration?.adaptiveSamplingEnabled == true && !wasScanningEnabled()) return true
 
-            motionMonitor?.refreshAuthorization()
+            startMotionMonitor()
             if (currentSamplingPlan().separationEnabled && synchronized(adaptiveLock) { observationSummary.hasPending() }) {
                 return performAdaptiveSync(client, forceBackground)
             }
