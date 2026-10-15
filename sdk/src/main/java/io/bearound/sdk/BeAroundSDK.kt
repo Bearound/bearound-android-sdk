@@ -621,7 +621,6 @@ class BeAroundSDK private constructor() {
             if (generation != samplingGeneration) return false
             DiagnosticsStore.recordSync(result.isSuccess, beaconCount)
             dispatchToListener { it.onSyncCompleted(beaconCount, result.isSuccess, result.exceptionOrNull() as? Exception) }
-            if (result.isSuccess) PushTokenStore.markSent(JSONObject(observation.payloadJson).optJSONObject("device")?.optString("pushToken")?.takeIf { it.isNotBlank() })
             if (result.isSuccess) offlineBatchStorage.removeBatch(observation.batchId) else ok = false
             if (result.isSuccess) { consecutiveFailures = 0; lastFailureTime = null }
             else { consecutiveFailures++; lastFailureTime = System.currentTimeMillis() }
@@ -2530,9 +2529,10 @@ class BeAroundSDK private constructor() {
                 send = legacy@{ beacons, device, syncTrigger ->
                     if (generation != samplingGeneration) return@legacy Result.failure(kotlinx.coroutines.CancellationException("Sampling generation changed"))
                     val result = postStoredBatch(client, info, beacons, device, syncTrigger)
+                    if (generation == samplingGeneration && result.isSuccess && beacons.isNotEmpty()) PushTokenStore.markSent(device.pushToken)
                     if (generation != samplingGeneration) Result.failure(kotlinx.coroutines.CancellationException("Sampling generation changed")) else result
                 },
-                observer = drainObserver(fresh, generation),
+                observer = drainObserver(generation),
                 sendCaptured = captured@{ record, manifest ->
                     if (generation != samplingGeneration) return@captured Result.failure(kotlinx.coroutines.CancellationException("Sampling generation changed"))
                     val original = JSONObject(record.requestJson ?: error("Missing captured payload"))
@@ -2547,7 +2547,11 @@ class BeAroundSDK private constructor() {
                         lagMs = (System.currentTimeMillis() - sampling.getLong("observedTo")).coerceAtLeast(0L),
                         archiveOnly = result.getOrNull()?.projection == "archive_only",
                         manifestGap = result.getOrNull()?.projection == "pending_history", httpAttempts = httpAttempts)
-                    if (result.isSuccess) PushTokenStore.markSent(original.optJSONObject("device")?.optString("pushToken")?.takeIf { it.isNotBlank() })
+                    if (result.isSuccess && sampling == null) {
+                        val device = original.optJSONObject("device")
+                        PushTokenStore.markSent(device?.optString("pushToken")?.takeIf { it.isNotBlank() },
+                            device?.optString("sdkVersion").orEmpty())
+                    }
                     result.map { Unit }
                 }
             )
@@ -2579,7 +2583,7 @@ class BeAroundSDK private constructor() {
      * The drain's side effects: listener, diagnostics, detection log and backoff. A request
      * without beacons (a visit) touches none of them, as when visits had their own outbox.
      */
-    private fun drainObserver(fresh: io.bearound.sdk.models.UserDevice, generation: Long) = object : StoredBatchDrain.Observer {
+    private fun drainObserver(generation: Long) = object : StoredBatchDrain.Observer {
         override fun onRequestStarted(beaconCount: Int) {
             if (generation != samplingGeneration || beaconCount == 0) return
             dispatchToListener { it.onSyncStarted(beaconCount) }
@@ -2591,7 +2595,6 @@ class BeAroundSDK private constructor() {
                 consecutiveFailures = 0
                 lastFailureTime = null
             }
-            PushTokenStore.markSent(fresh.pushToken)
             DiagnosticsStore.recordSync(success = true, beaconCount = beaconCount)
             DetectionLogStore.append(
                 context,

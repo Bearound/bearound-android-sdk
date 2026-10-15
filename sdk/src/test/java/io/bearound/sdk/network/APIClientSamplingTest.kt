@@ -134,6 +134,18 @@ class APIClientSamplingTest {
         if (result != kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) continuation.resume(result as Boolean?)
     }
 
+    private suspend fun registerSdkDevice(sdk: BeAroundSDK, force: Boolean) = suspendCoroutine<Unit> { continuation ->
+        val method = BeAroundSDK::class.java.getDeclaredMethod("access\$registerDeviceIfNeeded", BeAroundSDK::class.java,
+            Boolean::class.javaPrimitiveType, kotlin.coroutines.Continuation::class.java)
+        val result = method.invoke(null, sdk, force, continuation)
+        if (result != kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) continuation.resume(Unit)
+    }
+
+    private fun resetPushToken() {
+        listOf("io.bearound.sdk.pushToken", "io.bearound.sdk.pushTokenLastSent",
+            "io.bearound.sdk.pushTokenLastSentAt", "io.bearound.sdk.pushTokenLastSentSdkVersion").forEach { SecureStorage.delete(it) }
+    }
+
     @Test fun `normal registration negotiates capability without another discovery call`() = withServer({ response() }) { endpoint, requests ->
         val client = client(endpoint)
         var success = false
@@ -962,6 +974,144 @@ class APIClientSamplingTest {
             }
         }
 
+    }
+
+    @Test fun `SDK push captured retry preserves rotation after failed registration while v1 acknowledges its actual token`() {
+        var attempt = 0
+        withServer({ "{}" }, statusFor = { if (++attempt == 2) 503 else 200 }) { endpoint, requests ->
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            SecureStorage.initialize(context); resetPushToken()
+            io.bearound.sdk.utilities.RegisterStore.clear(context)
+            val previousPolicy = io.bearound.sdk.models.DataCollectionPolicyStore.current
+            val configuration = config.copy(adaptiveSamplingEnabled = false, collectAdvertisingId = false,
+                collectLocation = false, collectWifi = false, collectMotionSensors = false)
+            io.bearound.sdk.models.DataCollectionPolicyStore.apply(configuration.dataCollectionPolicy)
+            try {
+                val client = APIClient(configuration, endpoint)
+                val storage = OfflineBatchStorage(context).also { it.currentTenantId = "push-tenant"; it.clearAllBatches() }
+                val originalDevice = VisitTestFixtures.device().copy(pushToken = "original-A")
+                val sdk = sdkForStoredDrain(context, configuration, client, storage, originalDevice, UserProperties(), currentSources = true)
+                io.bearound.sdk.utilities.PushTokenStore.setToken("original-A")
+                registerSdkDevice(sdk, true)
+                assertNull(io.bearound.sdk.utilities.PushTokenStore.tokenForPayload())
+                val beacon = Beacon(UUID.randomUUID(), 0, 188, -61, Beacon.Proximity.NEAR, 1.0, Date())
+                val original = client.buildPayload(listOf(beacon), SDKInfo(appId = configuration.appId, build = 1),
+                    originalDevice.copy(deviceId = sdk.deviceId), null).toString()
+                assertNotNull(storage.saveRequestReturningId(original))
+                io.bearound.sdk.utilities.PushTokenStore.setToken("rotated-B")
+                BeAroundSDK::class.java.declaredFields.single { it.type == io.bearound.sdk.models.UserDevice::class.java }
+                    .apply { isAccessible = true }.set(sdk, originalDevice.copy(deviceId = sdk.deviceId, pushToken = "rotated-B"))
+                registerSdkDevice(sdk, true)
+                assertEquals("rotated-B", io.bearound.sdk.utilities.PushTokenStore.tokenForPayload())
+
+                assertEquals(true, drainSdkStoredBatches(sdk))
+
+                assertEquals(listOf("original-A", "rotated-B", "original-A"), requests.map { it.getJSONObject("device").getString("pushToken") })
+                assertEquals("rotated-B", io.bearound.sdk.utilities.PushTokenStore.tokenForPayload())
+                registerSdkDevice(sdk, false)
+                assertEquals(3, requests.size)
+                io.bearound.sdk.utilities.PushTokenStore.setToken("current-C")
+                assertNotNull(storage.saveBatchReturningId(listOf(beacon)))
+                assertEquals(true, drainSdkStoredBatches(sdk))
+                assertEquals("current-C", requests.last().getJSONObject("device").getString("pushToken"))
+                assertNull(io.bearound.sdk.utilities.PushTokenStore.tokenForPayload())
+            } finally {
+                io.bearound.sdk.models.DataCollectionPolicyStore.apply(previousPolicy)
+            }
+        }
+    }
+
+    @Test fun `SDK push captured legacy retry acknowledges its original token and SDK version`() = withServer({ "{}" }) { endpoint, requests ->
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        SecureStorage.initialize(context)
+        val configuration = config.copy(adaptiveSamplingEnabled = false)
+        val client = APIClient(configuration, endpoint)
+        val storage = OfflineBatchStorage(context).also { it.currentTenantId = "push-tenant"; it.clearAllBatches() }
+        for (capturedVersion in listOf(io.bearound.sdk.BuildConfig.SDK_VERSION, "previous-sdk", null)) {
+            resetPushToken()
+            io.bearound.sdk.utilities.PushTokenStore.setToken("captured-A")
+            val device = VisitTestFixtures.device().copy(pushToken = "captured-A")
+            val beacon = Beacon(UUID.randomUUID(), 0, 188, -61, Beacon.Proximity.NEAR, 1.0, Date())
+            val original = client.buildPayload(listOf(beacon), SDKInfo(appId = configuration.appId, build = 1), device, null)
+            if (capturedVersion == null) original.getJSONObject("device").remove("sdkVersion")
+            else original.getJSONObject("device").put("sdkVersion", capturedVersion)
+            assertNotNull(storage.saveRequestReturningId(original.toString()))
+            val sdk = sdkForStoredDrain(context, configuration, client, storage, device.copy(pushToken = null), UserProperties())
+
+            assertEquals(true, drainSdkStoredBatches(sdk))
+
+            assertEquals("captured-A", requests.last().getJSONObject("device").getString("pushToken"))
+            assertEquals(capturedVersion.orEmpty(), SecureStorage.retrieve("io.bearound.sdk.pushTokenLastSentSdkVersion"))
+            assertEquals(if (capturedVersion == io.bearound.sdk.BuildConfig.SDK_VERSION) null else "captured-A",
+                io.bearound.sdk.utilities.PushTokenStore.tokenForPayload())
+        }
+    }
+
+    @Test fun `SDK sampling replay ACK never acknowledges a token as registered`() = withServer({ durableAck(it) }) { endpoint, requests ->
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        SecureStorage.initialize(context)
+        val client = client(endpoint)
+        val storage = OfflineBatchStorage(context).also { it.currentTenantId = "push-tenant"; it.clearAllBatches() }
+        val device = VisitTestFixtures.device().copy(pushToken = "pending-A")
+        val sdk = sdkForStoredDrain(context, config, client, storage, device, UserProperties())
+        client.observeResponse(response(), sdk.deviceId, wall, elapsed)
+        for (kind in listOf("summary", "live", "transition")) {
+            resetPushToken(); io.bearound.sdk.utilities.PushTokenStore.setToken("pending-A")
+            val payload = captured(client).apply {
+                getJSONObject("device").put("deviceId", sdk.deviceId).put("pushToken", "pending-A")
+                getJSONObject("sampling").put("kind", kind)
+            }
+            assertNotNull(storage.saveRequestReturningId(payload.toString()))
+
+            assertEquals(true, drainSdkStoredBatches(sdk))
+
+            assertEquals("pending-A", requests.last().getJSONObject("device").getString("pushToken"))
+            assertEquals(kind, requests.last().getJSONObject("sampling").getString("kind"))
+            assertTrue(requests.last().getJSONObject("sampling").has("replay"))
+            assertEquals("pending-A", io.bearound.sdk.utilities.PushTokenStore.tokenForPayload())
+            assertNull(io.bearound.sdk.utilities.PushTokenStore.lastSentAt())
+            assertTrue(storage.loadAllRecords().isEmpty())
+        }
+    }
+
+    @Test fun `SDK sampling fresh live applied ACK keeps token pending until registration`() = withServer({ durableAck(it) }) { endpoint, requests ->
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        SecureStorage.initialize(context); resetPushToken()
+        wall = System.currentTimeMillis(); elapsed = android.os.SystemClock.elapsedRealtime()
+        val configuration = config.copy(adaptiveSamplingEnabled = true)
+        val client = APIClient(configuration, endpoint, { DataCollectionPolicy.ALL_ENABLED }, { true },
+            android.os.SystemClock::elapsedRealtime, { wall })
+        val storage = OfflineBatchStorage(context).also { it.currentTenantId = "push-tenant"; it.clearAllBatches() }
+        val device = VisitTestFixtures.device().copy(pushToken = "pending-A", timestamp = wall)
+        val sdk = sdkForStoredDrain(context, configuration, client, storage, device, UserProperties())
+        val info = SDKInfo(appId = configuration.appId, build = 1)
+        client.observeResponse(response(), sdk.deviceId, wall, elapsed)
+        val engine = ObservationSummary({ wall }, android.os.SystemClock::elapsedRealtime)
+        engine.synchronizeClock(0.0, 1.0, elapsed)
+        val evidence = MotionEvidence(MotionState.UNKNOWN, MotionSource.NONE, MotionConfidence.NONE, MotionReason.STARTUP, null, null, false)
+        val beacon = Beacon(UUID.randomUUID(), 0, 188, -61, Beacon.Proximity.NEAR, 1.0, Date(wall))
+        engine.capture(listOf(beacon), client.buildPayload(emptyList(), info, device.copy(deviceId = sdk.deviceId), null).toString(), evidence)
+        val live = engine.live(30_000L, evidence)!!
+        assertNotNull(storage.saveRequestReturningId(live.payloadJson))
+        @Suppress("UNCHECKED_CAST")
+        val pending = BeAroundSDK::class.java.getDeclaredMethod("access\$getPendingLiveObservations\$p", BeAroundSDK::class.java)
+            .invoke(null, sdk) as java.util.ArrayDeque<PreparedObservation>
+        pending.addLast(live)
+        io.bearound.sdk.utilities.PushTokenStore.setToken("pending-A")
+        val method = BeAroundSDK::class.java.getDeclaredMethod("access\$performAdaptiveSync", BeAroundSDK::class.java,
+            APIClient::class.java, Boolean::class.javaPrimitiveType, kotlin.coroutines.Continuation::class.java)
+
+        val result = suspendCoroutine<Boolean> { continuation ->
+            val value = method.invoke(null, sdk, client, false, continuation)
+            if (value != kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) continuation.resume(value as Boolean)
+        }
+
+        assertTrue(result)
+        assertEquals("live", requests.single().getJSONObject("sampling").getString("kind"))
+        assertEquals("pending-A", requests.single().getJSONObject("device").getString("pushToken"))
+        assertEquals("pending-A", io.bearound.sdk.utilities.PushTokenStore.tokenForPayload())
+        assertNull(io.bearound.sdk.utilities.PushTokenStore.lastSentAt())
+        assertTrue(storage.loadAllRecords().isEmpty())
     }
 
     @Test fun `SDK contextless v1 retry collects current fallback without capability and preserves time tenant and privacy`() = withServer({ "{}" }) { endpoint, requests ->
