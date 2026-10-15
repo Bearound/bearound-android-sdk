@@ -69,6 +69,9 @@ class ObservationSummaryTest {
         advance(1_000L); capture(listOf(beacon(-50).copy(rssiRaw = -60)))
         val value = summary.close()!!
         val stats = beacons(value)[0].asJsonObject.getAsJsonObject("rssiSamples")
+        assertEquals(setOf("count", "min", "max", "avg", "stdDev", "firstSeen", "lastSeen"), stats.keySet())
+        assertEquals(wall - 1_000L, stats["firstSeen"].asLong)
+        assertEquals(wall, stats["lastSeen"].asLong)
         assertEquals(2, stats["count"].asInt); assertEquals(-70, stats["min"].asInt); assertEquals(-60, stats["max"].asInt)
         assertEquals(-65.0, stats["avg"].asDouble, 0.000001); assertEquals(sqrt(50.0), stats["stdDev"].asDouble, 0.000001)
         assertEquals(2, value.uniqueSampleCount)

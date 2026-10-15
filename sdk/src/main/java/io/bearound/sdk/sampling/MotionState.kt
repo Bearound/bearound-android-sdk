@@ -44,13 +44,13 @@ internal enum class MotionReason {
 }
 
 internal data class MotionEvidence(
-    val state: MotionState,
-    val source: MotionSource,
-    val confidence: MotionConfidence,
-    val reason: MotionReason,
-    val observedAtMs: Long?,
-    val ageMs: Long?,
-    val contextStable: Boolean
+    @SerializedName("state") val state: MotionState,
+    @SerializedName("source") val source: MotionSource,
+    @SerializedName("confidence") val confidence: MotionConfidence,
+    @SerializedName("reason") val reason: MotionReason,
+    @SerializedName("observedAtMs") val observedAtMs: Long?,
+    @SerializedName("ageMs") val ageMs: Long?,
+    @SerializedName("contextStable") val contextStable: Boolean
 )
 
 internal fun MotionEvidence.isMoving() = state == MotionState.MOVING_CONFIRMED || state == MotionState.MOVING_INFERRED

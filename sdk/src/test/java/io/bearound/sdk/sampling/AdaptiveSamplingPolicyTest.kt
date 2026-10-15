@@ -1,6 +1,7 @@
 package io.bearound.sdk.sampling
 
 import com.google.gson.Gson
+import com.google.gson.JsonParser
 import io.bearound.sdk.models.DataCollectionPolicy
 import io.bearound.sdk.models.DeviceLocation
 import org.junit.Assert.assertEquals
@@ -50,6 +51,11 @@ class AdaptiveSamplingPolicyTest {
         assertTrue(json.contains("\"source\":\"native_activity\""))
         assertTrue(json.contains("\"confidence\":\"medium\""))
         assertTrue(json.contains("\"reason\":\"native_moving\""))
+        val fields = JsonParser.parseString(json).asJsonObject
+        assertEquals(setOf("state", "source", "confidence", "reason", "observedAtMs", "ageMs", "contextStable"), fields.keySet())
+        assertEquals(wall, fields["observedAtMs"].asLong)
+        assertEquals(0L, fields["ageMs"].asLong)
+        assertFalse(fields["contextStable"].asBoolean)
     }
 
     @Test

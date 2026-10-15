@@ -1,5 +1,6 @@
 package io.bearound.sdk.models
 
+import com.google.gson.annotations.SerializedName
 import kotlin.math.sqrt
 
 /**
@@ -9,13 +10,13 @@ import kotlin.math.sqrt
  * avg is the mean RSSI over the window; stdDev is its dispersion.
  */
 data class RssiStats(
-    val count: Int,
-    val min: Int,
-    val max: Int,
-    val avg: Double,
-    val stdDev: Double,
-    val firstSeen: Long,
-    val lastSeen: Long
+    @SerializedName("count") val count: Int,
+    @SerializedName("min") val min: Int,
+    @SerializedName("max") val max: Int,
+    @SerializedName("avg") val avg: Double,
+    @SerializedName("stdDev") val stdDev: Double,
+    @SerializedName("firstSeen") val firstSeen: Long,
+    @SerializedName("lastSeen") val lastSeen: Long
 ) {
     /**
      * Streaming accumulator using Welford's online algorithm for variance.

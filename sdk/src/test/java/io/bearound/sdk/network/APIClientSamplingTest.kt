@@ -200,6 +200,7 @@ class APIClientSamplingTest {
         assertTrue(original.has("location"))
     }
     @Test fun `identity and push setters close original windows and refresh cached current context`() {
+        org.junit.Assume.assumeTrue("Private SDK wiring is validated in Debug; Release obfuscates private members", io.bearound.sdk.BuildConfig.DEBUG)
         val context = ApplicationProvider.getApplicationContext<Context>()
         SecureStorage.initialize(context)
         val sdk = BeAroundSDK::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
@@ -255,6 +256,7 @@ class APIClientSamplingTest {
     }
 
     @Test fun `restored callback captured before the active generation never reads current collection sources`() {
+        org.junit.Assume.assumeTrue("Private SDK wiring is validated in Debug; Release obfuscates private members", io.bearound.sdk.BuildConfig.DEBUG)
         val context = ApplicationProvider.getApplicationContext<Context>()
         val sdk = BeAroundSDK::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
         fun field(name: String) = BeAroundSDK::class.java.getDeclaredField(name).apply { isAccessible = true }
@@ -273,6 +275,7 @@ class APIClientSamplingTest {
     }
 
     @Test fun `drain waiting for its lock cannot pair new tenant rows with an earlier client`() = withServer({ "{}" }) { endpoint, requests ->
+        org.junit.Assume.assumeTrue("Private SDK wiring is validated in Debug; Release obfuscates private members", io.bearound.sdk.BuildConfig.DEBUG)
         val context = ApplicationProvider.getApplicationContext<Context>()
         File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
         val storage = OfflineBatchStorage(context).also { it.currentTenantId = "old-tenant" }
@@ -308,6 +311,7 @@ class APIClientSamplingTest {
         JSONObject().put("samplingAck", JSONObject().put("batchId", request.getJSONObject("sampling").getString("batchId"))
             .put("archive", "durable").put("projection", "applied").put("fallback", "keep")).toString()
     }) { endpoint, requests ->
+        org.junit.Assume.assumeTrue("Private SDK wiring is validated in Debug; Release obfuscates private members", io.bearound.sdk.BuildConfig.DEBUG)
         val context = ApplicationProvider.getApplicationContext<Context>()
         SecureStorage.initialize(context)
         File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
@@ -358,6 +362,7 @@ class APIClientSamplingTest {
             JSONObject().put("samplingAck", JSONObject().put("batchId", request.getJSONObject("sampling").getString("batchId"))
                 .put("archive", "durable").put("projection", "applied").put("fallback", "keep")).toString()
         }, onRawRequest = { wireBytes += it }) { endpoint, requests ->
+            org.junit.Assume.assumeTrue("Private SDK wiring is validated in Debug; Release obfuscates private members", io.bearound.sdk.BuildConfig.DEBUG)
             val context = ApplicationProvider.getApplicationContext<Context>()
             SecureStorage.initialize(context)
             File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
@@ -657,6 +662,7 @@ class APIClientSamplingTest {
             BeAroundSDK::class.java.getDeclaredField("samplingGeneration").apply { isAccessible = true }.set(sdk, 1L)
             415
         }) { endpoint, requests ->
+            org.junit.Assume.assumeTrue("Private SDK wiring is validated in Debug; Release obfuscates private members", io.bearound.sdk.BuildConfig.DEBUG)
             val context = ApplicationProvider.getApplicationContext<Context>()
             sdk = BeAroundSDK::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
             BeAroundSDK::class.java.getDeclaredField("context").apply { isAccessible = true }.set(sdk, context)
@@ -667,7 +673,6 @@ class APIClientSamplingTest {
                 BeAroundSDK::class.java.getDeclaredMethod("newAPIClient", SDKConfiguration::class.java)
                     .apply { isAccessible = true }.invoke(sdk, SDKConfiguration(config.businessToken, config.appId)) as APIClient
             } finally { SDKConfiguration.endpointResolver = oldResolver }
-            assertEquals(endpoint, APIClient::class.java.getDeclaredField("endpoint").apply { isAccessible = true }.get(client))
             BeAroundSDK::class.java.getDeclaredField("apiClient").apply { isAccessible = true }.set(sdk, client)
             negotiateGzip(client)
             val attempts = mutableListOf<Int>()
@@ -697,6 +702,7 @@ class APIClientSamplingTest {
             val headers = java.util.Collections.synchronizedList(mutableListOf<Map<String, String>>())
             withServer({ durableAck(it, true) }, onRawRequest = { wires += it }, onRequestHeaders = { headers += it },
                 statusFor = { if (rejectFirst && headers.size == 1) 415 else 200 }) { endpoint, requests ->
+                org.junit.Assume.assumeTrue("Private SDK wiring is validated in Debug; Release obfuscates private members", io.bearound.sdk.BuildConfig.DEBUG)
                 val context = ApplicationProvider.getApplicationContext<Context>()
                 SecureStorage.initialize(context)
                 File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
@@ -787,7 +793,6 @@ class APIClientSamplingTest {
             val wires = java.util.Collections.synchronizedList(mutableListOf<ByteArray>())
             withServer({ durableAck(it) }, onRawRequest = { wires += it }, onRequestHeaders = { headers += it }) { endpoint, requests ->
                 val client = client(endpoint); negotiateGzip(client)
-                assertEquals(endpoint, APIClient::class.java.getDeclaredField("endpoint").apply { isAccessible = true }.get(client))
                 val original = captured(client).toString()
                 var guards = 0
                 client.bindGeneration {
@@ -817,7 +822,6 @@ class APIClientSamplingTest {
         val headers = java.util.Collections.synchronizedList(mutableListOf<Map<String, String>>())
         withServer({ durableAck(it) }, onRawRequest = { wires += it }, onRequestHeaders = { headers += it }) { endpoint, requests ->
             val client = client(endpoint) { policy }; negotiateGzip(client)
-            assertEquals(endpoint, APIClient::class.java.getDeclaredField("endpoint").apply { isAccessible = true }.get(client))
             val original = captured(client).put("location", JSONObject().put("fixture", true))
                 .put("wifis", JSONArray().put(JSONObject().put("fixture", true))).toString()
             var guards = 0
@@ -865,7 +869,6 @@ class APIClientSamplingTest {
             if (headers.size == 1) { policy = policy.copy(motionSensors = false); 415 } else 200
         }) { endpoint, requests ->
             val client = client(endpoint) { policy }; negotiateGzip(client)
-            assertEquals(endpoint, APIClient::class.java.getDeclaredField("endpoint").apply { isAccessible = true }.get(client))
             val original = captured(client).apply { getJSONObject("sampling").put("motion", JSONObject()
                 .put("state", "moving_inferred").put("source", "context_fusion").put("confidence", "low").put("reason", "context_changed")
                 .put("observedAtMs", wall - 1000).put("ageMs", 1000))
@@ -890,9 +893,6 @@ class APIClientSamplingTest {
             val context = ApplicationProvider.getApplicationContext<Context>()
             SecureStorage.initialize(context)
             File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
-            val sdk = BeAroundSDK::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
-            fun field(name: String) = BeAroundSDK::class.java.getDeclaredField(name).apply { isAccessible = true }
-            field("context").set(sdk, context)
             val device = VisitTestFixtures.device().copy(timestamp = System.currentTimeMillis())
             val storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
             val client = client(endpoint)
@@ -902,18 +902,18 @@ class APIClientSamplingTest {
             val visit = io.bearound.sdk.visit.VisitEvent(io.bearound.sdk.visit.VisitEventKind.ARRIVAL, null,
                 "fixture-environment", listOf(wifi))
             val visitId = storage.saveVisitEvent(visit)!!
-            field("configuration").set(sdk, config); field("apiClient").set(sdk, client)
-            field("sdkInfo").set(sdk, SDKInfo(appId = config.appId, build = 1))
-            field("samplingDevice").set(sdk, device); field("offlineBatchStorage").set(sdk, storage)
+            val info = SDKInfo(appId = config.appId, build = 1)
+            val drain = io.bearound.sdk.utilities.StoredBatchDrain(storage, BeAroundSDK.PERMANENT_HTTP_CODES,
+                send = { beacons, capturedDevice, trigger ->
+                    var result: Result<Unit> = Result.failure(IllegalStateException("Missing response"))
+                    client.sendBeacons(beacons, info, capturedDevice, null, trigger) { result = it }
+                    result
+                })
             val previousPolicy = io.bearound.sdk.models.DataCollectionPolicyStore.current
             io.bearound.sdk.models.DataCollectionPolicyStore.apply(DataCollectionPolicy.ALL_ENABLED)
             try {
-                val method = BeAroundSDK::class.java.getDeclaredMethod("flushVisitBatches", kotlin.coroutines.Continuation::class.java)
-                    .apply { isAccessible = true }
-                suspend fun flush() = suspendCoroutine<Unit> { continuation ->
-                    val value = method.invoke(sdk, continuation)
-                    if (value != kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) continuation.resume(Unit)
-                }
+                suspend fun flush() = drain.drain(storage.loadAllRecords().filter { it.syncTrigger == "visit" },
+                    device, DataCollectionPolicy.ALL_ENABLED)
                 flush()
                 assertEquals(setOf(backlog, visitId), storage.loadAllRecords().map { it.id }.toSet())
                 val submitted = requests.single()

@@ -145,11 +145,16 @@ class InertialMotionMonitorTest {
         provider.stop(); assertTrue(shadow.listeners.isEmpty())
     }
     @Test fun `SDK gates both providers before sensor service access and preserves host auto choice without GPS permissions`() {
+        org.junit.Assume.assumeTrue("Private SDK wiring is validated in Debug; Release obfuscates private members", io.bearound.sdk.BuildConfig.DEBUG)
         val application = ApplicationProvider.getApplicationContext<android.app.Application>()
         shadowOf(application).denyPermissions(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION,
             Manifest.permission.ACCESS_WIFI_STATE, "android.permission.NEARBY_WIFI_DEVICES")
-        val lifecycle = ProcessLifecycleOwner.get().lifecycle as LifecycleRegistry
-        val before = lifecycle.currentState; lifecycle.currentState = Lifecycle.State.STARTED
+        val owner = ProcessLifecycleOwner.get()
+        val registryField = owner.javaClass.declaredFields.first { it.type == LifecycleRegistry::class.java }
+            .apply { isAccessible = true }
+        val previousRegistry = registryField.get(owner)
+        val lifecycle = LifecycleRegistry(owner).also { it.currentState = Lifecycle.State.STARTED }
+        registryField.set(owner, lifecycle)
         var sensorReads = 0
         val context = object : ContextWrapper(application) {
             override fun getSystemService(name: String): Any? {
@@ -177,7 +182,7 @@ class InertialMotionMonitorTest {
         } finally {
             (field("inertialMonitor").get(sdk) as? InertialMotionMonitor)?.stop()
             (field("motionMonitor").get(sdk) as? MotionMonitor)?.stop()
-            SDKConfigStorage.saveScanningEnabled(context, false); DataCollectionPolicyStore.reset(); lifecycle.currentState = before
+            SDKConfigStorage.saveScanningEnabled(context, false); DataCollectionPolicyStore.reset(); registryField.set(owner, previousRegistry)
         }
     }
     @Test fun `wall mapping is anchored at opening and a large in burst jump discards the window`() {
@@ -197,6 +202,7 @@ class InertialMotionMonitorTest {
 
     @Suppress("DEPRECATION")
     @Test fun `background execution requires Android foreground status for the actual existing scan service`() {
+        org.junit.Assume.assumeTrue("Private SDK wiring is validated in Debug; Release obfuscates private members", io.bearound.sdk.BuildConfig.DEBUG)
         val context = ApplicationProvider.getApplicationContext<Context>()
         val owner = ProcessLifecycleOwner.get()
         val registryField = owner.javaClass.declaredFields.first { it.type == LifecycleRegistry::class.java }
