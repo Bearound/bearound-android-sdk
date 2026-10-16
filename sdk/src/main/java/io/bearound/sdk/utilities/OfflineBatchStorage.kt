@@ -15,6 +15,8 @@ import java.io.File
 import java.util.Date
 import java.util.UUID
 import java.util.concurrent.locks.ReentrantLock
+import org.json.JSONObject
+import org.json.JSONArray
 import kotlin.concurrent.withLock
 
 /**
@@ -57,15 +59,20 @@ class OfflineBatchStorage(private val context: Context) {
         @SerializedName("timestamp") val timestamp: Long,
         // Fingerprint of the business token the batch was collected under. Batches from
         // a DIFFERENT tenant are never sent with the current credential (multi-tenant
-        // isolation); null = written before this field existed → treated as current.
+        // isolation); missing tenant binding is segregated.
         @SerializedName("tenantId") val tenantId: String? = null,
         // Nullable: Gson leaves a missing field null even in a non-null Kotlin field. Only a
         // batch with a syncTrigger (a visit) may carry no beacons.
         @SerializedName("beacons") val beacons: List<StoredBeacon>?,
         // Added in 3.12.0. Both OPTIONAL: a batch written before them
-        // decodes with null here and is sent with the device context collected at send time.
+        // decodes with null here and retains that absence during retry.
         @SerializedName("syncTrigger") val syncTrigger: String? = null,
-        @SerializedName("context") val context: StoredContext? = null
+        @SerializedName("context") val context: StoredContext? = null,
+        @SerializedName("version") val version: Int = 1,
+        @SerializedName("requestJson") val requestJson: String? = null,
+        @SerializedName("priority") val priority: Boolean = false,
+        @SerializedName("captureContextId") val captureContextId: String? = null,
+        @SerializedName("sequence") val sequence: Long? = null
     )
 
     /**
@@ -75,7 +82,7 @@ class OfflineBatchStorage(private val context: Context) {
      *
      * @property location the fix captured with the batch; null means "there was none".
      * @property wifis    the access points captured with the batch; null means "not
-     *                    captured" and the send-time list is used (visit events).
+     *                    captured" and remains absent during retry (visit events).
      */
     data class CapturedContext(
         val location: DeviceLocation?,
@@ -94,10 +101,15 @@ class OfflineBatchStorage(private val context: Context) {
         val id: String,
         val beacons: List<Beacon>,
         val syncTrigger: String? = null,
-        val context: CapturedContext? = null
+        val context: CapturedContext? = null,
+        val requestJson: String? = null,
+        val version: Int = 1,
+        val priority: Boolean = false,
+        val captureContextId: String? = null,
+        val sequence: Long? = null
     ) {
-        /** Written before the batch carried its own context: sent with a fresh snapshot. */
-        val isLegacy: Boolean get() = context == null && syncTrigger == null
+        /** Written before the batch carried its own context: absence is preserved. */
+        val isLegacy: Boolean get() = requestJson == null && context == null && syncTrigger == null
     }
 
     // Every field nullable: an entry missing a field reads as absent, never as a crash.
@@ -328,6 +340,13 @@ class OfflineBatchStorage(private val context: Context) {
      * data collected for client A is never delivered with client B's credential.
      */
     var currentTenantId: String? = null
+
+    private fun nextSequence(): Long {
+        val preferences = context.getSharedPreferences("bearound_batch_order", Context.MODE_PRIVATE)
+        val sequence = preferences.getLong("sequence", 0L) + 1L
+        check(sequence > 0L && preferences.edit().putLong("sequence", sequence).commit()) { "Batch ordering persistence failed" }
+        return sequence
+    }
     
     /** Storage directory */
     private val storageDirectory: File by lazy {
@@ -407,7 +426,8 @@ class OfflineBatchStorage(private val context: Context) {
                     tenantId = currentTenantId,
                     beacons = storedBeacons,
                     syncTrigger = syncTrigger,
-                    context = context?.let { StoredContext.from(it) }
+                    context = context?.let { StoredContext.from(it) },
+                    sequence = nextSequence()
                 )
 
                 // Filename format: timestamp_uuid.json for sorting (timestamp_visit_uuid.json
@@ -446,6 +466,93 @@ class OfflineBatchStorage(private val context: Context) {
         }
     }
 
+    /** Version 2 preserves the complete original payload and explicit field absence. */
+    internal fun saveRequestReturningId(requestJson: String, priority: Boolean = false, captureContextId: String? = null,
+                                       expectedTenantId: String? = currentTenantId): String? = lock.withLock {
+        try {
+            val payload = JSONObject(requestJson)
+            val sampling = payload.optJSONObject("sampling")
+            val batchId = sampling?.getString("batchId") ?: UUID.randomUUID().toString()
+            UUID.fromString(batchId)
+            val tenant = currentTenantId ?: return@withLock null
+            if (tenant != expectedTenantId) return@withLock null
+            if (sampling != null && requestJson.toByteArray(Charsets.UTF_8).size > 524_288) return@withLock null
+            val existing = storageDirectory.listFiles()?.firstOrNull {
+                it.extension == "json" && it.nameWithoutExtension.endsWith(batchId)
+            }
+            if (existing != null) {
+                val stored = gson.fromJson(existing.readText(), StoredBatch::class.java)
+                return@withLock batchId.takeIf { stored.tenantId == tenant && stored.requestJson == requestJson }
+            }
+            val now = System.currentTimeMillis()
+            val trigger = payload.optString("syncTrigger").takeIf { it.isNotBlank() }
+            val batch = StoredBatch(batchId, now, tenant, emptyList(), trigger, null, 2, requestJson, priority, captureContextId, nextSequence())
+            val marker = if (trigger == VISIT_SYNC_TRIGGER) VISIT_FILE_MARKER else "_"
+            val filename = "${now}${marker}${batchId}.json"
+            val temp = File(storageDirectory, "$filename.tmp")
+            temp.outputStream().use { output ->
+                output.write(gson.toJson(batch).toByteArray(Charsets.UTF_8)); output.flush(); output.fd.sync()
+            }
+            if (!temp.renameTo(File(storageDirectory, filename))) {
+                temp.delete()
+                return@withLock null
+            }
+            enforceMaxBatchCount()
+            batchId
+        } catch (_: Exception) {
+            DiagnosticsStore.recordError("Observation persistence failed")
+            null
+        }
+    }
+
+    /** A durable manifest survives partial ACKs without mutating original request bodies. */
+    internal fun sealReplay(records: List<StoredBatchRecord>): Map<String, JSONObject> = lock.withLock {
+        val result = mutableMapOf<String, JSONObject>()
+        val pendingIds = records.map { it.id }.toSet()
+        storageDirectory.listFiles()?.filter { it.extension == "replay" }?.forEach { file ->
+            val sealed = runCatching { JSONObject(file.readText()) }.getOrNull() ?: return@forEach
+            if (sealed.optString("tenantId") != currentTenantId) return@forEach
+            val ids = sealed.optJSONArray("batchIds")
+            if (ids == null || (0 until ids.length()).any { ids.opt(it) !is String }) {
+                file.renameTo(File(storageDirectory, "${file.nameWithoutExtension}.corrupt"))
+                DiagnosticsStore.recordError("Corrupt replay manifest isolated")
+                return@forEach
+            }
+            for (index in 0 until ids.length()) {
+                val id = ids.getString(index)
+                if (id in pendingIds) result[id] = JSONObject(sealed.toString()).apply {
+                    remove("tenantId"); put("index", index); put("count", ids.length())
+                }
+            }
+        }
+        fun key(record: StoredBatchRecord): String {
+            val json = JSONObject(record.requestJson!!)
+            return "${record.captureContextId ?: record.id}:${json.getJSONObject("device").getString("deviceId")}:${json.getJSONObject("sdk").getString("appId")}"
+        }
+        val unsealed = records.filter { it.id !in result && it.requestJson?.let { raw -> JSONObject(raw).has("sampling") } == true }
+        var index = 0
+        while (index < unsealed.size) {
+            val contextKey = key(unsealed[index])
+            val group = mutableListOf<StoredBatchRecord>()
+            while (index < unsealed.size && group.size < 128 && key(unsealed[index]) == contextKey) group += unsealed[index++]
+            val ids = group.map { it.id }
+            val drainId = UUID.randomUUID().toString()
+            val manifest = JSONObject().apply {
+                put("tenantId", currentTenantId); put("drainId", drainId); put("batchIds", JSONArray(ids))
+            }
+            val filename = "${System.currentTimeMillis()}_${drainId}.replay"
+            val temporary = File(storageDirectory, "$filename.tmp")
+            temporary.outputStream().use { output ->
+                output.write(manifest.toString().toByteArray(Charsets.UTF_8)); output.flush(); output.fd.sync()
+            }
+            check(temporary.renameTo(File(storageDirectory, filename))) { "Replay manifest persistence failed" }
+            ids.forEachIndexed { ordinal, id -> result[id] = JSONObject(manifest.toString()).apply {
+                remove("tenantId"); put("index", ordinal); put("count", ids.size)
+            } }
+        }
+        result
+    }
+
     /**
      * Loads up to [count] oldest batches (FIFO) for the CURRENT tenant, with their ids.
      * Corrupted files are quarantined (renamed to .corrupt — kept for diagnosis, swept
@@ -461,14 +568,16 @@ class OfflineBatchStorage(private val context: Context) {
 
                 val records = mutableListOf<StoredBatchRecord>()
                 for (file in files) {
-                    if (records.size >= count) break
                     try {
                         val batch = gson.fromJson(file.readText(), StoredBatch::class.java)
                         // Tenant isolation: skip batches written under a different token.
-                        // (null tenant = legacy file → treated as current.)
-                        if (batch.tenantId != null && currentTenantId != null &&
-                            batch.tenantId != currentTenantId
-                        ) {
+                        // A missing tenant binding is isolated rather than inferred.
+                        if (batch.tenantId == null) {
+                            file.renameTo(File(storageDirectory, "${file.nameWithoutExtension}.unbound"))
+                            DiagnosticsStore.recordError("Unbound historical batch isolated")
+                            continue
+                        }
+                        if (currentTenantId == null || batch.tenantId != currentTenantId) {
                             continue
                         }
                         val storedBeacons = batch.beacons
@@ -476,9 +585,19 @@ class OfflineBatchStorage(private val context: Context) {
                         records.add(
                             StoredBatchRecord(
                                 id = batch.id,
-                                beacons = storedBeacons.map { it.toBeacon() },
+                                beacons = if (batch.requestJson != null) {
+                                    val raw = JSONObject(batch.requestJson).optJSONArray("beacons")
+                                    (0 until (raw?.length() ?: 0)).map { index ->
+                                        gson.fromJson(raw!!.getJSONObject(index).toString(), StoredBeacon::class.java).toBeacon()
+                                    }
+                                } else storedBeacons.map { it.toBeacon() },
                                 syncTrigger = batch.syncTrigger,
-                                context = batch.context?.toCapturedContext()
+                                context = batch.context?.toCapturedContext(),
+                                requestJson = batch.requestJson,
+                                version = batch.version,
+                                priority = batch.priority,
+                                captureContextId = batch.captureContextId,
+                                sequence = batch.sequence
                             )
                         )
                     } catch (e: Exception) {
@@ -486,7 +605,7 @@ class OfflineBatchStorage(private val context: Context) {
                         file.renameTo(File(storageDirectory, "${file.nameWithoutExtension}.corrupt"))
                     }
                 }
-                records
+                records.sortedBy { it.sequence ?: Long.MIN_VALUE }.take(count.coerceAtLeast(0))
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load batch records: ${e.message}", e)
                 emptyList()
@@ -498,22 +617,29 @@ class OfflineBatchStorage(private val context: Context) {
     fun loadAllRecords(): List<StoredBatchRecord> = loadOldestRecords()
 
     /** Removes the batch with exactly this id. */
-    fun removeBatch(id: String): Boolean = lock.withLock {
+    fun removeBatch(id: String): Boolean = removeBatches(listOf(id)) > 0
+
+    /** Removes selected records and prunes replay manifests using one directory snapshot. */
+    fun removeBatches(ids: List<String>): Int = lock.withLock {
         try {
-            val file = storageDirectory.listFiles()
-                ?.firstOrNull { it.extension == "json" && it.nameWithoutExtension.endsWith(id) }
-                ?: return@withLock false
-            val deleted = file.delete()
-            if (deleted) Log.d(TAG, "Removed batch file: ${file.name}")
-            deleted
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to remove batch $id: ${e.message}", e)
-            false
+            val wanted = ids.toSet()
+            val files = storageDirectory.listFiles().orEmpty()
+            val removed = files.filter { it.extension == "json" && it.nameWithoutExtension.substringAfterLast('_') in wanted }
+                .count { it.delete() }
+            if (removed > 0) {
+                val remaining = files.filter { it.extension == "json" && it.exists() }
+                    .map { it.nameWithoutExtension.substringAfterLast('_') }.toSet()
+                files.filter { it.extension == "replay" }.forEach { manifest ->
+                    val saved = runCatching { JSONObject(manifest.readText()).getJSONArray("batchIds") }.getOrNull()
+                    if (saved != null && (0 until saved.length()).none { saved.optString(it) in remaining }) manifest.delete()
+                }
+            }
+            removed
+        } catch (error: Exception) {
+            Log.e(TAG, "Failed to remove batches: ${error.message}", error)
+            0
         }
     }
-
-    /** Removes exactly these batch ids; returns how many were deleted. */
-    fun removeBatches(ids: List<String>): Int = ids.count { removeBatch(it) }
 
     /**
      * Drops every pending visit batch (the host turned location off: a visit is a location).
@@ -548,6 +674,14 @@ class OfflineBatchStorage(private val context: Context) {
             Log.e(TAG, "Failed to quarantine batch $id: ${e.message}", e)
             false
         }
+    }
+
+    internal fun segregateHistoricalBatch(id: String): Boolean = lock.withLock {
+        val file = storageDirectory.listFiles()?.firstOrNull { it.extension == "json" && it.nameWithoutExtension.endsWith(id) }
+            ?: return@withLock false
+        val moved = file.renameTo(File(storageDirectory, "${file.nameWithoutExtension}.historical"))
+        if (moved) DiagnosticsStore.recordError("Historical legacy evidence retained without occupied bucket provenance")
+        moved
     }
     
     /**
@@ -587,7 +721,8 @@ class OfflineBatchStorage(private val context: Context) {
             val files = storageDirectory.listFiles()
                 ?.filter {
                     it.extension == "json" || it.extension == "corrupt" ||
-                        it.extension == "rejected" || it.extension == "tmp"
+                        it.extension == "rejected" || it.extension == "tmp" || it.extension == "unbound" ||
+                        it.extension == "replay" || it.extension == "historical"
                 }
                 ?: return
             
@@ -628,7 +763,7 @@ class OfflineBatchStorage(private val context: Context) {
     private fun enforceMaxBatchCount() {
         try {
             val files = storageDirectory.listFiles()
-                ?.filter { it.extension == "json" && !it.isVisitBatch() }
+                ?.filter { it.extension in setOf("json", "historical", "unbound") && !it.isVisitBatch() }
                 ?.sortedBy { it.name }
                 ?.toMutableList()
                 ?: return
@@ -637,6 +772,7 @@ class OfflineBatchStorage(private val context: Context) {
                 // Remove oldest file (first in sorted list)
                 val oldestFile = files.removeAt(0)
                 if (oldestFile.delete()) {
+                    DiagnosticsStore.recordError("Observation queue capacity eviction")
                     Log.d(TAG, "Removed oldest batch due to max count exceeded: ${oldestFile.name}")
                 }
             }

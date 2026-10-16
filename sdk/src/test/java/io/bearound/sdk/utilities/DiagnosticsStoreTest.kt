@@ -1,5 +1,6 @@
 package io.bearound.sdk.utilities
 
+import io.bearound.sdk.sampling.*
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -114,4 +115,38 @@ class DiagnosticsStoreTest {
         assertEquals("snapshot must be detached from later writes", 1, snapshot.size)
         assertEquals(2, DiagnosticsStore.recentErrors().size)
     }
+    @Test fun `diagnostics distinguish actual observations cache policy and transport outcomes`() {
+        val evidence = MotionEvidence(MotionState.STATIONARY_INFERRED, MotionSource.CONTEXT_FUSION,
+            MotionConfidence.MEDIUM, MotionReason.CONTEXT_STABLE, 100L, 5L, true)
+        DiagnosticsStore.recordSamplingPolicy(evidence, SamplingPlan(true, 300_000L, 300_000L, 5_000L), true, clockUncertaintyMs = 1.0, nextLiveAttemptElapsedMs = 5_000L)
+        DiagnosticsStore.recordObservation(unique = 3, cached = 7, contextRead = true, buckets = 2, gaps = 1, denied = 1)
+        DiagnosticsStore.recordSamplingAttempt("live", 100, true)
+        DiagnosticsStore.recordSamplingAttempt("summary", 200, false, lagMs = 1_000)
+        DiagnosticsStore.recordSamplingAttempt("transition", 50, true, lagMs = 300, archiveOnly = true)
+        val snapshot = DiagnosticsStore.sampling()
+        assertEquals("stationary_inferred", snapshot.state); assertEquals("context_fusion", snapshot.source)
+        assertEquals(1.0, snapshot.clockUncertaintyMs!!, 0.0); assertEquals(5_000L, snapshot.nextLiveAttemptElapsedMs)
+        assertEquals("separated", snapshot.mode); assertEquals("context_stable", snapshot.reason); assertEquals("active", snapshot.capabilityStatus)
+        assertEquals(3L, snapshot.uniqueSamples); assertEquals(7L, snapshot.cachedObservations)
+        assertEquals(1L, snapshot.contextReads); assertEquals(2L, snapshot.bucketCount); assertEquals(1L, snapshot.gapCount)
+        assertEquals(1L, snapshot.liveAttempts); assertEquals(1L, snapshot.summaryAttempts); assertEquals(1L, snapshot.transitionAttempts)
+        assertEquals(350L, snapshot.serializedBytes); assertEquals(1L, snapshot.failures); assertEquals(1_000L, snapshot.retryLagMs)
+        assertEquals(1L, snapshot.archiveOnlyCount); assertEquals(1L, snapshot.policyDenials)
+        DiagnosticsStore.reset()
+        assertEquals("unknown", DiagnosticsStore.sampling().state); assertEquals(0L, DiagnosticsStore.sampling().serializedBytes)
+        assertEquals(350L, snapshot.serializedBytes)
+    }
+
+    @Test fun `sampling HTTP attempts count submitted bodies separately from logical outcomes`() {
+        DiagnosticsStore.recordSamplingAttempt("live", 900, true, httpAttempts = 2)
+        DiagnosticsStore.recordSamplingAttempt("summary", 0, false, httpAttempts = 0)
+        val snapshot = DiagnosticsStore.sampling()
+        assertEquals(1L, snapshot.liveAttempts); assertEquals(1L, snapshot.summaryAttempts)
+        assertEquals(2L, snapshot.httpAttempts); assertEquals(900L, snapshot.serializedBytes)
+        assertEquals(1L, snapshot.failures)
+        DiagnosticsStore.reset()
+        assertEquals(0L, DiagnosticsStore.sampling().httpAttempts)
+        assertEquals(2L, snapshot.httpAttempts)
+    }
+
 }

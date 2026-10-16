@@ -41,6 +41,11 @@ object SDKConfigStorage {
     private const val KEY_COLLECT_ADVERTISING_ID = "collect_advertising_id"
     private const val KEY_COLLECT_LOCATION = "collect_location"
     private const val KEY_COLLECT_WIFI = "collect_wifi"
+    private const val KEY_COLLECT_MOTION = "collect_motion_sensors"
+    private const val KEY_MOTION_AUTO = "motion_sensors_auto"
+    private const val KEY_ADAPTIVE_SAMPLING = "adaptive_sampling_enabled"
+    private const val KEY_HEARTBEAT_INTERVAL = "presence_heartbeat_interval_ms"
+    private const val KEY_BASE_INTERVAL = "sampling_base_interval_ms"
     // App presence configuration, stored as JSON (see AppPresenceConfiguration.toJson)
     private const val KEY_APP_PRESENCE = "app_presence_configuration"
 
@@ -60,6 +65,11 @@ object SDKConfigStorage {
             putBoolean(KEY_COLLECT_ADVERTISING_ID, config.collectAdvertisingId)
             putBoolean(KEY_COLLECT_LOCATION, config.collectLocation)
             putBoolean(KEY_COLLECT_WIFI, config.collectWifi)
+            putBoolean(KEY_COLLECT_MOTION, config.dataCollectionPolicy.motionSensorsEnabled)
+            putBoolean(KEY_MOTION_AUTO, config.collectMotionSensors == null)
+            putBoolean(KEY_ADAPTIVE_SAMPLING, config.adaptiveSamplingEnabled)
+            putLong(KEY_HEARTBEAT_INTERVAL, config.presenceHeartbeatIntervalMillis)
+            putLong(KEY_BASE_INTERVAL, config.syncInterval)
             putString(KEY_APP_PRESENCE, encodeAppPresence(config.appPresence))
             putBoolean(KEY_IS_CONFIGURED, true)
             // Remove legacy keys if they exist
@@ -131,8 +141,14 @@ object SDKConfigStorage {
             collectAdvertisingId = collectAdvertisingId,
             collectLocation = collectLocation,
             collectWifi = collectWifi,
+            collectMotionSensors = if (!prefs.contains(KEY_COLLECT_MOTION) || prefs.getBoolean(KEY_MOTION_AUTO, false)) null
+                else prefs.getBoolean(KEY_COLLECT_MOTION, collectLocation || collectWifi),
+            adaptiveSamplingEnabled = prefs.getBoolean(KEY_ADAPTIVE_SAMPLING, true),
+            presenceHeartbeatIntervalMillis = io.bearound.sdk.models.PresenceHeartbeatDefaults.sanitizedInterval(
+                prefs.getLong(KEY_HEARTBEAT_INTERVAL, io.bearound.sdk.models.PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS)
+            ),
             appPresence = decodeAppPresence(prefs.getString(KEY_APP_PRESENCE, null))
-        )
+        ).also { it.restoredSyncIntervalMillis = prefs.getLong(KEY_BASE_INTERVAL, prefs.getLong(KEY_SYNC_INTERVAL, -1L)).takeIf { value -> value in 1_000L..300_000L } }
     }
 
     /**

@@ -1,5 +1,39 @@
 package io.bearound.sdk.models
 
+data class AdaptiveSamplingDiagnostics(
+    val state: String = "unknown",
+    val source: String = "none",
+    val confidence: String = "none",
+    val reason: String = "startup",
+    val evidenceAgeMs: Long? = null,
+    val contextStable: Boolean = false,
+    val capabilityStatus: String = "unavailable",
+    val contextIntervalMs: Long? = null,
+    val summaryIntervalMs: Long? = null,
+    val liveIntervalMs: Long? = null,
+    val uniqueSamples: Long = 0,
+    val cachedObservations: Long = 0,
+    val contextReads: Long = 0,
+    val bucketCount: Long = 0,
+    val gapCount: Long = 0,
+    val liveAttempts: Long = 0,
+    val summaryAttempts: Long = 0,
+    val transitionAttempts: Long = 0,
+    val serializedBytes: Long = 0,
+    val failures: Long = 0,
+    val retryLagMs: Long = 0,
+    val archiveOnlyCount: Long = 0,
+    val policyDenials: Long = 0,
+    val clockUncertaintyMs: Double? = null,
+    val mode: String = "legacy",
+    val nextContextReadElapsedMs: Long? = null,
+    val nextSummaryElapsedMs: Long? = null,
+    val nextLiveAttemptElapsedMs: Long? = null,
+    val manifestGapCount: Long = 0,
+    /** HTTP bodies submitted for sampling envelopes; logical kind counters stay unchanged. */
+    val httpAttempts: Long = 0
+)
+
 /** Point-in-time snapshot of SDK state, produced by `BeAroundSDK.diagnostics()`. */
 data class BeAroundDiagnostics(
     val deviceId: String,
@@ -29,7 +63,8 @@ data class BeAroundDiagnostics(
     /** Whether the low-power PendingIntent background scan is currently registered. */
     val backgroundScanRegistered: Boolean,
     /** Whether the app is exempt from battery optimizations (Doze allowlist). */
-    val isIgnoringBatteryOptimizations: Boolean
+    val isIgnoringBatteryOptimizations: Boolean,
+    val adaptiveSampling: AdaptiveSamplingDiagnostics = AdaptiveSamplingDiagnostics()
 ) {
     fun summary(): String {
         val errorsBlock = if (recentErrors.isEmpty()) {
@@ -57,6 +92,11 @@ data class BeAroundDiagnostics(
             appendLine("  lastSyncAt: ${lastSyncAt ?: "never"}")
             appendLine("  lastSyncSuccess: ${lastSyncSuccess ?: "n/a"}")
             appendLine("  lastSyncBeaconCount: ${lastSyncBeaconCount ?: "n/a"}")
+            appendLine("  motion: ${adaptiveSampling.state}/${adaptiveSampling.source}/${adaptiveSampling.reason}")
+            appendLine("  contextStable: ${adaptiveSampling.contextStable}")
+            appendLine("  samplingCapability: ${adaptiveSampling.capabilityStatus}")
+            appendLine("  uniqueSamples: ${adaptiveSampling.uniqueSamples}")
+            appendLine("  samplingBytes: ${adaptiveSampling.serializedBytes}")
             appendLine("  recentErrors:")
             append(errorsBlock)
         }

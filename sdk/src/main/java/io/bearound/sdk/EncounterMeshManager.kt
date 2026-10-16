@@ -418,7 +418,9 @@ internal class EncounterMeshManager(private val context: Context) {
      * the PendingIntent broadcast (the only delivery path on AOSP-like Android 14 under
      * `neverForLocation`).
      */
-    fun handleVirtualBeacon(minor: Int, rssi: Int) {
+    internal var onPhysicalVirtualSighting: ((Int, Int, Long?) -> Unit)? = null
+
+    fun handleVirtualBeacon(minor: Int, rssi: Int, observedElapsedMs: Long? = null) {
         if (!synchronized(lock) { started }) return
         if (rssi >= 0 || rssi == 127) return
         // Some chipsets hand the host its OWN advertisement back. Not an encounter.
@@ -436,6 +438,7 @@ internal class EncounterMeshManager(private val context: Context) {
             }
             peer.addSample(rssi, now)
         }
+        onPhysicalVirtualSighting?.invoke(minor, rssi, observedElapsedMs)
     }
 
     // ── Reporting ────────────────────────────────────────────────────────────

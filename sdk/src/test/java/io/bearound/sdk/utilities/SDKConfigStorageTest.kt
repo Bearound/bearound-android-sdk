@@ -1,0 +1,87 @@
+package io.bearound.sdk.utilities
+
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
+import io.bearound.sdk.models.AppPresenceConfiguration
+import io.bearound.sdk.models.AppPresenceTarget
+import io.bearound.sdk.models.SDKConfiguration
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+
+@RunWith(RobolectricTestRunner::class)
+class SDKConfigStorageTest {
+    private lateinit var context: Context
+    @Before fun setUp() {
+        context = ApplicationProvider.getApplicationContext()
+        SDKConfigStorage.clearConfiguration(context)
+    }
+
+    @Test fun `old configuration restores adaptive defaults without changing collection switches`() {
+        context.getSharedPreferences("bearound_sdk_config", Context.MODE_PRIVATE).edit()
+            .putBoolean("is_configured", true).putString("business_token", "fixture-token")
+            .putBoolean("collect_location", false).commit()
+        val config = SDKConfigStorage.loadConfiguration(context)!!
+        assertTrue(config.adaptiveSamplingEnabled)
+        assertFalse(config.collectLocation)
+        assertEquals(300_000L, config.presenceHeartbeatIntervalMillis)
+        assertEquals(60_000L, config.syncInterval)
+    }
+
+    @Test fun `rollback and empty heartbeat cadence survive configuration restore`() {
+        SDKConfigStorage.saveConfiguration(context, SDKConfiguration("fixture-token", context.packageName,
+            adaptiveSamplingEnabled = false, presenceHeartbeatIntervalMillis = 600_000L,
+            collectWifi = false, collectAdvertisingId = false))
+        val config = SDKConfigStorage.loadConfiguration(context)!!
+        assertFalse(config.adaptiveSamplingEnabled)
+        assertFalse(config.collectWifi)
+        assertFalse(config.collectAdvertisingId)
+        assertEquals(600_000L, config.presenceHeartbeatIntervalMillis)
+    }
+
+    @Test fun `a restored five second baseline is preserved instead of replaced with a precision default`() {
+        context.getSharedPreferences("bearound_sdk_config", Context.MODE_PRIVATE).edit()
+            .putBoolean("is_configured", true).putString("business_token", "fixture-token")
+            .putLong("sync_interval", 5_000L).commit()
+        val config = SDKConfigStorage.loadConfiguration(context)!!
+        assertEquals(5_000L, config.syncInterval)
+        SDKConfigStorage.saveConfiguration(context, config)
+        assertEquals(5_000L, SDKConfigStorage.loadConfiguration(context)!!.syncInterval)
+    }
+    @Test fun `auto storage records its effective value while retaining copy safe auto semantics`() {
+        SDKConfigStorage.saveConfiguration(context, SDKConfiguration("fixture-token", "fixture", collectLocation = false, collectWifi = false))
+        val prefs = context.getSharedPreferences("bearound_sdk_config", Context.MODE_PRIVATE)
+        assertFalse(prefs.getBoolean("collect_motion_sensors", true)); assertTrue(prefs.getBoolean("motion_sensors_auto", false))
+        val restored = SDKConfigStorage.loadConfiguration(context)!!
+        assertEquals(null, restored.collectMotionSensors)
+        assertTrue(restored.copy(collectWifi = true).dataCollectionPolicy.motionSensorsEnabled)
+        SDKConfigStorage.saveConfiguration(context, restored.copy(collectMotionSensors = false))
+        assertFalse(SDKConfigStorage.loadConfiguration(context)!!.copy(collectWifi = true).dataCollectionPolicy.motionSensorsEnabled)
+    }
+
+    @Test fun `app presence and adaptive privacy controls survive configuration restore together`() {
+        val presence = AppPresenceConfiguration(true, listOf(AppPresenceTarget("fixture", androidPackageName = "io.bearound.fixture")))
+        val original = SDKConfiguration("fixture-token", context.packageName, appPresence = presence,
+            adaptiveSamplingEnabled = false, collectMotionSensors = false,
+            collectLocation = false, collectWifi = false, presenceHeartbeatIntervalMillis = 600_000L)
+        SDKConfigStorage.saveConfiguration(context, original)
+
+        val restored = SDKConfigStorage.loadConfiguration(context)!!
+        assertEquals(presence, restored.appPresence)
+        assertFalse(restored.adaptiveSamplingEnabled)
+        assertEquals(false, restored.collectMotionSensors)
+        assertFalse(restored.dataCollectionPolicy.motionSensorsEnabled)
+        assertEquals(600_000L, restored.presenceHeartbeatIntervalMillis)
+        SDKConfigStorage.saveAppPresenceConfiguration(context, AppPresenceConfiguration.DISABLED)
+        val disabled = SDKConfigStorage.loadConfiguration(context)!!
+        assertFalse(disabled.appPresence.enabled)
+        assertFalse(disabled.adaptiveSamplingEnabled)
+        assertEquals(false, disabled.collectMotionSensors)
+        assertFalse(disabled.copy(collectWifi = true).dataCollectionPolicy.motionSensorsEnabled)
+    }
+
+}

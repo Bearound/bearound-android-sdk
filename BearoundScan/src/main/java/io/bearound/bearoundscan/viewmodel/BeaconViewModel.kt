@@ -103,7 +103,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
 
     // Full Bearound: the telemetry companion runs alongside tracking — credentials and
     // device id come from the tracking instance (one-liner handoff in configureSDK).
-    private val telemetry = BearoundTelemetrySDK.getInstance(application)
+    private val telemetry = if (BuildConfig.ADAPTIVE_BENCH) null else BearoundTelemetrySDK.getInstance(application)
     private val notificationManager = BeaconNotificationManager(application)
     private val prefs: SharedPreferences = application.getSharedPreferences("bearoundscan_settings", Context.MODE_PRIVATE)
 
@@ -143,6 +143,8 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
         sdk.listener = this
 
         loadSavedSettings()
+        if (BuildConfig.ADAPTIVE_BENCH) _state.value = _state.value.copy(
+            userPropertyInternalId = BuildConfig.BENCH_USER, userPropertyEmail = "", userPropertyName = "", userPropertyCustom = "")
         updatePermissionStatus()
         checkBluetoothStatus()
         checkNotificationStatus()
@@ -239,9 +241,13 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             // (see BearoundScan/build.gradle).
             businessToken = BuildConfig.BUSINESS_TOKEN,
             scanPrecision = precision,
-            maxQueuedPayloads = maxQueued
+            maxQueuedPayloads = maxQueued,
+            adaptiveSamplingEnabled = BuildConfig.BENCH_ADAPTIVE
         )
-        telemetry.configure(bearound)
+        if (BuildConfig.ADAPTIVE_BENCH) {
+            sdk.setUserProperties(UserProperties(internalId = BuildConfig.BENCH_USER))
+        }
+        telemetry?.configure(bearound)
     }
 
     fun startScanning() {
@@ -261,7 +267,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
             )
         } else null
         sdk.startScanning(fgConfig)
-        telemetry.startScanning()
+        telemetry?.startScanning()
         scanStartTime = Date()
         wasInBeaconRegion = false
 
@@ -283,7 +289,7 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
 
     fun stopScanning() {
         sdk.stopScanning()
-        telemetry.stopScanning()
+        telemetry?.stopScanning()
         scanStartTime = null
         wasInBeaconRegion = false
 
@@ -333,10 +339,10 @@ class BeaconViewModel(application: Application) : AndroidViewModel(application),
 
         // Set user properties
         val props = UserProperties(
-            internalId = internalId.ifBlank { null },
-            email = email.ifBlank { null },
-            name = name.ifBlank { null },
-            customProperties = if (custom.isNotBlank()) mapOf("custom" to custom) else emptyMap()
+            internalId = if (BuildConfig.ADAPTIVE_BENCH) BuildConfig.BENCH_USER else internalId.ifBlank { null },
+            email = if (BuildConfig.ADAPTIVE_BENCH) null else email.ifBlank { null },
+            name = if (BuildConfig.ADAPTIVE_BENCH) null else name.ifBlank { null },
+            customProperties = if (!BuildConfig.ADAPTIVE_BENCH && custom.isNotBlank()) mapOf("custom" to custom) else emptyMap()
         )
         if (props.hasProperties) {
             sdk.setUserProperties(props)

@@ -39,10 +39,14 @@ object PushTokenStore {
      * that register's success would silently suppress it for [RESEND_INTERVAL_MS].
      */
     fun markSent(sentToken: String?) {
+        markSent(sentToken, io.bearound.sdk.BuildConfig.SDK_VERSION)
+    }
+
+    internal fun markSent(sentToken: String?, sentSdkVersion: String) {
         if (sentToken.isNullOrEmpty()) return
         SecureStorage.save(LAST_SENT_KEY, sentToken)
         SecureStorage.save(LAST_SENT_AT_KEY, System.currentTimeMillis().toString())
-        SecureStorage.save(LAST_SENT_SDK_VERSION_KEY, io.bearound.sdk.BuildConfig.SDK_VERSION)
+        SecureStorage.save(LAST_SENT_SDK_VERSION_KEY, sentSdkVersion)
     }
 
     fun lastSentAt(): Long? {

@@ -37,6 +37,11 @@ import io.bearound.sdk.models.SDKConfiguration
 import io.bearound.sdk.models.SDKInfo
 import io.bearound.sdk.models.ScanPrecision
 import io.bearound.sdk.models.UserProperties
+import io.bearound.sdk.models.UserDevice
+import io.bearound.sdk.models.DataCollectionPolicy
+import io.bearound.sdk.sampling.*
+import android.os.SystemClock
+import org.json.JSONObject
 import io.bearound.sdk.network.APIClient
 import io.bearound.sdk.network.HttpException
 import io.bearound.sdk.telemetry.ErrorReporter
@@ -78,6 +83,11 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.math.pow
 
+internal data class LegacyStopSnapshot(val tenantId: String, val payloadJson: String) {
+    fun persist(storage: OfflineBatchStorage): Boolean =
+        storage.saveRequestReturningId(payloadJson, expectedTenantId = tenantId) != null
+}
+
 /**
  * Main SDK class - Singleton pattern
  * Entry point for all SDK operations
@@ -85,6 +95,39 @@ import kotlin.math.pow
 class BeAroundSDK private constructor() {
     companion object {
         private const val TAG = "BeAroundSDK"
+
+        internal fun prepareLegacyStopSnapshot(
+            adaptiveEnabled: Boolean, separationEnabled: Boolean, tenantId: String,
+            client: APIClient, info: SDKInfo, beacons: List<Beacon>,
+            capturedDevice: UserDevice, properties: UserProperties?
+        ): LegacyStopSnapshot? {
+            if ((adaptiveEnabled && separationEnabled) || beacons.isEmpty()) return null
+            val device = capturedDevice.copy(timestamp = beacons.maxOf { it.timestamp.time })
+            return LegacyStopSnapshot(tenantId, client.buildPayload(beacons, info, device, properties).toString())
+        }
+
+        @JvmStatic
+        fun `configure$default`(
+            sdk: BeAroundSDK, businessToken: String, scanPrecision: ScanPrecision?,
+            maxQueuedPayloads: MaxQueuedPayloads?, technology: String?,
+            periodicReconciliationEnabled: Boolean, periodicReconciliationIntervalMillis: Long,
+            periodicScanDurationMillis: Long, presenceHeartbeatIntervalMillis: Long,
+            collectAdvertisingId: Boolean, collectLocation: Boolean, collectWifi: Boolean,
+            mask: Int, marker: Any?
+        ): BeAroundSDK = sdk.configure(
+            businessToken,
+            if (mask and 2 != 0) ScanPrecision.MEDIUM else requireNotNull(scanPrecision),
+            if (mask and 4 != 0) MaxQueuedPayloads.MEDIUM else requireNotNull(maxQueuedPayloads),
+            if (mask and 8 != 0) "android-native" else requireNotNull(technology),
+            if (mask and 16 != 0) true else periodicReconciliationEnabled,
+            if (mask and 32 != 0) PeriodicReconciliationDefaults.DEFAULT_INTERVAL_MILLIS else periodicReconciliationIntervalMillis,
+            if (mask and 64 != 0) PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS else periodicScanDurationMillis,
+            if (mask and 128 != 0) PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS else presenceHeartbeatIntervalMillis,
+            if (mask and 256 != 0) true else collectAdvertisingId,
+            if (mask and 512 != 0) true else collectLocation,
+            if (mask and 1024 != 0) true else collectWifi
+        )
+
 
         /**
          * Statuses where an identical retry fails identically: the payload/credential is
@@ -191,15 +234,415 @@ class BeAroundSDK private constructor() {
     private val wifiNudgeHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val wifiNudgeRunnable = object : Runnable {
         override fun run() {
+            if (!wasScanningEnabled()) return
             if (!isInBackground) deviceInfoCollector.nudgeWifiScan()
-            wifiNudgeHandler.postDelayed(this, 35_000)
+            val interval = currentSamplingPlan().contextIntervalMs?.coerceAtLeast(35_000L) ?: 35_000L
+            wifiNudgeHandler.postDelayed(this, interval)
         }
     }
     private lateinit var backgroundScanManager: BackgroundScanManager
     private lateinit var backgroundScheduler: BackgroundScheduler
     private var apiClient: APIClient? = null
+    private val adaptiveLock = Any()
+    @Volatile private var samplingGeneration = 0L
+    private var samplingGenerationStartedAtElapsed = SystemClock.elapsedRealtime()
+    private var samplingPolicy = AdaptiveSamplingPolicy()
+    private var motionMonitor: MotionMonitor? = null
+    private val motionRegistrar by lazy { PlayServicesMotionRegistrar(context) }
+    private var inertialMonitor: InertialMotionMonitor? = null
+    private val inertialStartBudget = InertialStartBudget()
+    private var observationSummary = ObservationSummary()
+    private var samplingDevice: UserDevice? = null
+    private var samplingContextJson: String? = null
+    private var samplingContextId = java.util.UUID.randomUUID().toString()
+    private var samplingEffectivePolicy: DataCollectionPolicy? = null
+    private var samplingHadCapability = false
+    private var unavailableSamplingBudget: Int? = null
+    private val scanningIntent = java.util.concurrent.atomic.AtomicLong()
+    private val unpersistedStopSnapshots = java.util.ArrayDeque<LegacyStopSnapshot>()
+    private var legacyFallbackPending = false
+    private var contextReadAtElapsed = Long.MIN_VALUE
+    private var lastLiveAttemptElapsed = Long.MIN_VALUE
+    private var lastSummaryElapsed = 0L
+    private val pendingLiveObservations = java.util.ArrayDeque<PreparedObservation>()
+    private val physicalSamples = mutableMapOf<String, Pair<Beacon, Long>>()
+    private val legacyDeliveredSamples = mutableMapOf<String, Long>()
+    private val physicalCaptureQueue by lazy {
+        PhysicalCaptureQueue(scope, capture = { beacon, source, generation ->
+            if (generation == samplingGeneration) capturePhysicalObservation(beacon, source, admittedBeforeStop = true)
+        }, overflow = overflow@{ generation ->
+            if (generation != samplingGeneration) return@overflow
+            synchronized(adaptiveLock) {
+                closeSamplingWindow()?.let { persistObservation(it) }
+                apiClient?.invalidateSamplingCapability()
+                samplingPolicy.invalidateContext(MotionReason.NO_EVIDENCE)
+                legacyFallbackPending = true
+                pendingLiveObservations.clear()
+                DiagnosticsStore.recordObservation(gaps = 1)
+            }
+            scope.launch { syncBeaconsAwait(forceBackground = isInBackground) }
+        }, failed = { DiagnosticsStore.recordError("Physical sampling queue operation failed") })
+    }
 
-    private val metadataCache = mutableMapOf<String, BeaconMetadata>()
+    private fun enqueuePhysicalObservation(beacon: Beacon, observedElapsed: Long?) {
+        val now = SystemClock.elapsedRealtime()
+        if (observedElapsed == null || now - observedElapsed !in 0..30_000L ||
+            observedElapsed < samplingGenerationStartedAtElapsed || beacon.isStale) {
+            DiagnosticsStore.recordObservation(cached = 1)
+            return
+        }
+        if (!physicalCaptureQueue.offer(beacon, observedElapsed, samplingGeneration, ::wasScanningEnabled))
+            DiagnosticsStore.recordObservation(cached = 1)
+    }
+
+    private fun effectiveCollectionPolicy(): DataCollectionPolicy {
+        val configured = DataCollectionPolicyStore.current
+        val fineLocation = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val location = fineLocation || ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val nearbyWifi = Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context,
+            "android.permission.NEARBY_WIFI_DEVICES") == PackageManager.PERMISSION_GRANTED
+        val wifi = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_WIFI_STATE) == PackageManager.PERMISSION_GRANTED &&
+            (fineLocation || nearbyWifi)
+        return configured.copy(location = configured.location && location, wifi = configured.wifi && wifi,
+            motionSensors = configured.motionSensorsEnabled)
+    }
+
+    private fun newAPIClient(config: SDKConfiguration) = APIClient(config,
+        policyProvider = ::effectiveCollectionPolicy,
+        nativeActivityAllowed = { config.adaptiveSamplingEnabled && DataCollectionPolicyStore.current.motionSensorsEnabled &&
+            runCatching { motionRegistrar.availability() == MotionAvailability.AUTHORIZED }.getOrDefault(false) }).also { client ->
+        val generation = samplingGeneration
+        client.bindGeneration { generation == samplingGeneration && apiClient === client }
+    }
+
+    private fun resetAdaptiveSampling() = synchronized(adaptiveLock) {
+        closeSamplingWindow()?.let { persistObservation(it) }
+        samplingGeneration++
+        physicalCaptureQueue.resume()
+        samplingGenerationStartedAtElapsed = SystemClock.elapsedRealtime()
+        activeSync?.cancel()
+        activeSync = null
+        motionMonitor?.stop()
+        motionMonitor = null
+        inertialMonitor?.stop()
+        inertialMonitor = null
+        apiClient = configuration?.let(::newAPIClient)
+        samplingPolicy = AdaptiveSamplingPolicy(collectionPolicy = effectiveCollectionPolicy(), inertialGeneration = samplingGeneration)
+        observationSummary = ObservationSummary()
+        samplingDevice = null
+        samplingContextJson = null
+        samplingContextId = java.util.UUID.randomUUID().toString()
+        samplingEffectivePolicy = null
+        samplingHadCapability = false
+        unavailableSamplingBudget = null
+        legacyFallbackPending = false
+        physicalSamples.clear()
+        pendingLiveObservations.clear()
+        legacyDeliveredSamples.clear()
+        contextReadAtElapsed = Long.MIN_VALUE
+        lastLiveAttemptElapsed = Long.MIN_VALUE
+        lastSummaryElapsed = SystemClock.elapsedRealtime()
+    }
+
+    private fun startMotionMonitor() = synchronized(adaptiveLock) {
+        val allowed = configuration?.adaptiveSamplingEnabled == true &&
+            DataCollectionPolicyStore.current.motionSensorsEnabled && wasScanningEnabled()
+        if (!allowed) {
+            motionMonitor?.stop(); motionMonitor = null
+            inertialMonitor?.stop(); inertialMonitor = null
+            samplingPolicy.updateCollectionPolicy(effectiveCollectionPolicy())
+            return@synchronized
+        }
+        if (motionMonitor == null) motionMonitor = MotionMonitor(samplingPolicy, motionRegistrar,
+            collectionAllowed = { configuration?.adaptiveSamplingEnabled == true && DataCollectionPolicyStore.current.motionSensorsEnabled })
+            .also { it.start() }
+        else motionMonitor?.refreshAuthorization()
+        if (!inertialExecutionAllowed()) {
+            inertialMonitor?.stop(); inertialMonitor = null
+            samplingPolicy.invalidateInertial()
+            return@synchronized
+        }
+        if (inertialMonitor == null) {
+            val generation = samplingGeneration
+            inertialMonitor = InertialMotionMonitor(generation,
+                eligible = { generation == samplingGeneration && wasScanningEnabled() &&
+                    configuration?.adaptiveSamplingEnabled == true && DataCollectionPolicyStore.current.motionSensorsEnabled && inertialExecutionAllowed() },
+                providerFactory = { AndroidInertialSensorProvider(context, handler) },
+                schedule = { delay, action ->
+                    val task = Runnable { action() }
+                    handler.postDelayed(task, delay)
+                    val cancel: () -> Unit = { handler.removeCallbacks(task) }
+                    cancel
+                },
+                onWindow = { window, observedAtMs -> physicalCaptureQueue.flush { synchronized(adaptiveLock) {
+                    if (generation == samplingGeneration && wasScanningEnabled() &&
+                        configuration?.adaptiveSamplingEnabled == true && DataCollectionPolicyStore.current.motionSensorsEnabled && inertialExecutionAllowed()) {
+                        val wasMoving = samplingPolicy.evidence().isMoving()
+                        samplingPolicy.observeInertial(window, observedAtMs)
+                        if (!wasMoving && samplingPolicy.evidence().isMoving()) {
+                            closeSamplingWindow("transition", "context_changed")?.let { persistObservation(it) }
+                            samplingContextId = java.util.UUID.randomUUID().toString()
+                        }
+                    }
+                } } }, budget = inertialStartBudget,
+                sampleEligible = { generation == samplingGeneration && wasScanningEnabled() &&
+                    configuration?.adaptiveSamplingEnabled == true && DataCollectionPolicyStore.current.motionSensorsEnabled &&
+                    (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) ||
+                        foregroundScanConfig?.enabled == true && BeaconScanService.isRunning) },
+                onClockUncertain = { synchronized(adaptiveLock) {
+                    if (generation == samplingGeneration) samplingPolicy.invalidateInertial()
+                } }).also { it.start() }
+        } else inertialMonitor?.refresh()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun inertialExecutionAllowed(): Boolean {
+        if (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) return true
+        if (foregroundScanConfig?.enabled != true || !BeaconScanService.isRunning) return false
+        return runCatching {
+            val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+            manager?.getRunningServices(Int.MAX_VALUE)?.any {
+                it.foreground && it.pid == android.os.Process.myPid() && it.service.className == BeaconScanService::class.java.name
+            } == true
+        }.getOrDefault(false)
+    }
+
+    private fun currentSamplingPlan(): SamplingPlan {
+        val config = configuration ?: return SamplingPlan(false, null, 60_000L, 60_000L)
+        val capability = apiClient?.samplingCapability(deviceId)
+        val effectivePolicy = effectiveCollectionPolicy()
+        val plan = synchronized(adaptiveLock) {
+            if (samplingEffectivePolicy != null && samplingEffectivePolicy != effectivePolicy) {
+                closeSamplingWindow()?.let { persistObservation(it) }
+                samplingContextJson = null
+                samplingDevice = samplingDevice?.copy(location = null, wifis = emptyList(), apId = null,
+                    wifiSSID = null, advertisingId = null, limitAdTracking = null)
+                contextReadAtElapsed = Long.MIN_VALUE
+                samplingContextId = java.util.UUID.randomUUID().toString()
+            }
+            samplingEffectivePolicy = effectivePolicy
+            samplingPolicy.updateCollectionPolicy(effectivePolicy)
+            val now = SystemClock.elapsedRealtime()
+            val freshPhysicalZone = wasScanningEnabled() && isScanning &&
+                ::bluetoothManager.isInitialized && bluetoothManager.isPoweredOn &&
+                physicalSamples.values.any { (beacon, source) ->
+                    source >= samplingGenerationStartedAtElapsed && now - source in 0..30_000L &&
+                        !beacon.isStale && beacon.major in 0 until io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR_FLOOR
+                }
+            samplingPolicy.plan(config.syncInterval,
+                capability?.takeUnless { it.maxPayloadBytes == unavailableSamplingBudget }?.policy,
+                config.adaptiveSamplingEnabled, freshPhysicalZone)
+        }
+        synchronized(adaptiveLock) {
+            if (samplingHadCapability && !plan.separationEnabled) {
+                closeSamplingWindow()?.let { persistObservation(it) }
+                observationSummary.clearClockSynchronization()
+                pendingLiveObservations.clear()
+                beaconManager.consumeRssiStats(physicalSamples.values.map { it.first.identifier })
+                legacyFallbackPending = true
+            }
+            samplingHadCapability = plan.separationEnabled
+        }
+        synchronized(adaptiveLock) {
+            DiagnosticsStore.recordSamplingPolicy(samplingPolicy.evidence(), plan, plan.separationEnabled,
+                capability?.offsetUncertaintyMs,
+                if (contextReadAtElapsed == Long.MIN_VALUE) null else contextReadAtElapsed + (plan.contextIntervalMs ?: config.syncInterval),
+                lastSummaryElapsed + plan.summaryIntervalMs,
+                if (lastLiveAttemptElapsed == Long.MIN_VALUE) null else lastLiveAttemptElapsed + plan.liveIntervalMs)
+        }
+        return plan
+    }
+
+    private fun queuePreparedLive(observation: PreparedObservation) {
+        if (!persistObservation(observation)) {
+            apiClient?.invalidateSamplingCapability()
+            legacyFallbackPending = true
+            return
+        }
+        if (pendingLiveObservations.size >= 8) {
+            apiClient?.invalidateSamplingCapability()
+            legacyFallbackPending = true
+            DiagnosticsStore.recordError("Live segment capacity reached; archived evidence retained")
+        } else pendingLiveObservations.addLast(observation)
+    }
+
+    private fun closeSamplingWindow(kind: String = "summary", transitionReason: String? = null): PreparedObservation? {
+        if (configuration?.adaptiveSamplingEnabled == true && wasScanningEnabled()) {
+            apiClient?.samplingCapability(deviceId)?.let { capability ->
+                observationSummary.live(capability.liveEvidenceMaxAgeMs, samplingPolicy.evidence())?.let(::queuePreparedLive)
+            }
+        }
+        return observationSummary.close(kind, transitionReason)
+    }
+
+    private fun persistObservation(observation: PreparedObservation): Boolean {
+        val priority = observation.kind == "transition"
+        val sanitized = apiClient?.filterPayload(JSONObject(observation.payloadJson))?.toString() ?: observation.payloadJson
+        val saved = offlineBatchStorage.saveRequestReturningId(sanitized, priority, samplingContextId) != null
+        if (!saved) DiagnosticsStore.recordError("Observation could not be persisted")
+        return saved
+    }
+
+    private fun enrichPhysicalBeacon(beacon: Beacon): Beacon {
+        return beacon.withCachedMetadata(metadataCache[beacon.identifier])
+    }
+
+    private fun capturePhysicalObservation(beacon: Beacon, observedElapsed: Long?) =
+        capturePhysicalObservation(beacon, observedElapsed, admittedBeforeStop = false)
+
+    private fun capturePhysicalObservation(rawBeacon: Beacon, observedElapsed: Long?, admittedBeforeStop: Boolean) {
+        val beacon = enrichPhysicalBeacon(rawBeacon)
+        val config = configuration ?: return
+        if (!admittedBeforeStop && !wasScanningEnabled()) return
+        val now = SystemClock.elapsedRealtime()
+        val source = observedElapsed ?: run { DiagnosticsStore.recordObservation(cached = 1); return }
+        if ((!admittedBeforeStop && now - source !in 0..30_000L) || source < samplingGenerationStartedAtElapsed || beacon.isStale) {
+            DiagnosticsStore.recordObservation(cached = 1)
+            return
+        }
+        var wake = false
+        synchronized(adaptiveLock) {
+            val key = "${beacon.uuid}:${beacon.major}:${beacon.minor}"
+            if (source <= (physicalSamples[key]?.second ?: Long.MIN_VALUE)) {
+                DiagnosticsStore.recordObservation(cached = 1)
+                return
+            }
+            physicalSamples.entries.removeAll { now - it.value.second > 180_000L }
+            legacyDeliveredSamples.keys.retainAll(physicalSamples.keys)
+            if (physicalSamples.size >= 100 && key !in physicalSamples) {
+                physicalSamples.entries.minByOrNull { it.value.second }?.key?.let { physicalSamples.remove(it) }
+            }
+            physicalSamples[key] = beacon to source
+            DiagnosticsStore.recordObservation(unique = 1)
+            if (!config.adaptiveSamplingEnabled) return
+            startMotionMonitor()
+            val plan = currentSamplingPlan()
+            val client = apiClient ?: return
+            val capability = client.samplingCapability(deviceId)
+            if (!plan.separationEnabled || capability == null) return
+            observationSummary.setPayloadBudget(capability.maxPayloadBytes)
+            observationSummary.synchronizeClock(capability.serverOffsetMs,
+                capability.offsetUncertaintyMs, capability.synchronizedAtElapsedMs)
+            if (samplingDevice == null || contextReadAtElapsed == Long.MIN_VALUE ||
+                now - contextReadAtElapsed >= (plan.contextIntervalMs ?: config.syncInterval)
+            ) {
+                val device = deviceInfoCollector.collectDeviceInfo(getLocationPermissionStatus(),
+                    if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off", !isInBackground)
+                samplingDevice = device
+                contextReadAtElapsed = now
+                samplingPolicy.observeLocation(device.location)
+                val json = client.buildPayload(emptyList(), sdkInfo ?: return, device, userProperties).toString()
+                if (samplingContextJson != null && samplingContextJson != json) closeSamplingWindow()?.let { persistObservation(it) }
+                samplingContextJson = json
+                DiagnosticsStore.recordObservation(contextRead = true,
+                    denied = if (!effectiveCollectionPolicy().location || !effectiveCollectionPolicy().wifi) 1 else 0)
+            }
+            val roster = physicalSamples.filterValues { now - it.second in 0..30_000L &&
+                it.first.major < io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR_FLOOR }
+                .mapValues { it.value.first.rssi }
+            val oldEvidence = samplingPolicy.evidence()
+            if (beacon.major < io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR_FLOOR)
+                samplingPolicy.observeContext(ContextObservation("$key:$source", source, roster, samplingDevice?.apId))
+            val newEvidence = samplingPolicy.evidence()
+            if (newEvidence.reason == MotionReason.CONTEXT_CHANGED && oldEvidence.reason != MotionReason.CONTEXT_CHANGED) {
+                closeSamplingWindow("transition", "context_changed")?.let { persistObservation(it) }
+                samplingContextId = java.util.UUID.randomUUID().toString()
+                wake = true
+            }
+            val contextJson = samplingContextJson ?: return
+            try {
+                observationSummary.capture(listOf(beacon), contextJson, newEvidence, mapOf(beacon.identifier to source),
+                    capability?.liveEvidenceMaxAgeMs?.takeIf { plan.separationEnabled }).forEach {
+                    if (it.kind == "live") { queuePreparedLive(it); wake = true } else persistObservation(it)
+                }
+            } catch (error: Exception) {
+                closeSamplingWindow()?.let { persistObservation(it) }
+                if (error is ObservationPayloadBudgetException) unavailableSamplingBudget = capability.maxPayloadBytes
+                else client.invalidateSamplingCapability()
+                legacyFallbackPending = true
+                DiagnosticsStore.recordError("Observation limit reached; legacy transport restored")
+                wake = true
+            }
+            if (plan.separationEnabled) {
+                if ((lastLiveAttemptElapsed == Long.MIN_VALUE || now - lastLiveAttemptElapsed >= plan.liveIntervalMs) &&
+                    (consecutiveFailures == 0 || shouldRetryFailedBatches())) wake = true
+            } else if (legacyFallbackPending) {
+                wake = true
+                legacyFallbackPending = false
+            }
+        }
+        if (wake) syncBeacons(forceBackground = isInBackground)
+    }
+
+    private suspend fun performAdaptiveSync(client: APIClient, forceBackground: Boolean): Boolean {
+        val generation = samplingGeneration
+        val alreadyDurable = mutableSetOf<String>()
+        val prepared = synchronized(adaptiveLock) {
+            val plan = currentSamplingPlan()
+            val capability = client.samplingCapability(deviceId) ?: return@synchronized emptyList<PreparedObservation>()
+            val observations = mutableListOf<PreparedObservation>()
+            val now = SystemClock.elapsedRealtime()
+            fun appendPendingLive() {
+                while (pendingLiveObservations.isNotEmpty()) {
+                    val pending = pendingLiveObservations.removeFirst()
+                    val payload = JSONObject(pending.payloadJson)
+                    val sampling = payload.getJSONObject("sampling")
+                    val elapsedSincePreparation = now - sampling.getJSONObject("clock").getLong("monotonicTimeMs")
+                    val beacons = payload.getJSONArray("beacons")
+                    if (elapsedSincePreparation >= 0 && (0 until beacons.length()).all {
+                        sampling.getLong("sentAt") - beacons.getJSONObject(it).getLong("timestamp") + elapsedSincePreparation in 0..capability.liveEvidenceMaxAgeMs
+                    }) {
+                        observations += pending
+                        alreadyDurable += pending.batchId
+                    }
+                }
+            }
+            appendPendingLive()
+            if (lastLiveAttemptElapsed == Long.MIN_VALUE || now - lastLiveAttemptElapsed >= plan.liveIntervalMs) {
+                observationSummary.live(capability.liveEvidenceMaxAgeMs, samplingPolicy.evidence())?.let {
+                    val payload = JSONObject(it.payloadJson)
+                    val device = samplingDevice?.withEncounterData()
+                    if (device != null) {
+                        val encounters = client.buildPayload(emptyList(), sdkInfo ?: return@synchronized emptyList(), device, userProperties)
+                        listOf("encounters", "encounterIds").forEach { key -> encounters.optJSONArray(key)?.let { value -> payload.put(key, value) } }
+                    }
+                    observations += it.copy(payloadJson = payload.toString())
+                    lastLiveAttemptElapsed = now
+                }
+            }
+            if (now - lastSummaryElapsed >= plan.summaryIntervalMs) {
+                closeSamplingWindow()?.let { observations += it }
+                lastSummaryElapsed = now
+                appendPendingLive()
+            }
+            observations
+        }
+        var ok = true
+        for (observation in prepared) {
+            if (generation != samplingGeneration) return false
+            if (observation.batchId !in alreadyDurable && !persistObservation(observation)) { ok = false; continue }
+            val beaconCount = JSONObject(observation.payloadJson).getJSONArray("beacons").length()
+            dispatchToListener { it.onSyncStarted(beaconCount) }
+            var serializedAttemptBytes = 0
+            var httpAttempts = 0
+            val result = client.sendStoredPayload(observation.payloadJson) { serializedAttemptBytes += it; httpAttempts++ }
+            if (generation != samplingGeneration) return false
+            DiagnosticsStore.recordSync(result.isSuccess, beaconCount)
+            dispatchToListener { it.onSyncCompleted(beaconCount, result.isSuccess, result.exceptionOrNull() as? Exception) }
+            if (result.isSuccess) offlineBatchStorage.removeBatch(observation.batchId) else ok = false
+            if (result.isSuccess) { consecutiveFailures = 0; lastFailureTime = null }
+            else { consecutiveFailures++; lastFailureTime = System.currentTimeMillis() }
+            DiagnosticsStore.recordSamplingAttempt(observation.kind, serializedAttemptBytes,
+                result.isSuccess, archiveOnly = result.getOrNull()?.projection == "archive_only",
+                manifestGap = result.getOrNull()?.projection == "pending_history", httpAttempts = httpAttempts)
+            DiagnosticsStore.recordObservation(buckets = observation.bucketCount, gaps = observation.gapCount)
+        }
+        // Current live attempts precede archival backlog, while the visit outbox drains independently.
+        if (shouldRetryFailedBatches()) drainStoredBatches(forceBackground)?.let { ok = ok && it }
+        return ok
+    }
+
+    private val metadataCache = java.util.concurrent.ConcurrentHashMap<String, BeaconMetadata>()
     private val collectedBeacons = mutableMapOf<String, Beacon>()
 
     /**
@@ -310,7 +753,7 @@ class BeAroundSDK private constructor() {
             // everything on and upload a signal the host turned off — in background, where
             // nobody is looking.
             DataCollectionPolicyStore.apply(savedConfig.dataCollectionPolicy)
-            apiClient = APIClient(savedConfig)
+            apiClient = newAPIClient(savedConfig)
             
             val buildNumber = try {
                 context.packageManager.getPackageInfo(context.packageName, 0).versionCode
@@ -323,6 +766,8 @@ class BeAroundSDK private constructor() {
             offlineBatchStorage.maxBatchCount = savedConfig.maxQueuedPayloads.value
             // Same tenant gate as configure() — restored sessions read only their own queue.
             offlineBatchStorage.currentTenantId = tenantFingerprint(savedConfig.businessToken)
+            samplingDevice = deviceInfoCollector.collectDeviceInfo(getLocationPermissionStatus(),
+                if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off", !isInBackground)
             appPresenceCoordinator.setBusinessToken(savedConfig.businessToken)
 
             SDKConfigStorage.loadInternalId(context)?.let { savedId ->
@@ -378,20 +823,21 @@ class BeAroundSDK private constructor() {
     }
 
     private fun setupCallbacks() {
+        encounterMesh?.onPhysicalVirtualSighting = { minor, rssi, observedElapsed ->
+            val now = SystemClock.elapsedRealtime()
+            val age = observedElapsed?.let { now - it } ?: 0L
+            val beacon = Beacon(io.bearound.sdk.utilities.IBeaconParser.BEAROUND_UUID,
+                io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR, minor, rssi,
+                Beacon.Proximity.BT, -1.0, java.util.Date(System.currentTimeMillis() - age), rssiRaw = rssi)
+            try { enqueuePhysicalObservation(beacon, observedElapsed) }
+            catch (_: Exception) { DiagnosticsStore.recordError("Physical peer sampling callback failed") }
+        }
+        beaconManager.onPhysicalBeacon = { beacon, observedElapsed ->
+            try { enqueuePhysicalObservation(beacon, observedElapsed) }
+            catch (_: Exception) { DiagnosticsStore.recordError("Physical sampling callback failed") }
+        }
         beaconManager.onBeaconsUpdated = { beacons ->
-            val enrichedBeacons = beacons.map { beacon ->
-                val key = beacon.identifier
-                // Prefer the metadata-scan cache (fresher battery/temperature), but FALL BACK
-                // to the metadata the parser already extracted from the scan record. Without
-                // the fallback, scan-response beacons (e.g. B:0.135) — which the unfiltered
-                // metadata scan misses — had their parsed metadata overwritten with null and
-                // synced WITHOUT battery/firmware/temperature.
-                val metadata = metadataCache[key] ?: beacon.metadata
-                beacon.copy(
-                    metadata = metadata,
-                    txPower = metadata?.txPower ?: beacon.txPower
-                )
-            }
+            val enrichedBeacons = beacons.map(::enrichPhysicalBeacon)
 
             val beaconsForListener = beaconLock.withLock {
                 enrichedBeacons.map { beacon ->
@@ -581,6 +1027,8 @@ class BeAroundSDK private constructor() {
             restartSyncTimer()
         }
 
+        startMotionMonitor()
+
         // Foreground is where the soft fence can see at all: evaluate right away.
         tickVisitDetection("foreground", force = true)
 
@@ -602,6 +1050,7 @@ class BeAroundSDK private constructor() {
         if (fgConfig?.enabled == true && isScanning) {
             BeaconScanService.start(context, fgConfig)
         }
+        startMotionMonitor()
         
         if (isScanning) {
             restartSyncTimer()
@@ -622,6 +1071,7 @@ class BeAroundSDK private constructor() {
      * @param periodicScanDurationMillis ceiling of the collection window inside the
      *   worker, clamped to **3–30 s**. The worker never registers scanners of its own.
      */
+    @JvmOverloads
     fun configure(
         businessToken: String,
         scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
@@ -633,7 +1083,9 @@ class BeAroundSDK private constructor() {
         presenceHeartbeatIntervalMillis: Long = PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS,
         collectAdvertisingId: Boolean = true,
         collectLocation: Boolean = true,
-        collectWifi: Boolean = true
+        collectWifi: Boolean = true,
+        adaptiveSamplingEnabled: Boolean = true,
+        collectMotionSensors: Boolean? = null
     ): BeAroundSDK {
         // NEVER-CRASH-THE-HOST: an embedded SDK must not throw from a public entry
         // point — a host wired to an empty BuildConfig field would crash on startup.
@@ -665,6 +1117,8 @@ class BeAroundSDK private constructor() {
             collectAdvertisingId = collectAdvertisingId,
             collectLocation = collectLocation,
             collectWifi = collectWifi,
+            adaptiveSamplingEnabled = adaptiveSamplingEnabled,
+            collectMotionSensors = collectMotionSensors,
             // Carried over: configure() persists the whole configuration, and app presence
             // is set through configureAppPresence(), not through this call.
             appPresence = SDKConfigStorage.loadAppPresenceConfiguration(context)
@@ -673,10 +1127,11 @@ class BeAroundSDK private constructor() {
         // Applied FIRST: everything below (telemetry install, the advertising-ID fetch, the
         // register call, an in-flight sync) can reach a collector, and a collector that runs
         // before the policy lands would read a signal the host just turned off.
+        resetAdaptiveSampling()
         DataCollectionPolicyStore.apply(config.dataCollectionPolicy)
 
         configuration = config
-        apiClient = APIClient(config)
+        apiClient = newAPIClient(config)
 
         val buildNumber = try {
             context.packageManager.getPackageInfo(context.packageName, 0).versionCode
@@ -699,6 +1154,10 @@ class BeAroundSDK private constructor() {
         appPresenceCoordinator.setBusinessToken(businessToken)
 
         SDKConfigStorage.saveConfiguration(context, config)
+        synchronized(adaptiveLock) {
+            samplingDevice = deviceInfoCollector.collectDeviceInfo(getLocationPermissionStatus(),
+                if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off", !isInBackground)
+        }
 
         // Periodic reconciliation: apply the new settings to the unique periodic work.
         // ExistingPeriodicWorkPolicy.UPDATE swaps the spec in place (same interval =
@@ -744,6 +1203,7 @@ class BeAroundSDK private constructor() {
         io.bearound.sdk.push.PushEventQueue.flush(context)
 
         if (isScanning) {
+            startMotionMonitor()
             startSyncTimer()
         }
         return this
@@ -985,8 +1445,12 @@ class BeAroundSDK private constructor() {
      * persisted across app kills.
      */
     fun setUserProperties(properties: UserProperties) {
-        userProperties = (userProperties ?: UserProperties()).mergedWith(properties)
-        userProperties?.internalId?.let { SDKConfigStorage.saveInternalId(context, it) }
+        synchronized(adaptiveLock) {
+            closeSamplingWindow()?.let { persistObservation(it) }
+            userProperties = (userProperties ?: UserProperties()).mergedWith(properties)
+            userProperties?.internalId?.let { SDKConfigStorage.saveInternalId(context, it) }
+            refreshSamplingMetadata()
+        }
     }
 
     /**
@@ -994,7 +1458,11 @@ class BeAroundSDK private constructor() {
      * for push. Sent once with the next sync; re-sent only if the token changes.
      */
     fun setPushToken(token: String) {
-        PushTokenStore.setToken(token)
+        synchronized(adaptiveLock) {
+            closeSamplingWindow()?.let { persistObservation(it) }
+            PushTokenStore.setToken(token)
+            refreshSamplingMetadata()
+        }
         Log.d(TAG, "Push token registered")
         // If the SDK is already configured and this token was not sent yet (new/changed),
         // push it now via register (beacons:[]) — otherwise it would only go out on the
@@ -1103,8 +1571,22 @@ class BeAroundSDK private constructor() {
 
     /** Clears all user properties, including the persisted internalId. */
     fun clearUserProperties() {
-        userProperties = null
-        SDKConfigStorage.saveInternalId(context, null)
+        synchronized(adaptiveLock) {
+            closeSamplingWindow()?.let { persistObservation(it) }
+            userProperties = null
+            SDKConfigStorage.saveInternalId(context, null)
+            refreshSamplingMetadata()
+        }
+    }
+
+    private fun refreshSamplingMetadata() {
+        samplingContextId = java.util.UUID.randomUUID().toString()
+        samplingDevice = samplingDevice?.copy(pushToken = PushTokenStore.tokenForPayload())
+        val device = samplingDevice
+        val info = sdkInfo
+        val client = apiClient
+        samplingContextJson = if (device != null && info != null && client != null)
+            client.buildPayload(emptyList(), info, device, userProperties).toString() else null
     }
 
     fun enableForegroundScanning(config: ForegroundScanConfig) {
@@ -1124,6 +1606,7 @@ class BeAroundSDK private constructor() {
         if (BeaconScanService.isRunning) {
             BeaconScanService.stop(context)
         }
+        startMotionMonitor()
     }
 
     val isForegroundScanningEnabled: Boolean
@@ -1199,6 +1682,55 @@ class BeAroundSDK private constructor() {
      * All listener callbacks are dispatched on the main thread.
      */
     fun startScanning(foregroundScanConfig: ForegroundScanConfig? = null) {
+        val intent = scanningIntent.incrementAndGet()
+        if (physicalCaptureQueue.deferStart {
+                if (scanningIntent.get() == intent) startScanningNow(foregroundScanConfig)
+            }) return
+        startScanningNow(foregroundScanConfig)
+    }
+
+    private fun persistRetainedStopSnapshots() = synchronized(adaptiveLock) {
+        val iterator = unpersistedStopSnapshots.iterator()
+        while (iterator.hasNext()) {
+            val snapshot = iterator.next()
+            if (snapshot.persist(offlineBatchStorage)) iterator.remove()
+        }
+    }
+
+    private fun captureLegacyStopSnapshot() {
+        val config = configuration ?: return
+        val client = apiClient ?: return
+        val info = sdkInfo ?: return
+        val plan = currentSamplingPlan()
+        if (config.adaptiveSamplingEnabled && plan.separationEnabled) return
+        val physical = synchronized(adaptiveLock) { physicalSamples.filter { (key, sample) ->
+            sample.second > (legacyDeliveredSamples[key] ?: Long.MIN_VALUE) }.toMap() }
+        val cached = beaconLock.withLock { collectedBeacons.values.filter { !it.alreadySynced } }
+        val beacons = (cached + physical.values.map { it.first }).filter {
+            it.major < io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR_FLOOR
+        }.associateBy { it.identifier }.values.toList()
+        if (beacons.isEmpty()) return
+        val device = deviceInfoCollector.collectDeviceInfo(
+            getLocationPermissionStatus(), if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off", !isInBackground
+        ).withEncounterData()
+        val snapshot = prepareLegacyStopSnapshot(config.adaptiveSamplingEnabled, plan.separationEnabled,
+            tenantFingerprint(config.businessToken), client, info, beacons, device, userProperties) ?: return
+        synchronized(adaptiveLock) {
+            unpersistedStopSnapshots.addLast(snapshot)
+            while (unpersistedStopSnapshots.size > offlineBatchStorage.maxBatchCount.coerceAtLeast(1)) {
+                unpersistedStopSnapshots.removeFirst()
+                DiagnosticsStore.recordError("Stop snapshot retention capacity eviction")
+            }
+        }
+        persistRetainedStopSnapshots()
+        // The immutable payload owns these points even while a failed disk write awaits an existing wakeup.
+        val identifiers = beacons.map { it.identifier }.toSet()
+        beaconLock.withLock { identifiers.forEach { collectedBeacons.remove(it) } }
+        synchronized(adaptiveLock) { physical.forEach { (key, sample) -> legacyDeliveredSamples[key] = sample.second } }
+    }
+
+    private fun startScanningNow(foregroundScanConfig: ForegroundScanConfig?) {
+        persistRetainedStopSnapshots()
         val config = configuration
         if (config == null) {
             val error = Exception("SDK not configured. Call configure() first.")
@@ -1216,6 +1748,7 @@ class BeAroundSDK private constructor() {
         }
 
         // Scanning mode is automatic based on app state (foreground/background)
+        resetAdaptiveSampling()
         beaconManager.startScanning()
         // Encounter layer rides the same scan: advertise + recognise other SDK hosts.
         encounterMesh?.start()
@@ -1238,6 +1771,7 @@ class BeAroundSDK private constructor() {
 
         // Persist scanning state for recovery after kill/reboot
         SDKConfigStorage.saveScanningEnabled(context, true)
+        startMotionMonitor()
 
         // v2.5 — Bluetooth metadata scanning is gated by beacon region presence. It will
         // be started inside onActiveScanShouldStart when the first beacon is detected, and
@@ -1264,6 +1798,7 @@ class BeAroundSDK private constructor() {
         val client = apiClient
         val info = sdkInfo
         val config = configuration
+        val generation = samplingGeneration
 
         if (client == null || info == null || config == null) {
             Log.w(TAG, "registerDeviceIfNeeded: SDK not fully configured, skipping")
@@ -1306,8 +1841,10 @@ class BeAroundSDK private constructor() {
 
         Log.d(TAG, "registerDeviceIfNeeded: sending register event")
 
+        synchronized(adaptiveLock) { if (samplingDevice == null) samplingDevice = userDevice }
         client.sendRegister(info, userDevice, userProperties) { result ->
             registerInFlight.set(false)
+            if (generation != samplingGeneration) return@sendRegister
             result.fold(
                 onSuccess = {
                     RegisterStore.markRegistered(context, fingerprint)
@@ -1330,11 +1867,18 @@ class BeAroundSDK private constructor() {
     }
 
     fun stopScanning() {
+        scanningIntent.incrementAndGet()
         // App presence pauses with the session: no new round, pending deliveries dropped.
         appPresenceCoordinator.pause()
         // Saved first: visit work queued before this call re-checks the flag under the visit
         // controller's mutex, so it cannot re-arm geofences after the stop below.
-        SDKConfigStorage.saveScanningEnabled(context, false)
+        val stopGeneration = samplingGeneration
+        val needsFinalFlush = physicalCaptureQueue.closeAdmission { SDKConfigStorage.saveScanningEnabled(context, false) }
+        synchronized(adaptiveLock) {
+            motionMonitor?.stop(); motionMonitor = null
+            inertialMonitor?.stop(); inertialMonitor = null
+            samplingPolicy.invalidateInertial()
+        }
         stopVisitDetection()
         wifiNudgeHandler.removeCallbacks(wifiNudgeRunnable)
         encounterMesh?.stop()
@@ -1349,7 +1893,13 @@ class BeAroundSDK private constructor() {
             BeaconScanService.stop(context)
         }
 
-        syncBeacons()
+        if (needsFinalFlush) physicalCaptureQueue.flush {
+            if (stopGeneration == samplingGeneration) {
+                synchronized(adaptiveLock) { closeSamplingWindow()?.let { persistObservation(it) } }
+                captureLegacyStopSnapshot()
+                scope.launch { if (stopGeneration == samplingGeneration) syncBeaconsAwait() }
+            }
+        }
     }
 
     internal fun processBroadcastResults(
@@ -1508,8 +2058,10 @@ class BeAroundSDK private constructor() {
         beaconManager.rangingScanMode = null
         beaconManager.startRanging()
 
+        val generation = samplingGeneration
         syncRunnable = object : Runnable {
             override fun run() {
+                if (generation != samplingGeneration) return
                 onSyncTimerTick()
                 handler.postDelayed(this, config.syncInterval)
             }
@@ -1548,8 +2100,10 @@ class BeAroundSDK private constructor() {
 
         beaconManager.startRanging()
 
+        val generation = samplingGeneration
         syncRunnable = object : Runnable {
             override fun run() {
+                if (generation != samplingGeneration) return
                 onSyncTimerTick()
                 handler.postDelayed(this, config.syncInterval)
             }
@@ -1577,8 +2131,10 @@ class BeAroundSDK private constructor() {
     private fun armSyncTimerOnly() {
         val config = configuration ?: return
         if (syncRunnable != null) return
+        val generation = samplingGeneration
         syncRunnable = object : Runnable {
             override fun run() {
+                if (generation != samplingGeneration) return
                 onSyncTimerTick()
                 handler.postDelayed(this, config.syncInterval)
             }
@@ -1727,6 +2283,8 @@ class BeAroundSDK private constructor() {
 
     /** The actual sync body — reached only via the single-flight gate above. */
     private suspend fun performSyncOnce(forceBackground: Boolean): Boolean {
+            persistRetainedStopSnapshots()
+            val generation = samplingGeneration
             // Register retry piggyback: if the first register failed (e.g. the app launched
             // offline), nothing else would retry it while the process lives — the TTL gate
             // makes this a no-op once registered.
@@ -1740,17 +2298,32 @@ class BeAroundSDK private constructor() {
                 return true
             }
 
+            startMotionMonitor()
+            if (currentSamplingPlan().separationEnabled && synchronized(adaptiveLock) { observationSummary.hasPending() }) {
+                return performAdaptiveSync(client, forceBackground)
+            }
+            synchronized(adaptiveLock) {
+                if (configuration?.adaptiveSamplingEnabled == true && observationSummary.hasPending() &&
+                    SystemClock.elapsedRealtime() - lastSummaryElapsed >= (configuration?.syncInterval ?: 60_000L)) {
+                    closeSamplingWindow()?.let { persistObservation(it) }
+                    lastSummaryElapsed = SystemClock.elapsedRealtime()
+                }
+            }
+
+            if (!wasScanningEnabled()) drainStoredBatches(forceBackground)?.let { return it }
             val shouldRetryFailed = shouldRetryFailedBatches()
 
             // Check if we should retry failed batches
-            if (shouldRetryFailed) {
+            val hasFreshLive = synchronized(adaptiveLock) { physicalSamples.any { (key, sample) ->
+                SystemClock.elapsedRealtime() - sample.second in 0..30_000L && sample.second > (legacyDeliveredSamples[key] ?: Long.MIN_VALUE) } }
+            if (shouldRetryFailed && !hasFreshLive) {
                 drainStoredBatches(forceBackground)?.let { return it }
             }
 
             // Regular sync: get collected beacons (skip already synced)
-            val rawBeaconsToSend = beaconLock.withLock {
-                collectedBeacons.values.filter { !it.alreadySynced }
-            }
+            val physicalToSend = synchronized(adaptiveLock) { physicalSamples.filter { (key, sample) ->
+                SystemClock.elapsedRealtime() - sample.second in 0..30_000L && sample.second > (legacyDeliveredSamples[key] ?: Long.MIN_VALUE) }.toMap() }
+            val rawBeaconsToSend = beaconLock.withLock { collectedBeacons.values.filter { !it.alreadySynced } }
 
             // Two reasons to upload with no beacon: encounter mesh (throttled 60s, gated on
             // fresh sightings) and the empty-scan heartbeat (throttled by
@@ -1796,20 +2369,18 @@ class BeAroundSDK private constructor() {
                 bluetoothState = bluetoothState,
                 appInForeground = !isAppInBackground
             ).withEncounterData()
+            synchronized(adaptiveLock) { if (samplingDevice == null) samplingDevice = userDevice }
             val capturedContext = OfflineBatchStorage.CapturedContext(
                 location = userDevice.location,
                 wifis = userDevice.wifis
             )
 
-            val persistedBatchId = if (beaconsToSend.isEmpty()) {
-                null
-            } else {
-                offlineBatchStorage.saveBatchReturningId(beaconsToSend, syncTrigger, capturedContext).also {
+            val persistedBatchId = if (beaconsToSend.isEmpty()) null else offlineBatchStorage.saveRequestReturningId(
+                client.buildPayload(beaconsToSend, info, userDevice, userProperties, syncTrigger).toString()).also {
                     if (it == null) {
                         Log.e(TAG, "Persist-before-send failed: batch has no durable copy (upload proceeds)")
                         DiagnosticsStore.recordError("persist-before-send: saveBatch returned null")
                     }
-                }
             }
 
             // Peers advertising as virtual beacons go inside `beacons[]` with the reserved
@@ -1827,9 +2398,13 @@ class BeAroundSDK private constructor() {
             client.sendBeacons(
                 beaconsToSend + meshBeacons, info, userDevice, userProperties, syncTrigger
             ) { result ->
+                if (generation != samplingGeneration) return@sendBeacons
                 result.fold(
                     onSuccess = {
                         syncOk = true
+                        synchronized(adaptiveLock) { physicalToSend.forEach { (key, sample) ->
+                            legacyDeliveredSamples[key] = maxOf(legacyDeliveredSamples[key] ?: Long.MIN_VALUE, sample.second)
+                        } }
                         consecutiveFailures = 0
                         lastFailureTime = null
 
@@ -1856,6 +2431,7 @@ class BeAroundSDK private constructor() {
                         dispatchToListener { it.onBeaconsUpdated(updatedBeacons) }
 
                         handler.postDelayed({
+                            if (generation != samplingGeneration) return@postDelayed
                             val (removedAny, remaining) = beaconLock.withLock {
                                 var removed = false
                                 syncedIds.forEach { id ->
@@ -1918,6 +2494,7 @@ class BeAroundSDK private constructor() {
                     }
                 )
             }
+            if (syncOk && shouldRetryFailedBatches()) drainStoredBatches(forceBackground)?.let { syncOk = it }
             return syncOk
     }
 
@@ -1932,27 +2509,59 @@ class BeAroundSDK private constructor() {
      *         false when a transient failure stopped the drain.
      */
     private suspend fun drainStoredBatches(forceBackground: Boolean, onlyTrigger: String? = null): Boolean? {
+        val generation = samplingGeneration
         val client = apiClient ?: return null
         val info = sdkInfo ?: return null
         return drainMutex.withMutex {
+            if (generation != samplingGeneration) return@withMutex null
             val records = offlineBatchStorage.loadAllRecords()
                 .let { all -> if (onlyTrigger == null) all else all.filter { it.syncTrigger == onlyTrigger } }
+                .filter { record ->
+                    val sampling = record.requestJson?.let { JSONObject(it).has("sampling") } == true
+                    !sampling || client.samplingCapability(deviceId) != null
+                }
             if (records.isEmpty()) return@withMutex null
 
             val isAppInBackground = if (forceBackground) true else isInBackground
             // The send-time snapshot: the whole device block of a legacy batch, and every
             // field a batch did not capture.
-            val fresh = deviceInfoCollector.collectDeviceInfo(
-                locationPermission = getLocationPermissionStatus(),
-                bluetoothState = if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off",
-                appInForeground = !isAppInBackground
-            )
+            val cachedDevice = if (records.any { it.requestJson == null }) null
+                else synchronized(adaptiveLock) { samplingDevice }
+            val fresh = cachedDevice ?: deviceInfoCollector.collectDeviceInfo(
+                getLocationPermissionStatus(), if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off", !isAppInBackground
+            ).withEncounterData()
             Log.d(TAG, "Draining ${records.size} stored batch(es)")
             val drain = StoredBatchDrain(
                 storage = offlineBatchStorage,
                 permanentHttpCodes = PERMANENT_HTTP_CODES,
-                send = { beacons, device, syncTrigger -> postStoredBatch(client, info, beacons, device, syncTrigger) },
-                observer = drainObserver(fresh)
+                send = legacy@{ beacons, device, syncTrigger ->
+                    if (generation != samplingGeneration) return@legacy Result.failure(kotlinx.coroutines.CancellationException("Sampling generation changed"))
+                    val result = postStoredBatch(client, info, beacons, device, syncTrigger)
+                    if (generation == samplingGeneration && result.isSuccess && beacons.isNotEmpty()) PushTokenStore.markSent(device.pushToken)
+                    if (generation != samplingGeneration) Result.failure(kotlinx.coroutines.CancellationException("Sampling generation changed")) else result
+                },
+                observer = drainObserver(generation),
+                sendCaptured = captured@{ record, manifest ->
+                    if (generation != samplingGeneration) return@captured Result.failure(kotlinx.coroutines.CancellationException("Sampling generation changed"))
+                    val original = JSONObject(record.requestJson ?: error("Missing captured payload"))
+                    val sampling = original.optJSONObject("sampling")
+                    if (sampling != null && manifest != null) sampling.put("replay", manifest)
+                    var serializedAttemptBytes = 0
+                    var httpAttempts = 0
+                    val result = client.sendStoredPayload(original.toString()) { serializedAttemptBytes += it; httpAttempts++ }
+                    if (generation != samplingGeneration) return@captured Result.failure(kotlinx.coroutines.CancellationException("Sampling generation changed"))
+                    if (sampling != null) DiagnosticsStore.recordSamplingAttempt(sampling.getString("kind"),
+                        serializedAttemptBytes, result.isSuccess,
+                        lagMs = (System.currentTimeMillis() - sampling.getLong("observedTo")).coerceAtLeast(0L),
+                        archiveOnly = result.getOrNull()?.projection == "archive_only",
+                        manifestGap = result.getOrNull()?.projection == "pending_history", httpAttempts = httpAttempts)
+                    if (result.isSuccess && sampling == null) {
+                        val device = original.optJSONObject("device")
+                        PushTokenStore.markSent(device?.optString("pushToken")?.takeIf { it.isNotBlank() },
+                            device?.optString("sdkVersion").orEmpty())
+                    }
+                    result.map { Unit }
+                }
             )
             drain.drain(records, fresh, DataCollectionPolicyStore.current).also {
                 Log.d(TAG, "Drain finished (ok=$it), storage now has ${offlineBatchStorage.getBatchCount()} batch(es)")
@@ -1972,7 +2581,7 @@ class BeAroundSDK private constructor() {
         device: io.bearound.sdk.models.UserDevice,
         syncTrigger: String?
     ): Result<Unit> {
-        if (syncTrigger == VisitEvent.SYNC_TRIGGER) return postVisitPayload(device, syncTrigger)
+        if (syncTrigger == VisitEvent.SYNC_TRIGGER) return postVisitPayload(device, syncTrigger, client, info)
         var outcome: Result<Unit> = Result.failure(IllegalStateException("no response"))
         client.sendBeacons(beacons, info, device, userProperties, syncTrigger) { outcome = it }
         return outcome
@@ -1982,19 +2591,18 @@ class BeAroundSDK private constructor() {
      * The drain's side effects: listener, diagnostics, detection log and backoff. A request
      * without beacons (a visit) touches none of them, as when visits had their own outbox.
      */
-    private fun drainObserver(fresh: io.bearound.sdk.models.UserDevice) = object : StoredBatchDrain.Observer {
+    private fun drainObserver(generation: Long) = object : StoredBatchDrain.Observer {
         override fun onRequestStarted(beaconCount: Int) {
-            if (beaconCount == 0) return
+            if (generation != samplingGeneration || beaconCount == 0) return
             dispatchToListener { it.onSyncStarted(beaconCount) }
         }
 
         override fun onRequestDelivered(beaconCount: Int, afterBisect: Boolean) {
-            if (beaconCount == 0) return
+            if (generation != samplingGeneration || beaconCount == 0) return
             if (!afterBisect) {
                 consecutiveFailures = 0
                 lastFailureTime = null
             }
-            PushTokenStore.markSent(fresh.pushToken)
             DiagnosticsStore.recordSync(success = true, beaconCount = beaconCount)
             DetectionLogStore.append(
                 context,
@@ -2009,7 +2617,7 @@ class BeAroundSDK private constructor() {
         }
 
         override fun onTransientFailure(beaconCount: Int, error: Throwable) {
-            if (beaconCount == 0) return
+            if (generation != samplingGeneration || beaconCount == 0) return
             Log.e(TAG, "Stored batch send failed: ${error.message}")
             consecutiveFailures++
             lastFailureTime = System.currentTimeMillis()
@@ -2032,6 +2640,7 @@ class BeAroundSDK private constructor() {
         }
 
         override fun onQuarantined(batchId: String, statusCode: Int) {
+            if (generation != samplingGeneration) return
             DiagnosticsStore.recordError("Batch quarantined (HTTP $statusCode): $batchId")
             DetectionLogStore.append(
                 context,
@@ -2167,7 +2776,8 @@ class BeAroundSDK private constructor() {
             bluetoothEnabled = ::bluetoothManager.isInitialized && bluetoothManager.isPoweredOn,
             foregroundServiceActive = BeaconScanService.isRunning,
             backgroundScanRegistered = ::backgroundScanManager.isInitialized && backgroundScanManager.isRegistered,
-            isIgnoringBatteryOptimizations = BackgroundReliabilityHelper.isIgnoringBatteryOptimizations(context)
+            isIgnoringBatteryOptimizations = BackgroundReliabilityHelper.isIgnoringBatteryOptimizations(context),
+            adaptiveSampling = DiagnosticsStore.sampling()
         )
     }
 
@@ -2239,6 +2849,7 @@ class BeAroundSDK private constructor() {
         val config = configuration ?: return
         
         // Scanning mode is automatic based on app state
+        startMotionMonitor()
         beaconManager.startScanning()
 
         // The encounter mesh must be revived too. Without this, a process brought back by
@@ -2298,7 +2909,12 @@ class BeAroundSDK private constructor() {
                 return it
             }
             val store = VisitStateStore(context)
-            val queue = OfflineBatchVisitEventQueue(context, offlineBatchStorage, ::flushVisitBatches)
+            val queue = OfflineBatchVisitEventQueue(context, offlineBatchStorage, capturePayload = { event ->
+                val client = apiClient ?: error("Visit capture requires a configured client")
+                val device = deviceInfoCollector.collectDeviceInfo(getLocationPermissionStatus(),
+                    if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off", !isInBackground).withEncounterData()
+                client.buildVisitPayload(event, sdkInfo ?: error("Visit capture requires SDK information"), device, userProperties).toString()
+            }, drain = ::flushVisitBatches)
             return VisitController(
                 store = store,
                 fetcher = fetcher,
@@ -2391,10 +3007,10 @@ class BeAroundSDK private constructor() {
     /** One stored visit batch to `/ingest`, called by the drain; logged in the detection log. */
     private suspend fun postVisitPayload(
         userDevice: io.bearound.sdk.models.UserDevice,
-        syncTrigger: String
+        syncTrigger: String,
+        client: APIClient,
+        info: SDKInfo
     ): Result<Unit> {
-        val client = apiClient ?: return Result.failure(IllegalStateException("SDK not configured"))
-        val info = sdkInfo ?: return Result.failure(IllegalStateException("SDK not configured"))
         var outcome: Result<Unit> = Result.failure(IllegalStateException("no response"))
         client.sendBeacons(emptyList(), info, userDevice, userProperties, syncTrigger) { outcome = it }
         val fixAt = userDevice.location?.timestamp

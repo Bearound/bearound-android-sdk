@@ -41,7 +41,7 @@ class OutboxMigrationTest {
         store = VisitStateStore(context)
         store.clear()
         File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
-        storage = OfflineBatchStorage(context)
+        storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
     }
 
     @Test

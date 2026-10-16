@@ -77,4 +77,13 @@ class BeAroundDiagnosticsTest {
         assertTrue("null token renders as none", text.contains("pushTokenMasked: none"))
         assertTrue("null lastSentAt renders as never", text.contains("pushTokenLastSentAt: never"))
     }
+    @Test
+    fun `summary reports adaptive observability alongside legacy diagnostics`() {
+        val text = sample().copy(adaptiveSampling = AdaptiveSamplingDiagnostics(state = "moving_inferred", source = "fresh_location",
+            reason = "location_displacement", capabilityStatus = "active", uniqueSamples = 12, serializedBytes = 400)).summary()
+        assertTrue(text.contains("motion: moving_inferred/fresh_location/location_displacement"))
+        assertTrue(text.contains("samplingCapability: active")); assertTrue(text.contains("uniqueSamples: 12"))
+        assertTrue(text.contains("samplingBytes: 400")); assertTrue(text.contains("pendingBatches: 4"))
+    }
+
 }

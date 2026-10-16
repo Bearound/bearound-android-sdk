@@ -4,6 +4,8 @@ import io.bearound.sdk.models.Beacon
 import io.bearound.sdk.models.DataCollectionPolicy
 import io.bearound.sdk.models.UserDevice
 import io.bearound.sdk.network.HttpException
+import io.bearound.sdk.network.CapturedPayloadBudgetException
+import org.json.JSONObject
 
 /**
  * Sends the batches persisted in [OfflineBatchStorage].
@@ -23,7 +25,8 @@ internal class StoredBatchDrain(
     private val permanentHttpCodes: Set<Int>,
     private val send: suspend (beacons: List<Beacon>, device: UserDevice, syncTrigger: String?) -> Result<Unit>,
     private val observer: Observer = Observer.NONE,
-    private val clock: () -> Long = System::currentTimeMillis
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val sendCaptured: (suspend (OfflineBatchStorage.StoredBatchRecord, JSONObject?) -> Result<Unit>)? = null
 ) {
     /** Side effects the SDK attaches to the drain (listener, diagnostics, backoff). */
     interface Observer {
@@ -81,10 +84,15 @@ internal class StoredBatchDrain(
             fresh: UserDevice,
             policy: DataCollectionPolicy
         ): UserDevice {
-            val context = record.context ?: return fresh
+            val context = record.context
             return fresh.copy(
-                location = if (policy.location) context.location else null,
-                wifis = if (policy.wifi) context.wifis ?: fresh.wifis else emptyList()
+                timestamp = record.beacons.maxOfOrNull { it.timestamp.time } ?: context?.location?.timestamp ?: fresh.timestamp,
+                location = if (policy.location) { if (context == null) fresh.location else context.location } else null,
+                wifis = if (policy.wifi) context?.wifis ?: fresh.wifis else emptyList(),
+                apId = if (policy.wifi) (context?.wifis ?: fresh.wifis).firstOrNull { it.connected }?.apId else null,
+                wifiSSID = if (policy.wifi) (context?.wifis ?: fresh.wifis).firstOrNull { it.connected }?.ssid else null,
+                advertisingId = if (policy.advertisingId) fresh.advertisingId else null,
+                limitAdTracking = if (policy.advertisingId) fresh.limitAdTracking else null
             )
         }
     }
@@ -109,11 +117,23 @@ internal class StoredBatchDrain(
             }
         }
 
-        for (request in plan(live)) {
+        val ordered = live.sortedByDescending { it.priority }
+        val sealed = runCatching { if (sendCaptured != null) storage.sealReplay(ordered) else emptyMap() }
+        val manifests = sealed.getOrDefault(emptyMap())
+        var deferred = false
+        for (request in plan(ordered)) {
             val head = request.first()
             val beaconCount = request.sumOf { it.beacons.size }
+            if (sealed.isFailure && head.requestJson?.let { JSONObject(it).has("sampling") } == true) {
+                deferred = true
+                observer.onTransientFailure(beaconCount, sealed.exceptionOrNull()!!)
+                continue
+            }
             observer.onRequestStarted(beaconCount)
-            val result = send(request.flatMap { it.beacons }, deviceFor(head, fresh, policy), head.syncTrigger)
+            val result = if (head.requestJson != null) {
+                if (sendCaptured == null) Result.failure(IllegalStateException("Captured payload sender is unavailable"))
+                else sendCaptured.invoke(head, manifests[head.id])
+            } else send(request.flatMap { it.beacons }, deviceFor(head, fresh, policy), head.syncTrigger)
 
             if (result.isSuccess) {
                 storage.removeBatches(request.map { it.id })
@@ -122,6 +142,11 @@ internal class StoredBatchDrain(
             }
 
             val error = result.exceptionOrNull() ?: IllegalStateException("send failed")
+            if (error is CapturedPayloadBudgetException) {
+                deferred = true
+                observer.onTransientFailure(beaconCount, error)
+                continue
+            }
             if (permanentStatus(result) == null) {
                 // Transient (network, timeout, 408/429/5xx): stop and let the caller's
                 // backoff retry the whole queue later; nothing is lost.
@@ -155,7 +180,7 @@ internal class StoredBatchDrain(
             }
             if (delivered > 0) observer.onRequestDelivered(delivered, afterBisect = true)
         }
-        return true
+        return !deferred
     }
 
     private fun permanentStatus(result: Result<Unit>): Int? {
@@ -167,8 +192,11 @@ internal class StoredBatchDrain(
     private fun isExpiredVisit(record: OfflineBatchStorage.StoredBatchRecord, now: Long): Boolean {
         if (record.syncTrigger != OfflineBatchStorage.VISIT_SYNC_TRIGGER) return false
         // A Wi-Fi visit without GPS has no fix: its first observation dates it.
+        val captured = record.requestJson?.let { JSONObject(it) }
         val fixAt = record.context?.location?.timestamp
             ?: record.context?.wifis?.firstOrNull()?.timestamp
+            ?: captured?.optJSONObject("location")?.optLong("timestamp")
+            ?: captured?.optJSONArray("wifis")?.optJSONObject(0)?.optLong("timestamp")
             ?: return false
         return now - fixAt > VISIT_MAX_AGE_MS
     }

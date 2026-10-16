@@ -13,6 +13,8 @@ import io.bearound.sdk.visit.VisitEventKind
 import io.bearound.sdk.visit.VisitFix
 import io.bearound.sdk.visit.VisitTestFixtures
 import io.bearound.sdk.visit.saveVisitEvent
+import org.json.JSONObject
+import org.json.JSONArray
 import java.io.File
 import java.util.Date
 import java.util.UUID
@@ -67,7 +69,7 @@ class StoredBatchDrainTest {
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         storageDir(context).deleteRecursively()
-        storage = OfflineBatchStorage(context)
+        storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
     }
 
     @Test
@@ -114,7 +116,7 @@ class StoredBatchDrainTest {
         assertTrue(retry.beacons.isEmpty())
         assertEquals(fixAt, retry.device.location?.timestamp)
         assertEquals("gnss", retry.device.location?.source)
-        assertEquals(fresh.wifis, retry.device.wifis)
+        assertTrue(retry.device.wifis.isEmpty())
         assertEquals(0, storage.getBatchCount())
     }
 
@@ -130,7 +132,7 @@ class StoredBatchDrainTest {
     }
 
     @Test
-    fun `legacy batches fall back to the drain-time snapshot, up to five per request`() = runBlocking {
+    fun `legacy batches retain main fallback context while grouping up to five per request`() = runBlocking {
         repeat(6) { index ->
             storage.saveBatchReturningId(listOf(beacon(index)))
             Thread.sleep(2)
@@ -140,7 +142,7 @@ class StoredBatchDrainTest {
 
         assertEquals(listOf(5, 1), sent.map { it.beacons.size })
         sent.forEach {
-            assertEquals(freshLocation, it.device.location)
+            assertEquals(fresh.location, it.device.location)
             assertNull(it.syncTrigger)
         }
     }
@@ -172,4 +174,85 @@ class StoredBatchDrainTest {
         assertEquals(listOf(1, 2), sent.map { it.beacons.single().minor })
         assertEquals(0, storage.getBatchCount())
     }
+    private fun captured(id: String = UUID.randomUUID().toString()) = JSONObject().apply {
+        put("sdk", JSONObject().put("appId", "fixture")); put("device", JSONObject().put("deviceId", "device-1"))
+        put("beacons", JSONArray()); put("sampling", JSONObject().put("batchId", id).put("kind", "summary").put("sentAt", 1_800_000_000_000L))
+    }.toString()
+
+    @Test
+    fun `captured bodies stay separate and only individually acknowledged IDs disappear`() = runBlocking {
+        val firstBody = captured(); val secondBody = captured()
+        val first = storage.saveRequestReturningId(firstBody, captureContextId = "same-context")!!
+        val second = storage.saveRequestReturningId(secondBody, captureContextId = "same-context")!!
+        val originalAttempts = mutableListOf<String>()
+        val replay = mutableListOf<JSONObject>()
+        var failSecond = true
+        val capturedDrain = StoredBatchDrain(storage, BeAroundSDK.PERMANENT_HTTP_CODES,
+            send = { _, _, _ -> error("Captured bodies must use their original serializer") },
+            sendCaptured = { record, manifest ->
+                originalAttempts += record.requestJson!!; replay += manifest!!
+                if (record.id == second && failSecond) Result.failure(java.io.IOException("offline")) else Result.success(Unit)
+            })
+        assertFalse(capturedDrain.drain(storage.loadAllRecords(), fresh, DataCollectionPolicy.ALL_ENABLED))
+        assertEquals(listOf(firstBody, secondBody), originalAttempts)
+        assertEquals(listOf(second), storage.loadAllRecords().map { it.id })
+        assertEquals(replay[0].getString("drainId"), replay[1].getString("drainId"))
+        failSecond = false
+        assertTrue(capturedDrain.drain(storage.loadAllRecords(), fresh, DataCollectionPolicy.ALL_ENABLED))
+        assertEquals(replay[1].toString(), replay[2].toString())
+        assertEquals(secondBody, originalAttempts.last()); assertEquals(0, storage.getBatchCount())
+    }
+
+    @Test
+    fun `priority transition precedes archival backlog while preserving order within each priority`() = runBlocking {
+        val oldest = storage.saveRequestReturningId(captured(), captureContextId = "context")!!
+        val arrival = storage.saveRequestReturningId(captured(), priority = true, captureContextId = "context")!!
+        val departure = storage.saveRequestReturningId(captured(), priority = true, captureContextId = "context")!!
+        val ids = mutableListOf<String>()
+        val capturedDrain = StoredBatchDrain(storage, BeAroundSDK.PERMANENT_HTTP_CODES,
+            send = { _, _, _ -> error("Unexpected legacy request") },
+            sendCaptured = { record, _ -> ids += record.id; Result.success(Unit) })
+        assertTrue(capturedDrain.drain(storage.loadAllRecords(), fresh, DataCollectionPolicy.ALL_ENABLED))
+        assertEquals(listOf(arrival, departure, oldest), ids)
+    }
+
+    @Test
+    fun `missing captured sender never rewraps a stored sampling body into legacy live`() = runBlocking {
+        val id = storage.saveRequestReturningId(captured())!!
+        assertFalse(drain().drain(storage.loadAllRecords(), fresh, DataCollectionPolicy.ALL_ENABLED))
+        assertTrue(sent.isEmpty()); assertEquals(id, storage.loadAllRecords().single().id)
+    }
+
+    @Test fun `replay persistence failure is recoverable and does not block independent legacy delivery`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val legacy = storage.saveBatchReturningId(listOf(beacon(7)))!!
+        val batch = UUID.randomUUID().toString()
+        val original = JSONObject().put("device", JSONObject().put("deviceId", "fixture"))
+            .put("sdk", JSONObject().put("appId", "fixture"))
+            .put("sampling", JSONObject().put("batchId", batch)).toString()
+        storage.saveRequestReturningId(original)!!
+        val records = storage.loadAllRecords()
+        val directory = storageDir(context)
+        val parked = File(directory.parentFile, "parked-replay-test")
+        parked.deleteRecursively()
+        assertTrue(directory.renameTo(parked))
+        directory.writeText("Unavailable fixture directory")
+        var legacySends = 0
+        var capturedSends = 0
+        try {
+            val blocked = StoredBatchDrain(storage, BeAroundSDK.PERMANENT_HTTP_CODES,
+                send = { _, _, _ -> legacySends++; Result.success(Unit) },
+                sendCaptured = { _, _ -> capturedSends++; Result.success(Unit) })
+            assertFalse(blocked.drain(records, fresh, DataCollectionPolicy.ALL_ENABLED))
+            assertEquals(1, legacySends); assertEquals(0, capturedSends)
+        } finally {
+            directory.delete(); assertTrue(parked.renameTo(directory))
+        }
+        assertEquals(setOf(legacy, batch), storage.loadAllRecords().map { it.id }.toSet())
+        val recovered = StoredBatchDrain(storage, BeAroundSDK.PERMANENT_HTTP_CODES,
+            send = { _, _, _ -> Result.success(Unit) }, sendCaptured = { _, _ -> Result.success(Unit) })
+        assertTrue(recovered.drain(storage.loadAllRecords(), fresh, DataCollectionPolicy.ALL_ENABLED))
+        assertTrue(storage.loadAllRecords().isEmpty())
+    }
+
 }

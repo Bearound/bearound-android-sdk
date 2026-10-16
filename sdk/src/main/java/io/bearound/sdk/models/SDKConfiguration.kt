@@ -190,21 +190,66 @@ data class SDKConfiguration(
      * field existed restores that default. Results stay on the device (callbacks only);
      * nothing is uploaded.
      */
-    val appPresence: AppPresenceConfiguration = AppPresenceConfiguration()
+    val appPresence: AppPresenceConfiguration = AppPresenceConfiguration(),
+    val adaptiveSamplingEnabled: Boolean = true,
+    /** Null follows collectLocation || collectWifi; false prevents native and raw motion access. */
+    val collectMotionSensors: Boolean? = null
 ) {
+    internal var restoredSyncIntervalMillis: Long? = null
+
+    // Preserve the published constructor/default bridge and copy descriptors.
+    constructor(
+        businessToken: String,
+        appId: String,
+        scanPrecision: ScanPrecision = ScanPrecision.MEDIUM,
+        maxQueuedPayloads: MaxQueuedPayloads = MaxQueuedPayloads.MEDIUM,
+        technology: String = "android-native",
+        periodicReconciliationEnabled: Boolean = true,
+        periodicReconciliationIntervalMillis: Long = PeriodicReconciliationDefaults.DEFAULT_INTERVAL_MILLIS,
+        periodicScanDurationMillis: Long = PeriodicReconciliationDefaults.DEFAULT_SCAN_DURATION_MILLIS,
+        presenceHeartbeatIntervalMillis: Long = PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS,
+        collectAdvertisingId: Boolean = true,
+        collectLocation: Boolean = true,
+        collectWifi: Boolean = true,
+        appPresence: AppPresenceConfiguration = AppPresenceConfiguration()
+    ) : this(businessToken, appId, scanPrecision, maxQueuedPayloads, technology, periodicReconciliationEnabled, periodicReconciliationIntervalMillis, periodicScanDurationMillis, presenceHeartbeatIntervalMillis, collectAdvertisingId, collectLocation, collectWifi, appPresence, true, null)
+
+    fun copy(
+        businessToken: String = this.businessToken,
+        appId: String = this.appId,
+        scanPrecision: ScanPrecision = this.scanPrecision,
+        maxQueuedPayloads: MaxQueuedPayloads = this.maxQueuedPayloads,
+        technology: String = this.technology,
+        periodicReconciliationEnabled: Boolean = this.periodicReconciliationEnabled,
+        periodicReconciliationIntervalMillis: Long = this.periodicReconciliationIntervalMillis,
+        periodicScanDurationMillis: Long = this.periodicScanDurationMillis,
+        presenceHeartbeatIntervalMillis: Long = this.presenceHeartbeatIntervalMillis,
+        collectAdvertisingId: Boolean = this.collectAdvertisingId,
+        collectLocation: Boolean = this.collectLocation,
+        collectWifi: Boolean = this.collectWifi,
+        appPresence: AppPresenceConfiguration = this.appPresence
+    ): SDKConfiguration = SDKConfiguration(businessToken, appId, scanPrecision, maxQueuedPayloads, technology, periodicReconciliationEnabled, periodicReconciliationIntervalMillis, periodicScanDurationMillis, presenceHeartbeatIntervalMillis, collectAdvertisingId, collectLocation, collectWifi, appPresence, adaptiveSamplingEnabled, collectMotionSensors).also {
+        if (scanPrecision == this.scanPrecision) it.restoredSyncIntervalMillis = restoredSyncIntervalMillis
+    }
+
+    companion object {
+        internal var endpointResolver: (String) -> String = { it }
+    }
     /** The three switches above as one value, for the collectors. */
     val dataCollectionPolicy: DataCollectionPolicy
         get() = DataCollectionPolicy(
             advertisingId = collectAdvertisingId,
             location = collectLocation,
-            wifi = collectWifi
+            wifi = collectWifi,
+            motionSensors = collectMotionSensors
         )
 
     /**
      * The SDK's only host: `/ingest`, `/sdk-errors` and the visit-detection config
      * (`GET /sdk/places/nearby`). One host means one domain for the client app to allow.
      */
-    val apiBaseURL: String = "https://ingest.bearound.io"
+    val apiBaseURL: String = if (io.bearound.sdk.BuildConfig.DEBUG)
+        endpointResolver("https://ingest.bearound.io") else "https://ingest.bearound.io"
 
     // NOTE: the old precisionScanDuration/PauseDuration/CycleCount/CycleInterval props
     // described a manual scan/pause duty cycle the SDK no longer runs — scanning is
@@ -213,7 +258,7 @@ data class SDKConfiguration(
 
     /** Sync interval: HIGH=15s, MEDIUM/LOW=60s */
     val syncInterval: Long
-        get() = when (scanPrecision) {
+        get() = restoredSyncIntervalMillis ?: when (scanPrecision) {
             ScanPrecision.HIGH -> 15_000L
             ScanPrecision.MEDIUM -> 60_000L
             ScanPrecision.LOW -> 60_000L

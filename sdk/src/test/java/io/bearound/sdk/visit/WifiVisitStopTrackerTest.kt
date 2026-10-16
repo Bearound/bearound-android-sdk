@@ -34,7 +34,7 @@ class WifiVisitStopTrackerTest {
         context = ApplicationProvider.getApplicationContext()
         store = VisitStateStore(context)
         store.clear()
-        storage = OfflineBatchStorage(context)
+        storage = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
         storage.clearAllBatches()
         queue = RecordingVisitEventQueue()
         tracker = VisitStopTracker(store, queue) { now }
@@ -148,10 +148,10 @@ class WifiVisitStopTrackerTest {
     }
 
     @Test
-    fun `a legacy persisted batch with a location and no wifis still decodes`() {
+    fun `a tenant bound legacy persisted batch with a location and no wifis still decodes`() {
         val dir = context.getDir("com.bearound.sdk.batches", Context.MODE_PRIVATE)
         val legacy = """
-            {"id":"legacy-1","timestamp":$t0,"beacons":[],"syncTrigger":"visit",
+            {"id":"legacy-1","tenantId":"test-tenant","timestamp":$t0,"beacons":[],"syncTrigger":"visit",
              "context":{"location":{"latitude":-23.561,"longitude":-46.656,"accuracy":12.0,
              "timestamp":$t0,"source":"gnss"}}}
         """.trimIndent()
