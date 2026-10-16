@@ -1114,6 +1114,114 @@ class APIClientSamplingTest {
         assertTrue(storage.loadAllRecords().isEmpty())
     }
 
+    @Test
+    @org.robolectric.annotation.Config(sdk = [34])
+    fun `SDK legacy stop snapshot captures current location and Wi-Fi with adaptive disabled`() =
+        assertLegacyStopCapturesCurrentContext(adaptive = false)
+
+    @Test
+    @org.robolectric.annotation.Config(sdk = [34])
+    fun `SDK legacy stop snapshot captures current location and Wi-Fi without capability`() =
+        assertLegacyStopCapturesCurrentContext(adaptive = true)
+
+    @Suppress("DEPRECATION", "UNCHECKED_CAST")
+    private fun assertLegacyStopCapturesCurrentContext(adaptive: Boolean) {
+        var attempt = 0
+        withServer({ "{}" }, statusFor = { if (++attempt < 3) 503 else 200 }) { endpoint, requests ->
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            SecureStorage.initialize(context)
+            resetPushToken()
+            io.bearound.sdk.utilities.PushTokenStore.setToken("pending-stop-token")
+            File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
+            org.robolectric.Shadows.shadowOf(ApplicationProvider.getApplicationContext<android.app.Application>())
+                .grantPermissions(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_WIFI_STATE)
+            val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+            val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            fun seedContext(latitude: Double, ssid: String, bssid: String): Long {
+                val fix = android.location.Location(android.location.LocationManager.GPS_PROVIDER).apply {
+                    this.latitude = latitude; longitude = -46.6; accuracy = 5f; time = System.currentTimeMillis()
+                }
+                org.robolectric.Shadows.shadowOf(locationManager).apply {
+                    setProviderEnabled(android.location.LocationManager.GPS_PROVIDER, true)
+                    setLastKnownLocation(android.location.LocationManager.GPS_PROVIDER, fix)
+                }
+                org.robolectric.Shadows.shadowOf(wifiManager).setScanResults(listOf(android.net.wifi.ScanResult().apply {
+                    BSSID = bssid; SSID = ssid; level = -55; frequency = 2412
+                    timestamp = android.os.SystemClock.elapsedRealtime() * 1000
+                }))
+                return fix.time
+            }
+            val fixAt = seedContext(-23.5, "current-stop", "aa:bb:cc:dd:ee:10")
+            val previousPolicy = io.bearound.sdk.models.DataCollectionPolicyStore.current
+            val configuration = config.copy(adaptiveSamplingEnabled = adaptive, collectAdvertisingId = false,
+                collectLocation = true, collectWifi = true, collectMotionSensors = false)
+            var policy = configuration.dataCollectionPolicy
+            io.bearound.sdk.models.DataCollectionPolicyStore.apply(policy)
+            try {
+                val client = APIClient(configuration, endpoint, { policy })
+                val tenant = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(configuration.businessToken.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
+                val storage = OfflineBatchStorage(context).also { it.currentTenantId = tenant }
+                val at = fixAt - 1_000L
+                val beacon = Beacon(UUID.randomUUID(), 0, 188, -61, Beacon.Proximity.NEAR, 1.0, Date(at))
+                val oldWifi = io.bearound.sdk.models.WifiObservation("old-ap", "old-session", -61, true, 2412, at - 60_000L)
+                val cached = VisitTestFixtures.device().copy(location = io.bearound.sdk.models.DeviceLocation(
+                    -23.501, -46.6, 5f, timestamp = at - 60_000L, source = "gps"),
+                    wifis = listOf(oldWifi), apId = oldWifi.apId, wifiSSID = oldWifi.ssid, pushToken = "old-session-token")
+                val sdk = sdkForStoredDrain(context, configuration, client, storage, cached,
+                    UserProperties(internalId = "stop-user"), currentSources = true)
+                val collected = BeAroundSDK::class.java.getDeclaredMethod("access\$getCollectedBeacons\$p", BeAroundSDK::class.java)
+                    .invoke(null, sdk) as MutableMap<String, Beacon>
+                collected[beacon.identifier] = beacon
+                assertNull(client.samplingCapability(sdk.deviceId))
+
+                BeAroundSDK::class.java.getDeclaredMethod("access\$captureLegacyStopSnapshot", BeAroundSDK::class.java)
+                    .invoke(null, sdk)
+
+                val record = storage.loadAllRecords().single()
+                val capturedJson = requireNotNull(record.requestJson)
+                val original = JSONObject(capturedJson)
+                assertEquals(-23.5, original.getJSONObject("location").getDouble("latitude"), 0.0)
+                assertEquals(fixAt, original.getJSONObject("location").getLong("timestamp"))
+                assertEquals("current-stop", original.getJSONArray("wifis").getJSONObject(0).getString("ssid"))
+                assertEquals(1, original.getJSONArray("wifis").length())
+                assertEquals(at, original.getJSONArray("beacons").getJSONObject(0).getLong("timestamp"))
+                assertEquals(at, original.getJSONObject("device").getLong("timestamp"))
+                assertEquals("pending-stop-token", original.getJSONObject("device").getString("pushToken"))
+                assertFalse(original.has("sampling"))
+                assertTrue(collected.isEmpty())
+                assertEquals("pending-stop-token", io.bearound.sdk.utilities.PushTokenStore.tokenForPayload())
+
+                storage.currentTenantId = "foreign-tenant"
+                val foreignId = storage.saveRequestReturningId(capturedJson)!!
+                storage.currentTenantId = tenant
+                assertEquals(false, drainSdkStoredBatches(sdk))
+                assertEquals(original.toString(), requests.single().toString())
+                assertEquals("pending-stop-token", io.bearound.sdk.utilities.PushTokenStore.tokenForPayload())
+
+                seedContext(-23.499, "retry-context", "aa:bb:cc:dd:ee:20")
+                assertEquals(false, drainSdkStoredBatches(sdk))
+                assertEquals(original.toString(), requests.last().toString())
+                assertEquals(record.requestJson, storage.loadAllRecords().single().requestJson)
+
+                policy = DataCollectionPolicy(false, false, false, false)
+                io.bearound.sdk.models.DataCollectionPolicyStore.apply(policy)
+                assertEquals(true, drainSdkStoredBatches(sdk))
+                assertEquals(3, requests.size)
+                assertFalse(requests.last().has("location")); assertFalse(requests.last().has("wifis"))
+                assertEquals(at, requests.last().getJSONArray("beacons").getJSONObject(0).getLong("timestamp"))
+                assertEquals("stop-user", requests.last().getJSONObject("userProperties").getString("internalId"))
+                assertTrue(storage.loadAllRecords().isEmpty())
+                storage.currentTenantId = "foreign-tenant"
+                assertEquals(foreignId, storage.loadAllRecords().single().id)
+                assertEquals(record.requestJson, storage.loadAllRecords().single().requestJson)
+            } finally {
+                io.bearound.sdk.models.DataCollectionPolicyStore.apply(previousPolicy)
+                resetPushToken()
+            }
+        }
+    }
+
     @Test fun `SDK contextless v1 retry collects current fallback without capability and preserves time tenant and privacy`() = withServer({ "{}" }) { endpoint, requests ->
         val context = ApplicationProvider.getApplicationContext<Context>()
         SecureStorage.initialize(context)

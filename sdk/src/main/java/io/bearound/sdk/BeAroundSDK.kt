@@ -1702,7 +1702,7 @@ class BeAroundSDK private constructor() {
             it.major < io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR_FLOOR
         }.associateBy { it.identifier }.values.toList()
         if (beacons.isEmpty()) return
-        val device = synchronized(adaptiveLock) { samplingDevice } ?: deviceInfoCollector.collectDeviceInfo(
+        val device = deviceInfoCollector.collectDeviceInfo(
             getLocationPermissionStatus(), if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off", !isInBackground
         ).withEncounterData()
         val snapshot = prepareLegacyStopSnapshot(config.adaptiveSamplingEnabled, plan.separationEnabled,
