@@ -411,7 +411,7 @@ class BeAroundSDK private constructor() {
         val config = configuration ?: return SamplingPlan(false, null, 60_000L, 60_000L)
         val capability = apiClient?.samplingCapability(deviceId)
         val effectivePolicy = effectiveCollectionPolicy()
-        synchronized(adaptiveLock) {
+        val plan = synchronized(adaptiveLock) {
             if (samplingEffectivePolicy != null && samplingEffectivePolicy != effectivePolicy) {
                 closeSamplingWindow()?.let { persistObservation(it) }
                 samplingContextJson = null
@@ -422,9 +422,17 @@ class BeAroundSDK private constructor() {
             }
             samplingEffectivePolicy = effectivePolicy
             samplingPolicy.updateCollectionPolicy(effectivePolicy)
+            val now = SystemClock.elapsedRealtime()
+            val freshPhysicalZone = wasScanningEnabled() && isScanning &&
+                ::bluetoothManager.isInitialized && bluetoothManager.isPoweredOn &&
+                physicalSamples.values.any { (beacon, source) ->
+                    source >= samplingGenerationStartedAtElapsed && now - source in 0..30_000L &&
+                        !beacon.isStale && beacon.major in 0 until io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR_FLOOR
+                }
+            samplingPolicy.plan(config.syncInterval,
+                capability?.takeUnless { it.maxPayloadBytes == unavailableSamplingBudget }?.policy,
+                config.adaptiveSamplingEnabled, freshPhysicalZone)
         }
-        val plan = samplingPolicy.plan(config.syncInterval,
-            capability?.takeUnless { it.maxPayloadBytes == unavailableSamplingBudget }?.policy, config.adaptiveSamplingEnabled)
         synchronized(adaptiveLock) {
             if (samplingHadCapability && !plan.separationEnabled) {
                 closeSamplingWindow()?.let { persistObservation(it) }

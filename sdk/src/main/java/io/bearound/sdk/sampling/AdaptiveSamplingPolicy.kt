@@ -352,7 +352,8 @@ internal class AdaptiveSamplingPolicy(
     }
 
     @Synchronized
-    fun plan(baseIntervalMs: Long, capability: SamplingCapability?, adaptiveEnabled: Boolean = true): SamplingPlan {
+    fun plan(baseIntervalMs: Long, capability: SamplingCapability?, adaptiveEnabled: Boolean = true,
+             freshPhysicalZone: Boolean = false): SamplingPlan {
         require(baseIntervalMs > 0) { "Base interval must be positive" }
         val evidence = evidence()
         val fallback = SamplingPlan(false, null, baseIntervalMs, baseIntervalMs)
@@ -361,7 +362,8 @@ internal class AdaptiveSamplingPolicy(
             capability.summaryMaxIntervalMs < baseIntervalMs || capability.sessionTimeoutMs / 3 < baseIntervalMs
         ) return fallback
         val now = lastClock ?: return fallback
-        val live = minOf(baseIntervalMs, capability.advertisedServicesCadenceMs, 60_000L, capability.mapTtlMs / 3)
+        val existingLive = minOf(baseIntervalMs, capability.advertisedServicesCadenceMs, 60_000L, capability.mapTtlMs / 3)
+        val live = if (freshPhysicalZone) minOf(existingLive, 30_000L) else existingLive
         val novelty = noveltyAt?.let { now - it in 0 until NOVELTY_WINDOW_MS } == true
         val summary = when {
             novelty -> minOf(baseIntervalMs, 15_000L)

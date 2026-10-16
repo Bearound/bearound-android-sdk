@@ -146,6 +146,194 @@ class APIClientSamplingTest {
             "io.bearound.sdk.pushTokenLastSentAt", "io.bearound.sdk.pushTokenLastSentSdkVersion").forEach { SecureStorage.delete(it) }
     }
 
+    private inner class LiveCadenceSdk(endpoint: String, configuration: SDKConfiguration = config,
+                                       servicesCadenceMs: Long = 60_000L, mapTtlMs: Long = 300_000L) : AutoCloseable {
+        init {
+            org.junit.Assume.assumeTrue("Private SDK wiring is validated in Debug; Release obfuscates private members", io.bearound.sdk.BuildConfig.DEBUG)
+        }
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val sdk = BeAroundSDK::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+        val manager = io.bearound.sdk.BeaconManager(context)
+        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter
+        private val originalBluetoothEnabled = adapter.isEnabled
+        private val originalPolicy = io.bearound.sdk.models.DataCollectionPolicyStore.current
+        var scheduledTasks = 0
+            private set
+        private val taskScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() +
+            object : kotlinx.coroutines.CoroutineDispatcher() {
+                override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) { scheduledTasks++ }
+            })
+        private val collectionPolicy = DataCollectionPolicy(false, false, false, motionSensors = false)
+        private val uuid = UUID.randomUUID()
+        val client: APIClient
+        val summary: ObservationSummary
+        val originalContext: String
+        val startedElapsed: Long
+
+        fun field(name: String) = BeAroundSDK::class.java.getDeclaredField(name).apply { isAccessible = true }
+        fun now() = android.os.SystemClock.elapsedRealtime()
+        fun advance(millis: Long) {
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(millis))
+            wall += millis
+            elapsed = now()
+        }
+        fun beacon(major: Int = 1, stale: Boolean = false) =
+            Beacon(uuid, major, 1, -60, Beacon.Proximity.NEAR, 1.0, Date(wall), isStale = stale)
+        fun capture(beacon: Beacon = beacon(), source: Long? = now()) {
+            BeAroundSDK::class.java.getDeclaredMethod("capturePhysicalObservation", Beacon::class.java, java.lang.Long::class.java)
+                .apply { isAccessible = true }.invoke(sdk, beacon, source)
+        }
+        fun plan() = BeAroundSDK::class.java.getDeclaredMethod("currentSamplingPlan")
+            .apply { isAccessible = true }.invoke(sdk) as SamplingPlan
+        suspend fun upload() = suspendCoroutine<Boolean> { continuation ->
+            val method = BeAroundSDK::class.java.getDeclaredMethod("performAdaptiveSync", APIClient::class.java,
+                Boolean::class.javaPrimitiveType, kotlin.coroutines.Continuation::class.java).apply { isAccessible = true }
+            val result = method.invoke(sdk, client, false, continuation)
+            if (result != kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED) continuation.resume(result as Boolean)
+        }
+
+        init {
+            SecureStorage.initialize(context)
+            File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
+            io.bearound.sdk.models.DataCollectionPolicyStore.apply(collectionPolicy)
+            adapter.enable()
+            manager.isScanning = true
+            SDKConfigStorage.saveScanningEnabled(context, true)
+            wall = System.currentTimeMillis(); elapsed = now()
+            val policy = AdaptiveSamplingPolicy(android.os.SystemClock::elapsedRealtime, { wall }, collectionPolicy)
+            repeat(3) { index ->
+                if (index > 0) advance(60_000L)
+                policy.observeContext(ContextObservation("warmup-$index", now(), mapOf("$uuid:1:1" to -60)))
+            }
+            startedElapsed = now()
+            field("context").set(sdk, context)
+            val device = VisitTestFixtures.device().copy(deviceId = sdk.deviceId, timestamp = wall,
+                location = null, wifis = emptyList(), apId = null, wifiSSID = null, advertisingId = null, limitAdTracking = null)
+            client = APIClient(configuration, endpoint, { collectionPolicy }, { false }, android.os.SystemClock::elapsedRealtime, { wall })
+            client.observeResponse(response(capability().put("servicesCadenceMs", servicesCadenceMs).put("mapTtlMs", mapTtlMs)),
+                device.deviceId, wall, now())
+            val info = SDKInfo(appId = configuration.appId, build = 1)
+            originalContext = client.buildPayload(emptyList(), info, device, null).toString()
+            summary = ObservationSummary({ wall }, android.os.SystemClock::elapsedRealtime)
+            field("configuration").set(sdk, configuration); field("apiClient").set(sdk, client)
+            field("sdkInfo").set(sdk, info); field("samplingDevice").set(sdk, device)
+            field("samplingPolicy").set(sdk, policy); field("observationSummary").set(sdk, summary)
+            field("samplingContextJson").set(sdk, originalContext)
+            field("contextReadAtElapsed").set(sdk, now()); field("lastSummaryElapsed").set(sdk, now())
+            field("beaconManager").set(sdk, manager)
+            field("bluetoothManager").set(sdk, io.bearound.sdk.BluetoothManager(context))
+            field("offlineBatchStorage").set(sdk, OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" })
+            field("scope").set(sdk, taskScope)
+            DiagnosticsStore.reset()
+        }
+
+        override fun close() {
+            taskScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+            SDKConfigStorage.saveScanningEnabled(context, false)
+            io.bearound.sdk.models.DataCollectionPolicyStore.apply(originalPolicy)
+            if (!originalBluetoothEnabled) adapter.disable()
+            File(context.filesDir.parentFile, "app_com.bearound.sdk.batches").deleteRecursively()
+        }
+    }
+
+    @Test fun `fresh physical SDK callbacks upload at zero thirty and sixty seconds without faster context or summaries`() =
+        withServer({ durableAck(it) }) { endpoint, requests ->
+            LiveCadenceSdk(endpoint).use { runtime ->
+                assertEquals(60_000L, runtime.plan().liveIntervalMs)
+                val observed = mutableListOf<Long>()
+                listOf(0L, 29_000L, 30_000L, 60_000L).forEachIndexed { index, at ->
+                    runtime.advance(runtime.startedElapsed + at - runtime.now())
+                    val beacon = runtime.beacon()
+                    val previousScheduledTasks = runtime.scheduledTasks
+                    runtime.capture(beacon)
+                    assertEquals(listOf(2, 0, 2, 2)[index], runtime.scheduledTasks - previousScheduledTasks)
+                    assertEquals(30_000L, runtime.plan().liveIntervalMs)
+                    assertTrue(runtime.upload())
+                    if (at != 29_000L) observed += beacon.timestamp.time
+                    assertEquals(listOf(1, 1, 2, 3)[index], requests.size)
+                    assertEquals(300_000L, runtime.plan().contextIntervalMs)
+                    assertEquals(300_000L, runtime.plan().summaryIntervalMs)
+                    assertEquals(runtime.originalContext, runtime.field("samplingContextJson").get(runtime.sdk))
+                }
+                assertEquals(observed, requests.map { it.getJSONArray("beacons").getJSONObject(0).getLong("timestamp") })
+                assertTrue(requests.all { it.getJSONObject("sampling").getString("kind") == "live" })
+                assertEquals(1, requests.map { it.getJSONObject("sampling").getString("windowId") }.distinct().size)
+                val sampleIds = requests.map { it.getJSONArray("beacons").getJSONObject(0).getString("sampleId") }
+                assertEquals(3, sampleIds.distinct().size)
+                assertEquals(0L, DiagnosticsStore.sampling().contextReads)
+                assertEquals(0L, DiagnosticsStore.sampling().summaryAttempts)
+                val immutableFirst = requests.first().toString()
+                runtime.advance(30_000L)
+                assertEquals(30_000L, runtime.plan().liveIntervalMs)
+                assertTrue(runtime.upload())
+                runtime.advance(1L)
+                runtime.capture(source = runtime.startedElapsed + 60_000L)
+                assertEquals(60_000L, runtime.plan().liveIntervalMs)
+                assertTrue(runtime.upload())
+                assertEquals(3, requests.count { it.getJSONObject("sampling").getString("kind") == "live" })
+                assertEquals(immutableFirst, requests.first().toString())
+            }
+        }
+
+    @Test fun `fresh physical SDK cadence preserves faster precision Services and TTL contracts`() =
+        withServer({ durableAck(it) }) { endpoint, requests ->
+            listOf(Triple(config.copy(scanPrecision = io.bearound.sdk.models.ScanPrecision.HIGH), 60_000L, 300_000L),
+                Triple(config, 5_000L, 300_000L), Triple(config, 60_000L, 45_000L)).forEach { (configuration, services, ttl) ->
+                LiveCadenceSdk(endpoint, configuration, services, ttl).use { runtime ->
+                    requests.clear()
+                    runtime.capture(); assertTrue(runtime.upload())
+                    val interval = minOf(configuration.syncInterval, services, ttl / 3)
+                    assertEquals(interval, runtime.plan().liveIntervalMs)
+                    runtime.advance(interval - 1L); runtime.capture(); assertTrue(runtime.upload())
+                    assertEquals(1, requests.size)
+                    runtime.advance(1L); runtime.capture(); assertTrue(runtime.upload())
+                    assertEquals(2, requests.size)
+                }
+            }
+        }
+
+    @Test fun `fresh physical SDK cap excludes cache mesh invalid sources stopped scans radio loss and expired leases`() =
+        withServer({ durableAck(it) }) { endpoint, requests ->
+            LiveCadenceSdk(endpoint).use { runtime ->
+                io.bearound.sdk.BeaconManager::class.java.getDeclaredField("isInBeaconRegion")
+                    .apply { isAccessible = true }.set(runtime.manager, true)
+                @Suppress("UNCHECKED_CAST")
+                val cache = runtime.field("collectedBeacons").get(runtime.sdk) as MutableMap<String, Beacon>
+                cache[runtime.beacon().identifier] = runtime.beacon()
+                assertEquals(60_000L, runtime.plan().liveIntervalMs)
+                listOf<Long?>(null, runtime.now() + 1L, runtime.now() - 30_001L).forEach { source ->
+                    runtime.capture(source = source)
+                    assertEquals(60_000L, runtime.plan().liveIntervalMs)
+                }
+                runtime.field("samplingGenerationStartedAtElapsed").set(runtime.sdk, runtime.now())
+                runtime.capture(source = runtime.now() - 1L)
+                runtime.capture(runtime.beacon(stale = true))
+                runtime.capture(runtime.beacon(major = io.bearound.sdk.utilities.IBeaconParser.VIRTUAL_ENCOUNTER_MAJOR_FLOOR))
+                assertEquals(60_000L, runtime.plan().liveIntervalMs)
+                runtime.capture()
+                assertEquals(30_000L, runtime.plan().liveIntervalMs)
+                runtime.manager.isScanning = false
+                assertEquals(60_000L, runtime.plan().liveIntervalMs)
+                runtime.manager.isScanning = true
+                SDKConfigStorage.saveScanningEnabled(runtime.context, false)
+                assertEquals(60_000L, runtime.plan().liveIntervalMs)
+                SDKConfigStorage.saveScanningEnabled(runtime.context, true)
+                runtime.adapter.disable()
+                assertEquals(60_000L, runtime.plan().liveIntervalMs)
+                runtime.adapter.enable()
+                assertEquals(30_000L, runtime.plan().liveIntervalMs)
+                runtime.field("samplingGenerationStartedAtElapsed").set(runtime.sdk, runtime.now() + 1L)
+                assertEquals(60_000L, runtime.plan().liveIntervalMs)
+                runtime.advance(30_001L)
+                runtime.capture(source = runtime.startedElapsed)
+                assertEquals(60_000L, runtime.plan().liveIntervalMs)
+                runtime.advance(270_000L)
+                assertFalse(runtime.plan().separationEnabled)
+                assertEquals(60_000L, runtime.plan().liveIntervalMs)
+                assertTrue(requests.isEmpty())
+            }
+        }
+
     @Test fun `normal registration negotiates capability without another discovery call`() = withServer({ response() }) { endpoint, requests ->
         val client = client(endpoint)
         var success = false

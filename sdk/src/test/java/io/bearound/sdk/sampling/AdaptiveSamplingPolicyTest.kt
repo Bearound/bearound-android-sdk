@@ -388,6 +388,42 @@ class AdaptiveSamplingPolicyTest {
     }
 
     @Test
+    fun `fresh physical zone caps only live without changing context or summary plans`() {
+        val slower = capability.copy(advertisedServicesCadenceMs = 60_000L, mapTtlMs = 300_000L)
+        fun assertLiveOnlyCap() {
+            val original = policy.plan(60_000L, slower)
+            assertEquals(60_000L, original.liveIntervalMs)
+            assertEquals(original.copy(liveIntervalMs = 30_000L),
+                policy.plan(60_000L, slower, freshPhysicalZone = true))
+        }
+        assertLiveOnlyCap()
+        stableContext()
+        assertLiveOnlyCap()
+        assertEquals(300_000L, policy.plan(60_000L, slower, freshPhysicalZone = true).contextIntervalMs)
+        assertEquals(300_000L, policy.plan(60_000L, slower, freshPhysicalZone = true).summaryIntervalMs)
+        native(NativeMotionActivity.WALKING)
+        assertLiveOnlyCap()
+    }
+
+    @Test
+    fun `fresh physical zone preserves faster contracts and every legacy fallback`() {
+        val slower = capability.copy(advertisedServicesCadenceMs = 60_000L, mapTtlMs = 300_000L)
+        listOf(5_000L, 15_000L).forEach { interval ->
+            assertEquals(interval, policy.plan(interval, slower, freshPhysicalZone = true).liveIntervalMs)
+            assertEquals(interval, policy.plan(60_000L, slower.copy(advertisedServicesCadenceMs = interval),
+                freshPhysicalZone = true).liveIntervalMs)
+        }
+        assertEquals(3_000L, policy.plan(60_000L, slower.copy(mapTtlMs = 9_000L), freshPhysicalZone = true).liveIntervalMs)
+        val fallback = SamplingPlan(false, null, 60_000L, 60_000L)
+        assertEquals(fallback, policy.plan(60_000L, null, freshPhysicalZone = true))
+        assertEquals(fallback, policy.plan(60_000L, slower, adaptiveEnabled = false, freshPhysicalZone = true))
+        listOf(slower.copy(summaryMaxIntervalMs = 59_999L), slower.copy(sessionTimeoutMs = 179_999L),
+            slower.copy(advertisedServicesCadenceMs = 0L), slower.copy(mapTtlMs = 2L)).forEach { invalid ->
+            assertEquals(fallback, policy.plan(60_000L, invalid, freshPhysicalZone = true))
+        }
+    }
+
+    @Test
     fun `missing incompatible or disabled capability preserves the legacy cadence`() {
         stableContext()
         val fallback = SamplingPlan(false, null, 60_000L, 60_000L)
