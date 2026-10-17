@@ -1219,22 +1219,19 @@ client is kept (no history).
 
 #### Store policies: technical support is not publication approval
 
-This feature exists for a commercial use case. That a check works technically does **not**
-mean a store will accept it, and nothing in this SDK bypasses store review.
+The SDK makes the check technically possible; it does **not** grant or imply any store
+approval, and nothing in this SDK bypasses store review. Before enabling it in a published
+app, review the policies below and confirm that your app's use of the result complies with
+them. Whether and how your app uses it is your decision and responsibility.
 
-- **Google Play**: the Package Visibility policy only allows querying installed apps when
-  it is tied to a core, user-facing function of your app, and the User Data policy forbids
-  selling or sharing that inventory for advertising or analytics monetization. Limiting the
-  number of queried apps does not remove those obligations. Declare it as required by the
-  Data safety form.
-- **Apple App Store** (iOS SDK): guideline 5.1.2(iv) forbids collecting installed-app
-  information for analytics, advertising or marketing. On iOS the check uses `canOpenURL`
-  with schemes from `LSApplicationQueriesSchemes`, bounded by a budget shared with the
-  whole host app (25 schemes by default, 50 only with build evidence of a pre-27 linked
-  SDK); `true` there means "a handler exists", not the app's identity.
-- **Consent is not an exception**: user consent or an ATT prompt does not make a forbidden
-  purpose acceptable, and another product on the market offering similar detection is not
-  evidence of authorization.
+- **Google Play**: review the package visibility policy (`<queries>` and
+  `QUERY_ALL_PACKAGES`) and the User Data policy, and declare the data in the Data safety
+  form as required.
+- **Apple App Store** (iOS SDK): review App Review Guideline 5.1.2 (Data Use and Sharing).
+  On iOS the check uses `canOpenURL` with schemes from `LSApplicationQueriesSchemes`,
+  bounded by a budget shared with the whole host app (25 schemes by default, 50 only with
+  build evidence of a pre-27 linked SDK); `true` there means "a handler exists", not the
+  app's identity.
 - The absence of UI in this feature does not exempt your app from the transparency and
   privacy disclosures that apply to it.
 
