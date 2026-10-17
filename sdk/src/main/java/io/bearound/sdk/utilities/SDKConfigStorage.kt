@@ -2,8 +2,6 @@ package io.bearound.sdk.utilities
 
 import android.content.Context
 import android.content.SharedPreferences
-import io.bearound.sdk.models.AppPresenceConfiguration
-import io.bearound.sdk.models.AppPresenceValidator
 import io.bearound.sdk.models.ForegroundScanConfig
 import io.bearound.sdk.models.MaxQueuedPayloads
 import io.bearound.sdk.models.PeriodicReconciliationDefaults
@@ -14,7 +12,7 @@ import io.bearound.sdk.models.ScanPrecision
  * Persists SDK configuration to survive app restarts
  */
 object SDKConfigStorage {
-    private const val PREFS_NAME = "bearound_sdk_config"
+    internal const val PREFS_NAME = "bearound_sdk_config"
     private const val KEY_BUSINESS_TOKEN = "business_token"
     private const val KEY_SCAN_PRECISION = "scan_precision"
     private const val KEY_MAX_QUEUED_PAYLOADS = "max_queued_payloads"
@@ -46,8 +44,6 @@ object SDKConfigStorage {
     private const val KEY_ADAPTIVE_SAMPLING = "adaptive_sampling_enabled"
     private const val KEY_HEARTBEAT_INTERVAL = "presence_heartbeat_interval_ms"
     private const val KEY_BASE_INTERVAL = "sampling_base_interval_ms"
-    // App presence configuration, stored as JSON (see AppPresenceConfiguration.toJson)
-    private const val KEY_APP_PRESENCE = "app_presence_configuration"
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -70,7 +66,6 @@ object SDKConfigStorage {
             putBoolean(KEY_ADAPTIVE_SAMPLING, config.adaptiveSamplingEnabled)
             putLong(KEY_HEARTBEAT_INTERVAL, config.presenceHeartbeatIntervalMillis)
             putLong(KEY_BASE_INTERVAL, config.syncInterval)
-            putString(KEY_APP_PRESENCE, encodeAppPresence(config.appPresence))
             putBoolean(KEY_IS_CONFIGURED, true)
             // Remove legacy keys if they exist
             remove(KEY_FOREGROUND_INTERVAL)
@@ -146,47 +141,8 @@ object SDKConfigStorage {
             adaptiveSamplingEnabled = prefs.getBoolean(KEY_ADAPTIVE_SAMPLING, true),
             presenceHeartbeatIntervalMillis = io.bearound.sdk.models.PresenceHeartbeatDefaults.sanitizedInterval(
                 prefs.getLong(KEY_HEARTBEAT_INTERVAL, io.bearound.sdk.models.PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS)
-            ),
-            appPresence = decodeAppPresence(prefs.getString(KEY_APP_PRESENCE, null))
+            )
         ).also { it.restoredSyncIntervalMillis = prefs.getLong(KEY_BASE_INTERVAL, prefs.getLong(KEY_SYNC_INTERVAL, -1L)).takeIf { value -> value in 1_000L..300_000L } }
-    }
-
-    /**
-     * Persists only the app presence configuration, leaving the rest of the stored SDK
-     * configuration untouched. An invalid configuration is stored as the disabled default.
-     */
-    fun saveAppPresenceConfiguration(context: Context, config: AppPresenceConfiguration) {
-        getPrefs(context).edit().apply {
-            putString(KEY_APP_PRESENCE, encodeAppPresence(config))
-            apply()
-        }
-    }
-
-    /**
-     * The stored app presence configuration. Absent (configs persisted before the feature
-     * existed), corrupted or invalid values all restore the disabled default: fail closed.
-     */
-    fun loadAppPresenceConfiguration(context: Context): AppPresenceConfiguration =
-        decodeAppPresence(getPrefs(context).getString(KEY_APP_PRESENCE, null))
-
-    private fun encodeAppPresence(config: AppPresenceConfiguration): String {
-        val safe = if (config.validationError() == null) {
-            AppPresenceValidator.normalize(config)
-        } else {
-            AppPresenceConfiguration.DISABLED
-        }
-        return safe.toJson().toString()
-    }
-
-    private fun decodeAppPresence(raw: String?): AppPresenceConfiguration {
-        if (raw == null) return AppPresenceConfiguration.DISABLED
-        return try {
-            val config = AppPresenceConfiguration.fromJson(raw)
-            if (config.validationError() == null) AppPresenceValidator.normalize(config)
-            else AppPresenceConfiguration.DISABLED
-        } catch (_: Exception) {
-            AppPresenceConfiguration.DISABLED
-        }
     }
 
     /**

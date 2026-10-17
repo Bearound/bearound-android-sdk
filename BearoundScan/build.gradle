@@ -64,9 +64,6 @@ android {
         versionName = "1.0.0"
 
         buildConfigField "String", "BUSINESS_TOKEN", "\"${businessToken}\""
-
-        // App presence device E2E (e2e/app-presence/run.sh) drives the SDK in this app's process.
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -127,10 +124,6 @@ android {
     }
 }
 
-// App presence build evidence: generates the declarations asset from the merged manifest and
-// registers verifyAppPresenceArtifact<Variant>, which the device E2E runs on the installed APK.
-apply from: rootProject.file("scripts/app-presence-evidence.gradle")
-
 dependencies {
     implementation project(":sdk")
 
@@ -149,10 +142,6 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.1")
-
-    // App presence device E2E
-    androidTestImplementation("androidx.test:runner:1.6.2")
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }
 
 
