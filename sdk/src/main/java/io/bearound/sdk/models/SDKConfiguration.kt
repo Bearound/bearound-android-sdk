@@ -183,14 +183,6 @@ data class SDKConfiguration(
      * Default: `true`.
      */
     val collectWifi: Boolean = true,
-    /**
-     * Local check of whether declared apps are installed on this device.
-     *
-     * Opt-in: disabled with no targets by default, and a configuration persisted before this
-     * field existed restores that default. Results stay on the device (callbacks only);
-     * nothing is uploaded.
-     */
-    val appPresence: AppPresenceConfiguration = AppPresenceConfiguration(),
     val adaptiveSamplingEnabled: Boolean = true,
     /** Null follows collectLocation || collectWifi; false prevents native and raw motion access. */
     val collectMotionSensors: Boolean? = null
@@ -210,9 +202,8 @@ data class SDKConfiguration(
         presenceHeartbeatIntervalMillis: Long = PresenceHeartbeatDefaults.DEFAULT_INTERVAL_MILLIS,
         collectAdvertisingId: Boolean = true,
         collectLocation: Boolean = true,
-        collectWifi: Boolean = true,
-        appPresence: AppPresenceConfiguration = AppPresenceConfiguration()
-    ) : this(businessToken, appId, scanPrecision, maxQueuedPayloads, technology, periodicReconciliationEnabled, periodicReconciliationIntervalMillis, periodicScanDurationMillis, presenceHeartbeatIntervalMillis, collectAdvertisingId, collectLocation, collectWifi, appPresence, true, null)
+        collectWifi: Boolean = true
+    ) : this(businessToken, appId, scanPrecision, maxQueuedPayloads, technology, periodicReconciliationEnabled, periodicReconciliationIntervalMillis, periodicScanDurationMillis, presenceHeartbeatIntervalMillis, collectAdvertisingId, collectLocation, collectWifi, true, null)
 
     fun copy(
         businessToken: String = this.businessToken,
@@ -226,9 +217,8 @@ data class SDKConfiguration(
         presenceHeartbeatIntervalMillis: Long = this.presenceHeartbeatIntervalMillis,
         collectAdvertisingId: Boolean = this.collectAdvertisingId,
         collectLocation: Boolean = this.collectLocation,
-        collectWifi: Boolean = this.collectWifi,
-        appPresence: AppPresenceConfiguration = this.appPresence
-    ): SDKConfiguration = SDKConfiguration(businessToken, appId, scanPrecision, maxQueuedPayloads, technology, periodicReconciliationEnabled, periodicReconciliationIntervalMillis, periodicScanDurationMillis, presenceHeartbeatIntervalMillis, collectAdvertisingId, collectLocation, collectWifi, appPresence, adaptiveSamplingEnabled, collectMotionSensors).also {
+        collectWifi: Boolean = this.collectWifi
+    ): SDKConfiguration = SDKConfiguration(businessToken, appId, scanPrecision, maxQueuedPayloads, technology, periodicReconciliationEnabled, periodicReconciliationIntervalMillis, periodicScanDurationMillis, presenceHeartbeatIntervalMillis, collectAdvertisingId, collectLocation, collectWifi, adaptiveSamplingEnabled, collectMotionSensors).also {
         if (scanPrecision == this.scanPrecision) it.restoredSyncIntervalMillis = restoredSyncIntervalMillis
     }
 

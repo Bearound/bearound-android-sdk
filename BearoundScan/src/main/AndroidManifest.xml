@@ -38,12 +38,6 @@
     <!-- Notifications (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- App presence: the only package this bench may check (device E2E fixture). The SDK
-         reports packages outside this list as unknown/not_declared without querying them. -->
-    <queries>
-        <package android:name="io.bearound.fixture.presence" />
-    </queries>
-
     <application
         android:name=".BeAroundScanApplication"
         android:allowBackup="true"
