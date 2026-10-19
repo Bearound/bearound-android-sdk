@@ -80,6 +80,13 @@ internal data class VisitFix(
 
 internal enum class VisitEventKind(val wire: String) { ARRIVAL("arrival"), DEPARTURE("departure") }
 
+/**
+ * What produced a visit event, as the `visit.source` of the payload: a geofence (the native
+ * DWELL/EXIT or the soft fence, both over the same circles) or the Wi-Fi matcher. `clvisit`
+ * exists only on iOS.
+ */
+internal enum class VisitEventSource(val wire: String) { FENCE("fence"), WIFI("wifi") }
+
 /** Who has seen an open stop: the GPS detectors, the Wi-Fi matcher, or both. */
 internal enum class VisitSource(val wire: String) {
     GPS("gps"), WIFI("wifi");
@@ -100,9 +107,10 @@ internal enum class VisitSource(val wire: String) {
 internal data class VisitEvent(
     val kind: VisitEventKind,
     val fix: VisitFix?,
-    /** The environment that triggered the event (informational). */
+    /** The environment the device recognised; null when nothing named one. */
     val environmentId: String?,
-    val wifis: List<WifiObservation>? = null
+    val wifis: List<WifiObservation>? = null,
+    val source: VisitEventSource = VisitEventSource.FENCE
 ) {
     fun toDeviceLocation() = fix?.let {
         DeviceLocation(
@@ -117,6 +125,21 @@ internal data class VisitEvent(
 
     /** The time the event is about: the fix time, or the first Wi-Fi sighting when there is no fix. */
     val timestamp: Long? get() = fix?.timestamp ?: wifis?.firstOrNull()?.timestamp
+
+    /**
+     * The top-level `visit` object of the payload: what the event is, the environment the device
+     * recognised (always present, `null` when unknown) and what produced it, with [timestamp] as
+     * `at` (the same instant as `location.timestamp`). Optional and additive: a server that does not
+     * read it gets the payload it got before. Null when the event has no time to stand for.
+     */
+    fun visitBlock(): JSONObject? = timestamp?.let { at ->
+        JSONObject().apply {
+            put("kind", kind.wire)
+            put("environmentId", environmentId ?: JSONObject.NULL)
+            put("source", source.wire)
+            put("at", at)
+        }
+    }
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("kind", kind.wire)
@@ -294,7 +317,7 @@ internal class VisitStopTracker(
             sources = if (fix != null) setOf(VisitSource.GPS, VisitSource.WIFI) else setOf(VisitSource.WIFI),
             apIds = apIds
         )
-        persist(VisitEvent(VisitEventKind.ARRIVAL, fix, environmentId, visitWifis(matched, others, at)))
+        persist(VisitEvent(VisitEventKind.ARRIVAL, fix, environmentId, visitWifis(matched, others, at), VisitEventSource.WIFI))
         return true
     }
 
@@ -314,7 +337,37 @@ internal class VisitStopTracker(
         if (at <= open.arrivedAt) return false
         store.openStop = null
         store.lastDepartureAt = at
-        persist(VisitEvent(VisitEventKind.DEPARTURE, fix, environmentId, visitWifis(matched, emptyList(), at)))
+        persist(VisitEvent(VisitEventKind.DEPARTURE, fix, environmentId, visitWifis(matched, emptyList(), at), VisitEventSource.WIFI))
+        return true
+    }
+
+    /**
+     * The visit geofences are being armed again while a stop is open (new boot, self-heal,
+     * switch from the soft fence). Play Services does not know the device was inside, so until
+     * a DWELL of the stop's environment says so ([confirmInside]), an EXIT of that environment
+     * may be the initial one of the re-arm and proves no departure.
+     */
+    fun markRearmed() {
+        val open = openStop() ?: return
+        if (!open.rearmed) store.openStop = open.copy(rearmed = true)
+    }
+
+    /** A DWELL of [environmentId]: the device is inside the open stop's environment again. */
+    fun confirmInside(environmentId: String) {
+        val open = openStop() ?: return
+        if (open.rearmed && open.environmentId == environmentId) store.openStop = open.copy(rearmed = false)
+    }
+
+    /**
+     * Closes the open stop with no departure event, for a stop whose end is unknown. Its last
+     * evidence inside counts as the last departure, so a redelivered arrival of the same stay
+     * cannot open it again.
+     * @return false when no stop is open.
+     */
+    fun closeWithoutDeparture(): Boolean {
+        val open = openStop() ?: return false
+        store.openStop = null
+        store.lastDepartureAt = maxOf(open.arrivedAt, open.lastInside?.timestamp ?: open.arrivedAt)
         return true
     }
 

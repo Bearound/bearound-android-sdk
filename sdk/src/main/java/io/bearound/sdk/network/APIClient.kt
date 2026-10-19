@@ -152,9 +152,14 @@ class APIClient(
     internal fun filterPayload(original: JSONObject): JSONObject {
         val payload = JSONObject(original.toString())
         val policy = policyProvider()
-        if (!policy.location) payload.remove("location")
+        if (!policy.location) {
+            payload.remove("location")
+            // A visit says where the device was, whatever produced it.
+            payload.remove("visit")
+        }
         if (!policy.wifi) {
             payload.remove("wifis")
+            if (payload.optJSONObject("visit")?.optString("source") == "wifi") payload.remove("visit")
             payload.optJSONObject("device")?.optJSONObject("network")?.apply {
                 remove("apId"); remove("wifiSSID")
             }
@@ -494,7 +499,9 @@ class APIClient(
             apId = wifis.firstOrNull { it.connected }?.apId,
             wifiSSID = wifis.firstOrNull { it.connected }?.ssid
         )
-        return buildPayload(emptyList(), info, device, properties, io.bearound.sdk.visit.VisitEvent.SYNC_TRIGGER)
+        val payload = buildPayload(emptyList(), info, device, properties, io.bearound.sdk.visit.VisitEvent.SYNC_TRIGGER)
+        event.visitBlock()?.let { payload.put("visit", it) }
+        return filterPayload(payload)
     }
 
     internal fun buildDevicePayload(device: UserDevice): JSONObject {

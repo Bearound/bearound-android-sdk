@@ -33,7 +33,7 @@ internal object VisitTestFixtures {
         enabled: Boolean = true,
         refreshAfterMeters: Double = 2500.0,
         maxAgeSeconds: Double = 21600.0,
-        minDwellMinutes: Int = 5,
+        minDwellMinutes: Int? = 5,
         withWifiPlace: Boolean = false
     ) = """
         {

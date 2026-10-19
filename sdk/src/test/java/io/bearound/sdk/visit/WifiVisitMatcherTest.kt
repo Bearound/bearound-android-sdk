@@ -51,7 +51,7 @@ class WifiVisitMatcherTest {
     fun `default dwell applies when the place has none`() {
         val matcher = WifiVisitMatcher()
         val places = listOf(place(dwell = null))
-        val dwell = SoftFenceVisitDetector.DEFAULT_MIN_DWELL_MINUTES.toLong()
+        val dwell = 2L // two minutes inside the zone
         matcher.onRound(round(0, known), places)
         assertTrue(matcher.onRound(round(dwell - 1, known), places).isEmpty())
         assertEquals(1, matcher.onRound(round(dwell, known), places).size)

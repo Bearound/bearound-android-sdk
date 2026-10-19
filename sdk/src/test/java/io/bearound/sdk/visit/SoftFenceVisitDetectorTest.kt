@@ -100,6 +100,21 @@ class SoftFenceVisitDetectorTest {
     }
 
     @Test
+    fun `without minDwellMinutes from the API the stop arrives after two minutes inside`() = runBlocking {
+        store.saveConfig(VisitTestFixtures.configBody(minDwellMinutes = null), "etag-1", now)
+        val controller = controller()
+        controller.start()
+
+        val firstInside = tickAt(0, fixAt(10.0), controller)
+        tickAt(1, fixAt(15.0), controller)
+        assertTrue(payloads.isEmpty())
+        tickAt(2, fixAt(20.0), controller) // two minutes since the first fix inside
+
+        assertEquals(1, payloads.size)
+        assertEquals(firstInside.timestamp, payloads[0].getJSONObject("location").getLong("timestamp"))
+    }
+
+    @Test
     fun `a stop produces exactly two visit payloads carrying the real fix times`() = runBlocking {
         store.saveConfig(VisitTestFixtures.configBody(minDwellMinutes = 5), "etag-1", now)
         val controller = controller()
