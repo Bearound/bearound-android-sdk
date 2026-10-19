@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`visit` object on visit payloads.** Each visit `/ingest` payload now carries, at the top
+  level next to `location`, `visit: { kind, environmentId, source, at }`: `arrival` or
+  `departure`, the environment the device recognised (`null` when none), `fence` (native
+  geofence or soft fence) or `wifi`, and the epoch ms the event stands for (as
+  `location.timestamp`). Optional and additive. Location collection off drops it with
+  `location`; Wi-Fi collection off drops it when the source is `wifi`. Same contract as iOS.
+- The detection log records every visit event queued (`Visit` · `arrival queued (fence, at ...)`).
+
+### Changed
+- **Default minimum dwell is 2 minutes** (was 5): the native geofence DWELL loitering delay, the
+  soft fence and the Wi-Fi matcher use it when the places API sends no `minDwellMinutes` for a
+  zone; a value from the API still wins. Same default as iOS.
+
+### Fixed
+- **Visit departure on a geofence EXIT without a fix.** An EXIT with no triggering location
+  and no last known fix, or only one older than the arrival, used to be dropped: the stop stayed
+  open for up to 24 h and blocked every other GPS arrival. The departure now goes out at the
+  stop position and accuracy, at the delivery time.
+- **Departure position of a stop Wi-Fi opened.** When a DWELL confirmed a stop the Wi-Fi
+  matcher opened, the EXIT departure carried the exit fix, outside the environment. It now
+  carries the last fix inside, with its accuracy.
+- **Visit stop stuck after the geofences were armed again with the device outside.** After a
+  reboot inside a zone and leaving before the SDK registered again, Play Services dropping the
+  geofences, or a switch from the soft fence with the device already out, no EXIT ever came:
+  the stop stayed open for up to 24 h and blocked every other GPS arrival. The geofences now
+  also arm with an initial EXIT, and an EXIT of a stop that opened before the re-arm (with no
+  DWELL since) closes it with **no departure event**, since its end is unknown. A DWELL of the stop's environment after the re-arm
+  restores the normal departure on EXIT.
+
 ## [3.17.0] - 2026-10-19
 
 ### Added

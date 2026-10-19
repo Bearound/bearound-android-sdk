@@ -37,8 +37,11 @@ internal class SoftFenceVisitDetector(
     companion object {
         private const val TAG = "BeAroundSDK-Visit"
 
-        /** Used when the API does not send `minDwellMinutes`. */
-        const val DEFAULT_MIN_DWELL_MINUTES = 5
+        /**
+         * Used when the API does not send `minDwellMinutes`, by every path (soft fence, native
+         * DWELL loitering delay, Wi-Fi matcher). Two minutes inside the zone, as on iOS.
+         */
+        const val DEFAULT_MIN_DWELL_MINUTES = 2
 
         /** Coarse (cell) fixes cannot place a device inside a store. */
         const val MAX_FIX_ACCURACY_METERS = 250f

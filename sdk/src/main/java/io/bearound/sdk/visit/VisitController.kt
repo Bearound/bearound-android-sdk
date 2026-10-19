@@ -2,6 +2,7 @@ package io.bearound.sdk.visit
 
 import android.content.Context
 import android.util.Log
+import io.bearound.sdk.utilities.DetectionLogStore
 import io.bearound.sdk.utilities.OfflineBatchStorage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -279,9 +280,15 @@ internal class OfflineBatchVisitEventQueue(
     private val drain: suspend () -> Unit
 ) : VisitEventQueue {
 
-    override fun persist(event: VisitEvent): Boolean = capturePayload?.let {
-        storage.saveRequestReturningId(it(event), priority = true) != null
-    } ?: (storage.saveVisitEvent(event) != null)
+    override fun persist(event: VisitEvent): Boolean {
+        val saved = capturePayload?.let {
+            storage.saveRequestReturningId(it(event), priority = true) != null
+        } ?: (storage.saveVisitEvent(event) != null)
+        // The sends go through the shared drain, which logs only beacon requests.
+        if (saved) DetectionLogStore.append(context, type = "Visit",
+            detail = "${event.kind.wire} queued (${event.source.wire}, at ${event.timestamp})")
+        return saved
+    }
 
     override suspend fun flush() {
         OutboxMigration.migrate(context, storage)

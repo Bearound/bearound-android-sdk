@@ -92,7 +92,13 @@ internal class VisitStateStore(context: Context) {
         val lastInside: VisitFix?,
         val arrivedAt: Long = arrival?.timestamp ?: 0L,
         val sources: Set<VisitSource> = setOf(VisitSource.GPS),
-        val apIds: List<String> = emptyList()
+        val apIds: List<String> = emptyList(),
+        /**
+         * The visit geofences were armed again while this stop was open, and no DWELL of its
+         * environment came since: an EXIT of that environment no longer proves a departure
+         * (see [VisitStopTracker.markRearmed]).
+         */
+        val rearmed: Boolean = false
     )
 
     var openStop: OpenStop?
@@ -115,7 +121,8 @@ internal class VisitStateStore(context: Context) {
                     (0 until ids.length()).map { index -> ids.getString(index) }
                 } else {
                     emptyList()
-                }
+                },
+                rearmed = it.optBoolean("rearmed", false)
             )
         }
         set(value) = writeJson(KEY_OPEN_STOP, value?.let {
@@ -126,6 +133,7 @@ internal class VisitStateStore(context: Context) {
                 put("at", it.arrivedAt)
                 put("sources", JSONArray(it.sources.map { source -> source.wire }))
                 put("apIds", JSONArray(it.apIds))
+                if (it.rearmed) put("rearmed", true)
             }
         })
 

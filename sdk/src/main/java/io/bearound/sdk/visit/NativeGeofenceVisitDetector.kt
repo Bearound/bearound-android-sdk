@@ -62,9 +62,14 @@ internal interface GeofenceRegistrar {
  * - ENTER is registered only for places with known Wi-Fi access points. It is never an arrival:
  *   it asks for one scan (inside the platform scan throttle) and feeds the cached results to
  *   the [WifiVisitRunner] as a round. DWELL and EXIT are rounds too;
- * - DWELL (loitering delay = `minDwellMinutes`) sends the arrival with the triggering fix;
- * - EXIT of the same environment sends the departure: the stop position with the real time
- *   of the exit fix;
+ * - DWELL (loitering delay = `minDwellMinutes`) sends the arrival with the triggering fix.
+ *   A geofence registered with the device already inside counts the dwell from registration
+ *   ([PlayServicesGeofenceRegistrar.request]), so a stay that began before arming still arrives;
+ * - EXIT of the same environment sends the departure: the stop position and accuracy with the
+ *   real time of the exit fix (the delivery time when there is none);
+ * - geofences armed again while a stop is open (new boot, self-heal, switch from the soft
+ *   fence) cannot tell an EXIT of its environment from the initial EXIT of the re-arm: until a
+ *   DWELL confirms the stay, that EXIT closes the stop with no departure ([depart]);
  * - EXIT of the refresh fence (circle at `origin`, radius `refreshAfterMeters`) makes the
  *   controller fetch the config again.
  *
@@ -108,7 +113,7 @@ internal class NativeGeofenceVisitDetector(
         /**
          * The geofences for [config]: the refresh fence plus the nearest targets, up to
          * [MAX_GEOFENCES] in total. Places with known access points also register ENTER, which
-         * only triggers a Wi-Fi round (the initial trigger stays DWELL, so a device already
+         * only triggers a Wi-Fi round (ENTER is not an initial trigger, so a device already
          * inside gets no ENTER on registration).
          */
         fun plan(config: PlacesConfig): List<VisitGeofence> {
@@ -207,6 +212,8 @@ internal class NativeGeofenceVisitDetector(
         ) {
             return
         }
+        // Marked here, under the controller's lock: the result callback runs on another thread.
+        tracker.markRearmed()
         registrar.replaceAll(fences) { error ->
             when {
                 error == null -> onRegistered(fences, signature, now, bootAt)
@@ -287,23 +294,55 @@ internal class NativeGeofenceVisitDetector(
                 wifiEnvironment = true
             }
             // ENTER is only a Wi-Fi round trigger: never an arrival, and it needs no fix.
-            val fix = signal.fix ?: continue
             when (signal.transition) {
-                Geofence.GEOFENCE_TRANSITION_DWELL -> if (tracker.arrive(environmentId, fix)) {
-                    Log.i(TAG, "Geofence DWELL: arrival at $environmentId (fix at ${fix.timestamp})")
-                }
-                Geofence.GEOFENCE_TRANSITION_EXIT -> {
-                    val open = tracker.openStop() ?: continue
-                    if (open.environmentId != environmentId) continue
-                    val departure = open.arrival?.copy(timestamp = fix.timestamp, isMocked = fix.isMocked) ?: fix
-                    if (tracker.depart(environmentId, departure)) {
-                        Log.i(TAG, "Geofence EXIT: departure from $environmentId (fix at ${fix.timestamp})")
+                Geofence.GEOFENCE_TRANSITION_DWELL -> {
+                    // The DWELL itself proves the stay, with or without a fix.
+                    tracker.confirmInside(environmentId)
+                    val fix = signal.fix ?: continue
+                    if (tracker.arrive(environmentId, fix)) {
+                        Log.i(TAG, "Geofence DWELL: arrival at $environmentId (fix at ${fix.timestamp})")
                     }
                 }
+                Geofence.GEOFENCE_TRANSITION_EXIT -> depart(environmentId, signal.fix)
             }
         }
         if (wifiEnvironment) runWifiRound(signal.transition)
         return refresh
+    }
+
+    /**
+     * EXIT of the open stop's environment sends its departure at the stop position, with the
+     * accuracy of that fix (the arrival, or the last fix inside for a stop the Wi-Fi matcher
+     * opened), never at the exit fix outside the environment. The time is the exit fix's;
+     * with no fix, or only one older than the arrival (a stale last known fix), it is the
+     * delivery time, so a lost fix never leaves the stop open for a day, where it would block
+     * every other arrival.
+     *
+     * A stop whose geofences were armed again after it opened, with no DWELL since, gets no
+     * departure: this EXIT may be the initial one of the re-arm (the device left while nothing
+     * was armed) and when it left is unknown, so any departure time would be invented.
+     * The stop is only closed, so the next place can arrive. A stop only Wi-Fi saw stays for
+     * the Wi-Fi matcher, which dates its own departure.
+     */
+    private fun depart(environmentId: String, fix: VisitFix?) {
+        val open = tracker.openStop() ?: return
+        if (open.environmentId != environmentId) return
+        if (open.rearmed) {
+            if (VisitSource.GPS in open.sources && tracker.closeWithoutDeparture()) {
+                Log.i(TAG, "Geofence EXIT: stop at $environmentId closed with no departure (geofences re-armed after it opened)")
+            }
+            return
+        }
+        val exitAt = fix?.timestamp?.takeIf { it > open.arrivedAt } ?: clock()
+        val anchor = open.arrival ?: open.lastInside
+        // A stop only Wi-Fi saw has no position of its own: the exit fix, or the Wi-Fi matcher closes it.
+        val departure = anchor?.copy(timestamp = exitAt, isMocked = fix?.isMocked ?: anchor.isMocked)
+            ?: fix
+            ?: return
+        if (tracker.depart(environmentId, departure)) {
+            Log.i(TAG, "Geofence EXIT: departure from $environmentId at $exitAt" +
+                if (fix?.timestamp == exitAt) " (exit fix)" else " (delivery time, no exit fix)")
+        }
     }
 }
 
@@ -336,6 +375,19 @@ internal class PlayServicesGeofenceRegistrar(context: Context) : GeofenceRegistr
             .setLoiteringDelay(fence.loiteringDelayMs)
             .setNotificationResponsiveness(NOTIFICATION_RESPONSIVENESS_MS)
             .build()
+
+        /**
+         * Initial triggers DWELL and EXIT, never ENTER (ENTER is only a Wi-Fi round). A device
+         * already inside when the geofences are added gets a DWELL once it stays the loitering
+         * delay (the arrival). One already outside gets an EXIT for those fences: nothing with no
+         * stop open, a refresh when it is beyond the refresh fence, and for a stop that opened
+         * before the re-arm a close with no departure ([NativeGeofenceVisitDetector.depart]),
+         * never a departure dated at registration.
+         */
+        fun request(fences: List<VisitGeofence>): GeofencingRequest = GeofencingRequest.Builder()
+            .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_DWELL or GeofencingRequest.INITIAL_TRIGGER_EXIT)
+            .addGeofences(fences.map(::toPlayGeofence))
+            .build()
     }
 
     private val context = context.applicationContext
@@ -366,12 +418,7 @@ internal class PlayServicesGeofenceRegistrar(context: Context) : GeofenceRegistr
                     return@addOnCompleteListener
                 }
                 try {
-                    val request = GeofencingRequest.Builder()
-                        // Already inside when registered: the dwell still counts.
-                        .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_DWELL)
-                        .addGeofences(fences.map(::toPlayGeofence))
-                        .build()
-                    client.addGeofences(request, pendingIntent)
+                    client.addGeofences(request(fences), pendingIntent)
                         .addOnSuccessListener(callbackExecutor) { onResult(null) }
                         .addOnFailureListener(callbackExecutor) { onResult(it) }
                 } catch (e: Exception) {
