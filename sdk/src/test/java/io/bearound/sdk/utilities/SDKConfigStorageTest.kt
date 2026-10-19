@@ -2,8 +2,6 @@ package io.bearound.sdk.utilities
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import io.bearound.sdk.models.AppPresenceConfiguration
-import io.bearound.sdk.models.AppPresenceTarget
 import io.bearound.sdk.models.SDKConfiguration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -63,25 +61,18 @@ class SDKConfigStorageTest {
         assertFalse(SDKConfigStorage.loadConfiguration(context)!!.copy(collectWifi = true).dataCollectionPolicy.motionSensorsEnabled)
     }
 
-    @Test fun `app presence and adaptive privacy controls survive configuration restore together`() {
-        val presence = AppPresenceConfiguration(true, listOf(AppPresenceTarget("fixture", androidPackageName = "io.bearound.fixture")))
-        val original = SDKConfiguration("fixture-token", context.packageName, appPresence = presence,
+    @Test fun `adaptive privacy controls survive configuration restore`() {
+        val original = SDKConfiguration("fixture-token", context.packageName,
             adaptiveSamplingEnabled = false, collectMotionSensors = false,
             collectLocation = false, collectWifi = false, presenceHeartbeatIntervalMillis = 600_000L)
         SDKConfigStorage.saveConfiguration(context, original)
 
         val restored = SDKConfigStorage.loadConfiguration(context)!!
-        assertEquals(presence, restored.appPresence)
         assertFalse(restored.adaptiveSamplingEnabled)
         assertEquals(false, restored.collectMotionSensors)
         assertFalse(restored.dataCollectionPolicy.motionSensorsEnabled)
+        assertFalse(restored.copy(collectWifi = true).dataCollectionPolicy.motionSensorsEnabled)
         assertEquals(600_000L, restored.presenceHeartbeatIntervalMillis)
-        SDKConfigStorage.saveAppPresenceConfiguration(context, AppPresenceConfiguration.DISABLED)
-        val disabled = SDKConfigStorage.loadConfiguration(context)!!
-        assertFalse(disabled.appPresence.enabled)
-        assertFalse(disabled.adaptiveSamplingEnabled)
-        assertEquals(false, disabled.collectMotionSensors)
-        assertFalse(disabled.copy(collectWifi = true).dataCollectionPolicy.motionSensorsEnabled)
     }
 
 }

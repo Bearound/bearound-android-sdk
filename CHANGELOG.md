@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **App presence.** The local app presence check added in 3.16.0 is removed with all of its
+  API: `BeAroundSDK.configureAppPresence`, `BeAroundSDK.getLastAppPresenceSnapshot`,
+  `BeAroundSDKListener.onAppPresenceUpdated`, `SDKConfiguration.appPresence`, the
+  `AppPresence*` models, the `AppPresenceConfigurationException` and
+  `AppPresenceStorageException` exceptions, and the build evidence scripts
+  (`scripts/app-presence-evidence.gradle`, `scripts/verify_app_presence_artifact.py`).
+- **Migration.** Integrations that called these APIs must delete those calls, the
+  `onAppPresenceUpdated` override, the `apply from:` of the evidence script with its
+  `verifyAppPresence*` task wiring, and the `<queries>` entries declared for this feature.
+  The positional `SDKConfiguration` constructor and `copy` end at `collectWifi` again (the
+  3.15.0 shape), so code compiled against 3.16.x must be recompiled.
+- **Data stored by 3.16.x.** On first start the SDK deletes the app presence store
+  (`no_backup/bearound_app_presence/`) and its persisted configuration key. Nothing else on
+  the device is touched.
+
 ## [3.16.1] - 2026-10-13
 
 ### Fixed
