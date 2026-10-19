@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.0] - 2026-10-19
+
+### Added
+- **Adaptive sampling.** When the Bearound backend advertises support for it in its `/ingest`
+  responses, the SDK splits what it uploads into live updates and periodic observation
+  summaries whose cadence follows the device's motion and the stability of its surroundings:
+  a summary every 60 s or less while the device moves, up to every 5 minutes while its
+  surroundings stay stable, and live updates at least every 60 s, or every 30 s while
+  physical beacons are being detected (always within Android's background execution
+  limits). Without that support, or with the new `SDKConfiguration.adaptiveSamplingEnabled`
+  set to `false` (default `true`), the SDK keeps the previous sync cadence and payloads.
+  Visit detection, Mesh behavior and the collection switches are unchanged.
+- **Motion evidence without new permissions.** When the host app already declares and holds
+  `ACTIVITY_RECOGNITION`, the SDK listens to Play Services activity transitions. The fallback,
+  which needs no permission, is short accelerometer bursts (3 s at 20 Hz, at most one every
+  30 s), read only while scanning and while the app is in the foreground or the SDK foreground
+  scan service is running. The SDK declares and requests no new permission. The new
+  `SDKConfiguration.collectMotionSensors` (and `DataCollectionPolicy.motionSensors`) controls
+  it: `null`, the default, follows `collectLocation || collectWifi`; `false` disables both
+  sources. The manifest now declares `MotionTransitionReceiver` (`exported="false"`).
+- **Negotiated GZIP uploads.** When the backend advertises `gzip` as a request encoding,
+  `/ingest` bodies are sent with `Content-Encoding: gzip` whenever that makes them smaller. If
+  the server answers HTTP 415, the same payload is resent uncompressed and compression stays
+  off until the negotiated capability expires.
+- **Sampling diagnostics.** `BeAroundDiagnostics.adaptiveSampling` (the new
+  `AdaptiveSamplingDiagnostics`) reports the motion state, the capability status, the current
+  intervals and the upload counters; `summary()` prints the main ones.
+
+### Changed
+- **Offline queue.** Observations queued by adaptive sampling are replayed exactly as
+  captured, with their original capture times. Other batches resent from the queue carry the
+  capture time of their latest beacon as the device timestamp, instead of the send time.
+  Batches written before 3.7.0, which carry no business-token binding, are set aside instead
+  of being sent under the current token.
+
 ### Removed
 - **App presence.** The local app presence check added in 3.16.0 is removed with all of its
   API: `BeAroundSDK.configureAppPresence`, `BeAroundSDK.getLastAppPresenceSnapshot`,
