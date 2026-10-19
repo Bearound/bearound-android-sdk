@@ -78,7 +78,10 @@ class LegacyAppPresenceCleanupTest {
 
     @Test fun `sdk start runs the cleanup`() {
         val directory = seedLegacyData()
-        val instance = BeAroundSDK::class.java.getDeclaredField("instance").apply { isAccessible = true }
+        // By type, not by name: the release variant is minified and field names are gone.
+        val instance = BeAroundSDK::class.java.declaredFields
+            .single { java.lang.reflect.Modifier.isStatic(it.modifiers) && it.type == BeAroundSDK::class.java }
+            .apply { isAccessible = true }
         val previous = instance.get(null)
         instance.set(null, null)
         try {
