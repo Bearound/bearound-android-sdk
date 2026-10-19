@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-10-19
+
 ### Added
 - **`visit` object on visit payloads.** Each visit `/ingest` payload now carries, at the top
   level next to `location`, `visit: { kind, environmentId, source, at }`: `arrival` or
