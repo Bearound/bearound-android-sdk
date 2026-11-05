@@ -3,8 +3,8 @@ package io.bearound.sdk.models
 /**
  * Where the device was, as context for the observations in the same payload.
  *
- * Always the platform's **last known** fix — the SDK never requests an active one,
- * so this costs no extra battery and no GPS wake-up.
+ * Cached context normally; explicit foreground acquisition can attach a fresh fix.
+ * The timestamp always belongs to the original platform fix.
  *
  * @property timestamp  epoch millis of the fix, not of the payload (a fix can be minutes old)
  * @property source     which provider produced it: `gps`, `network`, `fused` or `passive`

@@ -234,6 +234,30 @@ class OfflineBatchStorageTest {
         assertEquals(listOf(beaconBatch), storage.loadAllRecords().map { it.id })
     }
 
+    @Test
+    fun `foreground fixes survive restart individually with original timestamps and ordinary eviction`() {
+        storage.maxBatchCount = 3
+        val fixes = listOf(1_800_000_000_000L, 1_800_000_035_000L, 1_800_000_070_000L)
+        val bodies = fixes.map { timestamp -> JSONObject().apply {
+            put("sdk", JSONObject().put("appId", "fixture"))
+            put("device", JSONObject().put("deviceId", "fixture-device").put("timestamp", timestamp + 5))
+            put("beacons", JSONArray()); put("syncTrigger", "location_burst")
+            put("location", JSONObject().put("latitude", -23.0).put("longitude", -46.0)
+                .put("accuracy", 12).put("timestamp", timestamp).put("source", "gps"))
+        }.toString() }
+        val ids = bodies.map { storage.saveRequestReturningId(it)!! }
+        val restarted = OfflineBatchStorage(context).also { it.currentTenantId = "test-tenant" }
+        val records = restarted.loadAllRecords()
+        assertEquals(ids, records.map { it.id })
+        assertEquals(bodies, records.map { it.requestJson })
+        assertEquals(fixes, records.map { JSONObject(it.requestJson!!).getJSONObject("location").getLong("timestamp") })
+        assertTrue(records.all { it.syncTrigger == "location_burst" && it.beacons.isEmpty() })
+        storage.saveBatchReturningId(listOf(beacon()))
+        val remaining = storage.loadAllRecords()
+        assertEquals(3, remaining.size)
+        assertFalse(remaining.any { it.id == ids.first() })
+    }
+
     // endregion
     private fun observation(id: String = UUID.randomUUID().toString(), timestamp: Long = 1_800_000_000_000L) = JSONObject().apply {
         put("sdk", JSONObject().put("appId", "fixture")); put("device", JSONObject().put("deviceId", "device-1").put("timestamp", timestamp))

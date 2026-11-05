@@ -1444,3 +1444,40 @@ MIT License - see LICENSE file for details
 
 For issues, questions, or contributions, please visit:
 https://github.com/Bearound/bearound-android-sdk
+
+### Optional foreground location bursts (unreleased)
+
+Cached location context remains the default. Hosts that need independent location
+observations can explicitly enable bounded acquisition after configuring the SDK:
+
+```kotlin
+sdk.configure(businessToken = token, collectLocation = true)
+sdk.setForegroundLocationBurstsEnabled(true)
+sdk.startScanning()
+```
+
+This per-process opt-in resets on `configure`. It uses existing fine-location grants
+without permission prompts. While the app is foregrounded, one burst can capture up
+to three independent fixes, targeting 35-second spacing, with a 110-second hard
+limit, a 10-second limit per request and a 15-minute cooldown between bursts. It
+stops on backgrounding, scan stop, reconfiguration, missing permission, disabled
+location, power saving, severe thermal state or unavailable/insufficient fixes.
+Foreground activation or an explicit enable call can start an eligible burst;
+there is no repeating background acquisition timer or background cadence guarantee.
+
+Burst spacing and its minimum 60-second observation span use monotonic time; a
+wall-clock jump ends the burst instead of manufacturing dwell. Acquisitions pin
+their SDK generation and tenant before requesting a fix, so reconfiguration cannot
+reassign an old callback to a new client.
+
+Each accepted fix must be new, accurate within 50 meters and retain its original
+platform timestamp. It is persisted separately using the normal bounded retry
+queue as `location_burst`. This explicit opt-in separately authorizes those
+location-only events even when the empty-scan heartbeat is disabled; it does not
+change ordinary heartbeat behavior. Disable with
+`setForegroundLocationBurstsEnabled(false)`.
+
+A publisher must ship and activate the new SDK integration. Backend deployment
+alone cannot enable acquisition on old binaries or recover historical missing
+positions. Validate permission/lifecycle behavior and battery impact on actual
+publisher devices before rollout. No SDK release is included in this change.

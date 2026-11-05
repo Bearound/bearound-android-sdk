@@ -55,6 +55,9 @@ import io.bearound.sdk.utilities.RegisterStore
 import io.bearound.sdk.utilities.SDKConfigStorage
 import io.bearound.sdk.utilities.ScanLogThrottle
 import io.bearound.sdk.utilities.SecureStorage
+import io.bearound.sdk.utilities.FreshLocationBurstCapture
+import io.bearound.sdk.utilities.FreshLocationBurst
+import io.bearound.sdk.utilities.ForegroundLocationRequest
 import io.bearound.sdk.utilities.LocationCollector
 import io.bearound.sdk.visit.GeofenceSignal
 import io.bearound.sdk.visit.OfflineBatchVisitEventQueue
@@ -304,6 +307,7 @@ class BeAroundSDK private constructor() {
     }
 
     private fun resetAdaptiveSampling() = synchronized(adaptiveLock) {
+        freshLocationHandler.post { freshLocationBurst?.stop() }
         closeSamplingWindow()?.let { persistObservation(it) }
         samplingGeneration++
         physicalCaptureQueue.resume()
@@ -702,7 +706,77 @@ class BeAroundSDK private constructor() {
     // unlike the uptime clock backing Handler.postDelayed).
     @Volatile private var lastImmediateFlushAt = 0L
 
-    private var isInBackground = false
+    @Volatile private var isInBackground = false
+    @Volatile private var foregroundLocationBurstsEnabled = false
+    @Volatile private var foregroundLocationConfigurationChanging = false
+    private val foregroundLocationIntent = java.util.concurrent.atomic.AtomicLong(0L)
+    private val freshLocationHandler = Handler(Looper.getMainLooper())
+    private var freshLocationBurst: FreshLocationBurst? = null
+
+    /**
+     * Explicit per-process opt-in to bounded GPS acquisition while the app is active.
+     * Defaults off and resets on configure. Uses existing grants only, never background GPS.
+     * Three independent fixes are durably queued per burst, with a 15-minute cooldown.
+     * This separately authorizes location-only events even when the empty heartbeat is off.
+     */
+    fun setForegroundLocationBurstsEnabled(enabled: Boolean) {
+        if (!enabled) foregroundLocationIntent.incrementAndGet()
+        foregroundLocationBurstsEnabled = enabled
+        freshLocationHandler.post {
+            if (!enabled) freshLocationBurst?.stop() else startForegroundLocationBurst()
+        }
+    }
+
+    private fun startForegroundLocationBurst() {
+        freshLocationHandler.post {
+            if (!foregroundLocationBurstsEnabled || !isConfigured) return@post
+            val platform = ForegroundLocationRequest(context)
+            val coordinator = freshLocationBurst ?: FreshLocationBurst(
+                elapsed = { SystemClock.elapsedRealtime() }, wallTime = { System.currentTimeMillis() },
+                eligible = { foregroundLocationBurstsEnabled && isConfigured && wasScanningEnabled() &&
+                    !isInBackground && isAppInForeground() && DataCollectionPolicyStore.current.location && platform.eligible() },
+                schedule = platform::schedule, request = platform::request,
+                capture = { captureForegroundLocationBurst(platform) }
+            ).also { freshLocationBurst = it }
+            coordinator.start()
+        }
+    }
+
+    /** Pins the owner before acquisition starts; posted cancellation is not an identity fence. */
+    internal fun captureForegroundLocationBurst(platform: ForegroundLocationRequest): FreshLocationBurstCapture? {
+        if (foregroundLocationConfigurationChanging) return null
+        val generation = samplingGeneration
+        val intent = foregroundLocationIntent.get()
+        val tenant = offlineBatchStorage.currentTenantId ?: return null
+        val config = configuration ?: return null
+        val client = apiClient ?: return null
+        val info = sdkInfo ?: return null
+        val isCurrent = { !foregroundLocationConfigurationChanging && intent == foregroundLocationIntent.get() &&
+            generation == samplingGeneration && configuration === config && apiClient === client &&
+            sdkInfo === info && offlineBatchStorage.currentTenantId == tenant }
+        return FreshLocationBurstCapture(isCurrent = isCurrent, enqueue = { fix, completion ->
+            scope.launch(Dispatchers.IO) {
+                val saved = runCatching {
+                    // Reject obsolete acquisition before collecting any B-owned context.
+                    if (!isCurrent()) false else {
+                        val device = deviceInfoCollector.collectDeviceInfo(getLocationPermissionStatus(),
+                            if (bluetoothManager.isPoweredOn) "powered_on" else "powered_off", true).copy(location = fix)
+                        synchronized(adaptiveLock) {
+                            if (!isCurrent() || !foregroundLocationBurstsEnabled || isInBackground ||
+                                !isAppInForeground() || !wasScanningEnabled() ||
+                                !DataCollectionPolicyStore.current.location || !platform.eligible()) false
+                            else offlineBatchStorage.saveRequestReturningId(
+                                client.buildPayload(emptyList(), info, device, userProperties, "location_burst").toString(),
+                                expectedTenantId = tenant) != null
+                        }
+                    }
+                }.getOrDefault(false)
+                freshLocationHandler.post { completion(saved) }
+                if (saved) drainStoredBatches(forceBackground = false, onlyTrigger = "location_burst")
+            }
+        })
+    }
+
     private var foregroundScanConfig: ForegroundScanConfig? = null
     private val registerInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -988,6 +1062,7 @@ class BeAroundSDK private constructor() {
 
     private fun onAppForegrounded() {
         isInBackground = false
+        startForegroundLocationBurst()
         Log.d(TAG, "App foregrounded")
 
         // O scan por PendingIntent fica ATIVO também em foreground (antes era desligado
@@ -1019,7 +1094,9 @@ class BeAroundSDK private constructor() {
     }
 
     private fun onAppBackgrounded() {
+        foregroundLocationIntent.incrementAndGet()
         isInBackground = true
+        freshLocationHandler.post { freshLocationBurst?.stop() }
         Log.d(TAG, "App backgrounded")
 
         beaconManager.setForegroundState(false)
@@ -1079,6 +1156,7 @@ class BeAroundSDK private constructor() {
             return this
         }
 
+        foregroundLocationConfigurationChanging = true
         val appId = context.packageName
 
         val config = SDKConfiguration(
@@ -1104,6 +1182,7 @@ class BeAroundSDK private constructor() {
         // Applied FIRST: everything below (telemetry install, the advertising-ID fetch, the
         // register call, an in-flight sync) can reach a collector, and a collector that runs
         // before the policy lands would read a signal the host just turned off.
+        foregroundLocationBurstsEnabled = false
         resetAdaptiveSampling()
         DataCollectionPolicyStore.apply(config.dataCollectionPolicy)
 
@@ -1179,6 +1258,7 @@ class BeAroundSDK private constructor() {
             startMotionMonitor()
             startSyncTimer()
         }
+        foregroundLocationConfigurationChanging = false
         return this
     }
 
@@ -1709,6 +1789,8 @@ class BeAroundSDK private constructor() {
         // stopped on region exit. BackgroundScanManager.enableBackgroundScanning() (above)
         // already runs the low-power filter scan that wakes us when a beacon appears.
 
+        startForegroundLocationBurst()
+
         // Visit detection: independent of the beacon eye, self-gated (iOS parity).
         startVisitDetection()
 
@@ -1798,6 +1880,8 @@ class BeAroundSDK private constructor() {
     }
 
     fun stopScanning() {
+        foregroundLocationIntent.incrementAndGet()
+        freshLocationHandler.post { freshLocationBurst?.stop() }
         scanningIntent.incrementAndGet()
         // Saved first: visit work queued before this call re-checks the flag under the visit
         // controller's mutex, so it cannot re-arm geofences after the stop below.
