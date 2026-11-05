@@ -23,6 +23,7 @@ internal class FreshLocationBurst(
     private val cancellations = mutableListOf<() -> Unit>()
     private var count = 0
     private var captured: FreshLocationBurstCapture? = null
+    private var burstDeadline = 0L
     private var firstFixElapsed = 0L
     private var initialWall = 0L
     private var initialElapsed = 0L
@@ -36,6 +37,7 @@ internal class FreshLocationBurst(
         captured = owner
         initialWall = wallTime()
         initialElapsed = elapsed()
+        burstDeadline = initialElapsed + 110_000L
         running = true
         count = 0
         val token = ++generation
@@ -57,24 +59,27 @@ internal class FreshLocationBurst(
     private fun acquire(token: Long) {
         if (token != generation) return
         val owner = captured ?: return
-        if (!eligible() || !owner.isCurrent() || !clockStable()) { stop(); return }
+        if (!withinBurst() || !eligible() || !owner.isCurrent() || !clockStable()) { stop(); return }
         val requestedAt = wallTime()
+        val requestDeadline = elapsed() + 10_000L
         var completed = false
         val timeout = schedule(10_000L) { if (token == generation) stop() }
         cancellations += timeout
+        if (!withinBurst() || elapsed() >= requestDeadline) { stop(); return }
         val cancel = request { fix ->
             if (completed || token != generation) return@request
             completed = true
             timeout()
             cancelRequest = null
             val acceptedElapsed = elapsed()
-            if (!eligible() || !owner.isCurrent() || !clockStable() || fix == null || !valid(fix, requestedAt) ||
+            if (!withinBurst() || acceptedElapsed >= requestDeadline || !eligible() || !owner.isCurrent() || !clockStable() || fix == null || !valid(fix, requestedAt) ||
                 (count == 2 && acceptedElapsed - firstFixElapsed < 60_000L)) {
                 stop(); return@request
             }
+            if (!withinBurst() || elapsed() >= requestDeadline) { stop(); return@request }
             owner.enqueue(fix) { saved ->
                 if (token == generation) {
-                    if (!saved || !eligible() || !owner.isCurrent() || !clockStable()) stop() else {
+                    if (!withinBurst() || !saved || !eligible() || !owner.isCurrent() || !clockStable()) stop() else {
                         lastTimestamp = fix.timestamp
                         if (count++ == 0) { firstTimestamp = fix.timestamp; firstFixElapsed = acceptedElapsed }
                         if (count == 3) stop() else {
@@ -88,6 +93,8 @@ internal class FreshLocationBurst(
         }
         if (completed || token != generation) cancel() else cancelRequest = cancel
     }
+
+    private fun withinBurst(): Boolean = running && elapsed() < burstDeadline
 
     private fun clockStable(): Boolean =
         kotlin.math.abs((wallTime() - initialWall) - (elapsed() - initialElapsed)) <= 1_000L

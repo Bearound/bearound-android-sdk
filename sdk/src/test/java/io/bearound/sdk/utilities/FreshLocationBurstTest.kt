@@ -10,6 +10,8 @@ class FreshLocationBurstTest {
         var wallOffset = 0L
         var allowed = true
         var persist = true
+        var deferPersistence = false
+        var persistenceCompletion: ((Boolean) -> Unit)? = null
         var tenant = "A"
         var generation = 1L
         var requests = 0
@@ -27,7 +29,10 @@ class FreshLocationBurstTest {
         }, {
             val pinnedTenant = tenant; val pinnedGeneration = generation
             FreshLocationBurstCapture({ tenant == pinnedTenant && generation == pinnedGeneration },
-                { fix, completion -> if (persist) queued += fix; completion(persist) })
+                { fix, completion ->
+                    if (persist) queued += fix
+                    if (deferPersistence) persistenceCompletion = completion else completion(persist)
+                })
         })
         fun advance(delta: Long) {
             val target = now + delta
@@ -127,6 +132,34 @@ class FreshLocationBurstTest {
         f.advance(35_000)
         assertEquals(1, f.requests); assertEquals(1, f.queued.size)
         f.advance(15_000); assertEquals(1, f.requests)
+    }
+
+    @Test fun `fresh callback after request deadline cannot enqueue when timer dispatch is blocked`() {
+        val f = Fixture(); f.burst.start()
+        // Move real clocks without dispatching the queued Handler timeout.
+        f.now += 11_000
+        f.deliver(f.fix())
+        assertTrue(f.queued.isEmpty())
+        assertTrue(f.tasks.all { it.cancelled })
+    }
+
+    @Test fun `late persistence completion cannot schedule another acquisition after burst deadline`() {
+        val f = Fixture(); f.deferPersistence = true
+        f.burst.start(); f.deliver()
+        f.now += 111_000
+        f.persistenceCompletion!!(true)
+        assertEquals(1, f.requests)
+        assertTrue(f.tasks.all { it.cancelled })
+    }
+
+    @Test fun `scheduled acquisition checks elapsed deadline before timer dispatch`() {
+        val f = Fixture(); f.burst.start(); f.deliver()
+        val nextAcquisition = f.tasks.single { !it.cancelled && it.due == f.now + 35_000 }
+        f.now += 111_000
+        // A delayed callback can reach the looper ahead of the timeout runnable.
+        nextAcquisition.action()
+        assertEquals(1, f.requests)
+        assertTrue(f.tasks.all { it.cancelled })
     }
 
 }
