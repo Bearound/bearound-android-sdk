@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Encounters received by a process restarted by the system scan are uploaded without opening
+  the app.** A broadcast on a restarted process now arms the periodic sync, and a background
+  broadcast that carries fresh encounter sightings flushes them right away (same debounce as the
+  beacon flush). The watchdog also schedules the upload when encounters are pending.
+
 ## [3.18.0] - 2026-10-19
 
 ### Added
