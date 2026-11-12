@@ -146,6 +146,9 @@ class BeAroundSDK private constructor() {
          */
         private const val IMMEDIATE_FLUSH_MIN_GAP_MS = 10_000L
 
+        /** Minimum gap between two uploads that carry only mesh encounters (no beacon). */
+        private const val ENCOUNTER_ONLY_SYNC_MIN_GAP_MS = 60_000L
+
         /**
          * Anti-downgrade scan refresh. OEMs on Android 13+ silently
          * downgrade long-lived scan sessions (requested BALANCED/LOW_LATENCY demoted to
@@ -1849,7 +1852,7 @@ class BeAroundSDK private constructor() {
         // With the mesh stopped, handleScanResult and handleVirtualBeacon drop everything
         // this broadcast is carrying and the device does not advertise either — until the
         // 15-min watchdog happens to run.
-        rejoinEncounterMesh()
+        reviveFromBroadcast()
 
         val isAppInForeground = isAppInForeground()
 
@@ -1870,11 +1873,20 @@ class BeAroundSDK private constructor() {
         // detection waiting for it ships minutes late, or only when the app opens.
         // So every background detection flushes NOW (debounced), regardless of the
         // timer. The debounce keeps a 1 Hz beacon from turning into 1 Hz POSTs.
-        if (!isAppInForeground && beaconsAfterBroadcast > 0) {
+        // Mesh sightings are not in collectedBeacons, so a mesh-only broadcast (a revived
+        // process with only another phone nearby) is detected through hasPendingEncounters,
+        // evaluated after the frames above were routed. The timer is the complement here:
+        // the broadcast window is the reliable trigger.
+        val hasEncounters = hasPendingEncounters()
+        if (!isAppInForeground && (beaconsAfterBroadcast > 0 || hasEncounters)) {
             val now = android.os.SystemClock.elapsedRealtime()
             if (now - lastImmediateFlushAt >= IMMEDIATE_FLUSH_MIN_GAP_MS) {
                 lastImmediateFlushAt = now
-                Log.d(TAG, "Broadcast detected beacons in background - flushing immediately")
+                if (beaconsAfterBroadcast > 0) {
+                    Log.d(TAG, "Broadcast detected beacons in background - flushing immediately")
+                } else {
+                    Log.d(TAG, "Broadcast carried mesh encounters in background, flushing immediately")
+                }
                 // Fast path: sync while the broadcast window (goAsync) holds the
                 // process. Safety net: an expedited Worker with its own execution
                 // window + network constraint re-runs the flush if this one dies.
@@ -2151,12 +2163,29 @@ class BeAroundSDK private constructor() {
     private fun shouldSyncEncountersWithoutBeacons(): Boolean {
         val mesh = encounterMesh ?: return false
         val now = System.currentTimeMillis()
-        if (now - lastEncounterOnlySyncAt < 60_000) return false
+        if (now - lastEncounterOnlySyncAt < ENCOUNTER_ONLY_SYNC_MIN_GAP_MS) return false
         if (!mesh.hasFreshEncounters(lastEncounterOnlySyncAt)) return false
         lastEncounterOnlySyncAt = now
         Log.d(TAG, "No new beacons — syncing encounter batch")
         return true
     }
+
+    /**
+     * Non-mutating peek at the same condition as [shouldSyncEncountersWithoutBeacons]: the
+     * mesh is running, the encounters-only throttle has elapsed and there are fresh
+     * sightings. Does NOT advance the throttle; only the sync body does that.
+     */
+    internal fun hasPendingEncounters(): Boolean {
+        val mesh = encounterMesh ?: return false
+        if (!mesh.isActive) return false
+        val now = System.currentTimeMillis()
+        if (now - lastEncounterOnlySyncAt < ENCOUNTER_ONLY_SYNC_MIN_GAP_MS) return false
+        return mesh.hasFreshEncounters(lastEncounterOnlySyncAt)
+    }
+
+    /** True while the periodic sync runnable is armed. Read-only, for tests. */
+    internal val isSyncTimerArmed: Boolean
+        get() = syncRunnable != null
 
     /** Timestamp of the last empty-scan report, for the throttle in [shouldReportEmptyScan]. */
     @Volatile private var lastPresenceHeartbeatAt = 0L
@@ -2748,10 +2777,15 @@ class BeAroundSDK private constructor() {
      * advertisement. Bluetooth state and BLUETOOTH_ADVERTISE are checked inside
      * [EncounterMeshManager.start], which is also idempotent, so calling this on every
      * broadcast costs one lock check once the mesh is up.
+     *
+     * Also arms the periodic sync timer, since nothing else on the broadcast path does
+     * (idempotent; deliberately NOT [startSyncTimer], which would also start ranging and
+     * eat the OS scan-start quota).
      */
-    private fun rejoinEncounterMesh() {
+    private fun reviveFromBroadcast() {
         if (!isConfigured || !wasScanningEnabled()) return
         encounterMesh?.start()
+        armSyncTimerOnly()
     }
 
     /**

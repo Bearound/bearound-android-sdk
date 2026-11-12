@@ -74,7 +74,7 @@ class ScanWatchdogReceiver : BroadcastReceiver() {
             // (the process is freezable the moment onReceive returns, and the old direct
             // performBackgroundSync() was fire-and-forget into that void) — hand the
             // upload to the expedited worker, which owns a WorkManager window + wakelock.
-            if (sdk.hasPendingBeacons()) {
+            if (sdk.hasPendingBeacons() || sdk.hasPendingEncounters()) {
                 Log.d(TAG, "Watchdog: pending beacons — enqueuing ImmediateSyncWorker")
                 ImmediateSyncWorker.enqueue(context.applicationContext)
             }
