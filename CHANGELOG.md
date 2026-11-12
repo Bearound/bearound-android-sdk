@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.18.1] - 2026-11-12
+
 ### Fixed
 - **Encounters received by a process restarted by the system scan are uploaded without opening
   the app.** A broadcast on a restarted process now arms the periodic sync, and a background
