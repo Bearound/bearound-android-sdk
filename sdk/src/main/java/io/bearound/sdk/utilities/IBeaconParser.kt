@@ -45,6 +45,9 @@ object IBeaconParser {
      * of the reserved band is air corruption, which carries no usable minor. */
     const val VIRTUAL_ENCOUNTER_MAJOR: Int = 0xFFFF
 
+    /** Size of the 0xBEAD service-data payload. */
+    private const val BEAD_SERVICE_DATA_SIZE = 11
+
     private fun uuidToBytes(uuid: UUID): ByteArray =
         java.nio.ByteBuffer.allocate(16)
             .putLong(uuid.mostSignificantBits)
@@ -72,11 +75,21 @@ object IBeaconParser {
      * Parse BEAD Service Data (11 bytes LE) from a ScanRecord
      * @param scanRecord The BLE scan record
      * @param rssi The RSSI value from the scan result
-     * @return BeadServiceData if valid BEAD service data found, null otherwise
+     * @return BeadServiceData if valid BEAD service data found, null otherwise. Frames in the
+     * reserved virtual-encounter band are never returned: they are another SDK host, not a
+     * physical beacon (see [parseVirtualEncounterFrame]).
      */
     fun parseServiceData(scanRecord: ScanRecord, rssi: Int): BeadServiceData? {
+        val frame = parseAnyServiceData(scanRecord, rssi) ?: return null
+        if (frame.major >= VIRTUAL_ENCOUNTER_MAJOR_FLOOR) return null
+        return frame
+    }
+
+    /** Layout-only parse of the 0xBEAD service data, no policy (11 bytes LE:
+     * firmware u16, major u16, minor u16, motion u16, temperature i8, battery u16). */
+    private fun parseAnyServiceData(scanRecord: ScanRecord, rssi: Int): BeadServiceData? {
         val data = scanRecord.getServiceData(BEAD_SERVICE_UUID) ?: return null
-        if (data.size < 11) return null
+        if (data.size < BEAD_SERVICE_DATA_SIZE) return null
 
         val firmware = (data[0].toInt() and 0xFF) or ((data[1].toInt() and 0xFF) shl 8)
         val major = (data[2].toInt() and 0xFF) or ((data[3].toInt() and 0xFF) shl 8)
@@ -137,7 +150,11 @@ object IBeaconParser {
      * minor is the entire identity of the peer.
      */
     fun parseVirtualEncounterFrame(scanRecord: ScanRecord, rssi: Int): BeadServiceData? {
-        val frame = parseAnyIBeaconFrame(scanRecord, rssi) ?: return null
+        // Two wire forms carry the same identity: the iBeacon frame and the pure 0xBEAD
+        // service-data frame (the only one some receivers are handed).
+        val frame = parseAnyIBeaconFrame(scanRecord, rssi)
+            ?: parseAnyServiceData(scanRecord, rssi)
+            ?: return null
         return if (frame.major == VIRTUAL_ENCOUNTER_MAJOR) frame else null
     }
 

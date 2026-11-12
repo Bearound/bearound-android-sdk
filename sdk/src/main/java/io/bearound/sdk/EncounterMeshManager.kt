@@ -58,6 +58,19 @@ internal class EncounterMeshManager(private val context: Context) {
          * special-case us. */
         const val VIRTUAL_BEACON_CALIBRATED_TX_POWER: Int = -59
 
+        /** 0xBEAD service-data payload for the virtual identity: the 11-byte little-endian
+         * layout `IBeaconParser.parseServiceData` reads (firmware u16 = 0, major u16 =
+         * reserved virtual major, [minor] u16, motion u16 = 0, temperature i8 = 0,
+         * battery u16 = 0). Pure function so the wire format is testable. */
+        internal fun virtualServiceDataPayload(minor: Int): ByteArray = byteArrayOf(
+            0, 0,
+            (VIRTUAL_BEACON_MAJOR and 0xFF).toByte(), ((VIRTUAL_BEACON_MAJOR shr 8) and 0xFF).toByte(),
+            (minor and 0xFF).toByte(), ((minor shr 8) and 0xFF).toByte(),
+            0, 0,
+            0,
+            0, 0
+        )
+
         private const val MAX_TRACKED_PEERS = 64
         private const val PEER_STALE_EVICTION_MS: Long = 10 * 60 * 1000
 
@@ -223,6 +236,7 @@ internal class EncounterMeshManager(private val context: Context) {
         advertising = false
         runCatching { advertiser?.stopAdvertising(advertiseCallback) }
         runCatching { advertiser?.stopAdvertising(virtualBeaconCallback) }
+        runCatching { advertiser?.stopAdvertising(virtualServiceDataCallback) }
         advertiser = null
         virtualBeaconMinor = -1
         advertisedRpi = null
@@ -281,6 +295,17 @@ internal class EncounterMeshManager(private val context: Context) {
         }
     }
 
+    private val virtualServiceDataCallback = object : AdvertiseCallback() {
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+            Log.i(TAG, "Advertising virtual identity (0xBEAD service data, minor $virtualBeaconMinor)")
+        }
+        override fun onStartFailure(errorCode: Int) {
+            // Best-effort third set: a chip's concurrent-advertiser cap lands here. It must
+            // not touch `advertising`, which tracks the sets that carry the mesh identity.
+            Log.w(TAG, "Virtual identity (service data) advertise failed: $errorCode")
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun startAdvertising(adapter: android.bluetooth.BluetoothAdapter) {
         val leAdvertiser = adapter.bluetoothLeAdvertiser ?: run {
@@ -309,6 +334,7 @@ internal class EncounterMeshManager(private val context: Context) {
         runCatching { leAdvertiser.startAdvertising(settings, data, scanResponse, advertiseCallback) }
             .onFailure { Log.w(TAG, "startAdvertising threw: ${it.message}") }
         startVirtualBeacon(leAdvertiser)
+        startVirtualServiceData(leAdvertiser)
     }
 
     /** iBeacon frame identical to the physical Bearound beacon's (same UUID, Apple
@@ -347,8 +373,32 @@ internal class EncounterMeshManager(private val context: Context) {
             .onFailure { Log.w(TAG, "Virtual beacon startAdvertising threw: ${it.message}") }
     }
 
-    /** Rotation moved the identifier → re-advertise both sets (scan-response RPI and
-     * virtual-beacon minor). Called from the rotation path; safe from any thread. */
+    /** Pure Service Data 0xBEAD frame carrying the same virtual identity as the iBeacon
+     * virtual beacon (same minor, see [virtualBeaconMinor]). Started last: it is the lowest
+     * priority of the three sets. The frame stays pure: service data and nothing else. */
+    @SuppressLint("MissingPermission")
+    private fun startVirtualServiceData(leAdvertiser: android.bluetooth.le.BluetoothLeAdvertiser) {
+        val minor = virtualBeaconMinor
+        if (minor < 0) return
+        val settings = AdvertiseSettings.Builder()
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            .setConnectable(false)
+            .build()
+        val data = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
+            .addServiceData(
+                io.bearound.sdk.utilities.IBeaconParser.BEAD_SERVICE_UUID,
+                virtualServiceDataPayload(minor)
+            )
+            .build()
+        runCatching { leAdvertiser.startAdvertising(settings, data, virtualServiceDataCallback) }
+            .onFailure { Log.w(TAG, "Virtual identity startAdvertising threw: ${it.message}") }
+    }
+
+    /** Rotation moved the identifier → re-advertise all three sets (scan-response RPI,
+     * virtual-beacon minor and its service-data twin). Called from the rotation path; safe from any thread. */
     @SuppressLint("MissingPermission")
     private fun refreshAdvertisingAfterRotation() {
         val leAdvertiser = advertiser ?: return
@@ -356,6 +406,7 @@ internal class EncounterMeshManager(private val context: Context) {
         handler.post {
             runCatching { leAdvertiser.stopAdvertising(advertiseCallback) }
             runCatching { leAdvertiser.stopAdvertising(virtualBeaconCallback) }
+            runCatching { leAdvertiser.stopAdvertising(virtualServiceDataCallback) }
             val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE)
                 as? android.bluetooth.BluetoothManager)?.adapter ?: return@post
             startAdvertising(adapter)

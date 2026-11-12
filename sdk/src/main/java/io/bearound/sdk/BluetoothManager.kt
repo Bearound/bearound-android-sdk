@@ -280,6 +280,16 @@ class BluetoothManager(private val context: Context) {
             }
         }
 
+        // A peer SDK host pulsing as a virtual beacon (either wire form) is an encounter,
+        // not a beacon: route it to the mesh before the beacon parse refuses it.
+        encounterMesh?.let { mesh ->
+            IBeaconParser.parseVirtualEncounterFrame(scanRecord, rssi)?.let { virtual ->
+                mesh.handleVirtualBeacon(virtual.minor, virtual.rssi,
+                    (result.timestampNanos / 1_000_000L).takeIf { result.timestampNanos > 0 })
+                return
+            }
+        }
+
         val serviceData = IBeaconParser.parseServiceData(scanRecord, rssi) ?: return
         if (!shouldProcessBeacon(serviceData.major, serviceData.minor)) return
 

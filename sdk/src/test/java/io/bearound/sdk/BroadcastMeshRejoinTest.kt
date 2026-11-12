@@ -84,4 +84,30 @@ class BroadcastMeshRejoinTest {
         assertEquals(1, sightings.size)
         assertEquals(4242, sightings.first().minor)
     }
+
+    @Test
+    fun `a broadcast frame carrying only the 0xBEAD virtual identity is an encounter, not a beacon`() {
+        SDKConfigStorage.saveScanningEnabled(context, true)
+        sdk.processBroadcastResults(emptyList())
+        val mesh = sdk.encounterMesh!!
+
+        // Pure service-data frame: no iBeacon manufacturer data, no mesh service UUID.
+        val payload = EncounterMeshManager.virtualServiceDataPayload(4242)
+        val ad = byteArrayOf((3 + payload.size).toByte(), 0x16, 0xAD.toByte(), 0xBE.toByte()) + payload
+        val record = android.bluetooth.le.ScanRecord::class.java
+            .getDeclaredMethod("parseFromBytes", ByteArray::class.java)
+            .apply { isAccessible = true }
+            .invoke(null, ad) as android.bluetooth.le.ScanRecord
+        val device = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+            .getRemoteDevice("AA:BB:CC:DD:EE:01")
+        val result = android.bluetooth.le.ScanResult(device, record, -66, System.nanoTime())
+
+        sdk.processBroadcastResults(listOf(result))
+
+        val sightings = mesh.drainVirtualBeacons()
+        assertEquals(listOf(4242), sightings.map { it.minor })
+        assertEquals(-66, sightings.single().rssiAvg)
+        assertTrue("a peer frame must not count as a detected beacon",
+            !sdk.hasPendingBeacons())
+    }
 }

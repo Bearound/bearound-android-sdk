@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The encounter identity is also advertised as a Service Data frame.** Next to the existing
+  encounter advertisements, each device now emits its rotating virtual identity as a pure
+  `0xBEAD` Service Data frame, and receivers route it to the encounter layer on every scan path
+  (ranging, batch, metadata and the PendingIntent broadcast). This extends encounter reception
+  across more Android 14 devices. It is never treated as a beacon detection.
+
 ### Fixed
 - **Encounters received by a process restarted by the system scan are uploaded without opening
   the app.** A broadcast on a restarted process now arms the periodic sync, and a background

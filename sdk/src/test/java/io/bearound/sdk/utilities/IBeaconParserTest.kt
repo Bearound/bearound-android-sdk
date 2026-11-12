@@ -151,7 +151,88 @@ class IBeaconParserTest {
         assertNull(IBeaconParser.parseVirtualEncounterFrame(iBeaconOnlyRecord(), rssi = -62))
     }
 
+    // ── virtual identity as a pure 0xBEAD service-data frame ──
+
+    @Test
+    fun `the service-data virtual frame round-trips the peer's minor`() {
+        val payload = io.bearound.sdk.EncounterMeshManager.virtualServiceDataPayload(24284)
+        val record = scanRecordWithBeadServiceData(payload)
+
+        val parsed = IBeaconParser.parseVirtualEncounterFrame(record, rssi = -61)!!
+
+        assertEquals(0xFFFF, parsed.major)
+        assertEquals(24284, parsed.minor)
+        assertEquals(-61, parsed.rssi)
+    }
+
+    @Test
+    fun `the service-data virtual frame is never a physical detection`() {
+        val record = scanRecordWithBeadServiceData(
+            io.bearound.sdk.EncounterMeshManager.virtualServiceDataPayload(24284)
+        )
+        assertNull(IBeaconParser.parseServiceData(record, rssi = -61))
+    }
+
+    @Test
+    fun `service data in the reserved band is refused whatever the major`() {
+        assertNull(IBeaconParser.parseServiceData(scanRecordWithBeadServiceData(beadPayload(0xFF32, 7)), -50))
+        assertNull(IBeaconParser.parseServiceData(scanRecordWithBeadServiceData(beadPayload(0xFFFF, 7)), -50))
+    }
+
+    @Test
+    fun `a physical beacon service-data frame still parses unchanged`() {
+        val parsed = IBeaconParser.parseServiceData(
+            scanRecordWithBeadServiceData(beadPayload(5, 135)), rssi = -70
+        )!!
+
+        assertEquals(5, parsed.major)
+        assertEquals(135, parsed.minor)
+        assertEquals(-70, parsed.rssi)
+    }
+
+    @Test
+    fun `an air-corrupted service-data virtual frame is not an encounter`() {
+        assertNull(
+            IBeaconParser.parseVirtualEncounterFrame(
+                scanRecordWithBeadServiceData(beadPayload(0xFF32, 7)), rssi = -50
+            )
+        )
+    }
+
+    @Test
+    fun `a physical beacon service-data frame is not a peer`() {
+        assertNull(
+            IBeaconParser.parseVirtualEncounterFrame(
+                scanRecordWithBeadServiceData(beadPayload(5, 135)), rssi = -50
+            )
+        )
+    }
+
+    @Test
+    fun `a short service-data payload is not a virtual frame`() {
+        val short = io.bearound.sdk.EncounterMeshManager.virtualServiceDataPayload(1).copyOf(10)
+        assertNull(IBeaconParser.parseVirtualEncounterFrame(scanRecordWithBeadServiceData(short), rssi = -50))
+    }
+
+    @Test
+    fun `the virtual service-data payload has the 11-byte little-endian layout`() {
+        val payload = io.bearound.sdk.EncounterMeshManager.virtualServiceDataPayload(0x5EDC)
+
+        assertArrayEquals(
+            byteArrayOf(0, 0, 0xFF.toByte(), 0xFF.toByte(), 0xDC.toByte(), 0x5E, 0, 0, 0, 0, 0),
+            payload
+        )
+    }
+
     // ── helpers ──
+
+    /** 0xBEAD payload (11 bytes LE) with the given major/minor and zeroed sensor fields. */
+    private fun beadPayload(major: Int, minor: Int): ByteArray = byteArrayOf(
+        0, 0,
+        (major and 0xFF).toByte(), ((major shr 8) and 0xFF).toByte(),
+        (minor and 0xFF).toByte(), ((minor shr 8) and 0xFF).toByte(),
+        0, 0, 0, 0, 0
+    )
 
     /** iBeacon frame as an SDK host advertises it: our UUID, reserved major, ephemeral minor. */
     private fun virtualBeaconRecord(major: Int, minor: Int): ScanRecord {

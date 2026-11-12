@@ -390,6 +390,10 @@ encounter: it rides the beacon scan filters that already run in background (incl
 PendingIntent broadcast, the only delivery path left on some AOSP-like Android 14 builds), so
 it keeps being reported when the app is not in the foreground.
 
+The same virtual identity is also advertised as a pure `0xBEAD` **Service Data** frame (reserved
+major `65535`, same minor). Receivers accept either form and report them as the same encounter,
+which extends encounter reception to more Android 14 devices.
+
 Every payload from a running device also carries `encounterIds` — the identifiers this device
 is currently advertising. It is sent whether or not the device saw anyone.
 
